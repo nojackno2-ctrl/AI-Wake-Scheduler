@@ -26,17 +26,24 @@ internal static class Program
             var runner = new CliRunner(paths);
             var jobStore = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, () => []);
             var manager = new ScheduleManager(jobStore, runner, () => settings);
-            manager.InitializeAsync().GetAwaiter().GetResult();
 
-            using var mainForm = new MainForm(
-                manager,
-                runner,
-                paths,
-                settingsStore,
-                settings,
-                args.Contains("--minimized", StringComparer.OrdinalIgnoreCase));
-            Application.Run(mainForm);
-            manager.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            try
+            {
+                manager.InitializeAsync().GetAwaiter().GetResult();
+
+                using var mainForm = new MainForm(
+                    manager,
+                    runner,
+                    paths,
+                    settingsStore,
+                    settings,
+                    args.Contains("--minimized", StringComparer.OrdinalIgnoreCase));
+                Application.Run(mainForm);
+            }
+            finally
+            {
+                manager.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
         }
         catch (Exception ex)
         {
@@ -46,6 +53,23 @@ internal static class Program
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
+        finally
+        {
+            if (ownsMutex)
+            {
+                try
+                {
+                    mutex.ReleaseMutex();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+                catch (ApplicationException)
+                {
+                }
+            }
+        }
     }
 }
+
 

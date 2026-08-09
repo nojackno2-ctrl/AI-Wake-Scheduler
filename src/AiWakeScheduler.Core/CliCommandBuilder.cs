@@ -1,7 +1,13 @@
 namespace AiWakeScheduler.Core;
 
+/// <summary>
+/// 建構不同 CLI 的執行參數清單。
+/// </summary>
 public static class CliCommandBuilder
 {
+    /// <summary>
+    /// 依據指定的 CLI 種類、訊息與設定建構參數。
+    /// </summary>
     public static IReadOnlyList<string> Build(
         CliKind kind,
         string message,
@@ -55,6 +61,10 @@ public static class CliCommandBuilder
         return arguments;
     }
 
+    /// <summary>
+    /// 建立節省 Token 模式的簡短回覆提示。
+    /// </summary>
     public static string BuildMinimalReplyPrompt(string message) =>
         $"{message}{Environment.NewLine}只回覆上面這句，不要使用工具。";
 }
+

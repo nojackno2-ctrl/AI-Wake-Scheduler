@@ -1,5 +1,8 @@
 namespace AiWakeScheduler.Core;
 
+/// <summary>
+/// 支援的 AI CLI 工具種類。
+/// </summary>
 public enum CliKind
 {
     Antigravity,
@@ -7,6 +10,9 @@ public enum CliKind
     Claude
 }
 
+/// <summary>
+/// 排程狀態。
+/// </summary>
 public enum ScheduleStatus
 {
     Pending,
@@ -16,13 +22,21 @@ public enum ScheduleStatus
     Disabled
 }
 
+/// <summary>
+/// 排程週期模式。
+/// </summary>
 public enum ScheduleRecurrence
 {
+    // Once and Weekly are retained only so settings written by older versions
+    // can still be deserialized and migrated to Daily by ScheduleManager.
     Once,
     Daily,
     Weekly
 }
 
+/// <summary>
+/// 個別 CLI 工具的設定檔。
+/// </summary>
 public sealed class CliProfile
 {
     public string Executable { get; set; } = string.Empty;
@@ -30,11 +44,14 @@ public sealed class CliProfile
 
     public CliProfile Clone() => new()
     {
-        Executable = Executable,
-        AdditionalArguments = AdditionalArguments
+        Executable = Executable ?? string.Empty,
+        AdditionalArguments = AdditionalArguments ?? string.Empty
     };
 }
 
+/// <summary>
+/// 應用程式整體設定。
+/// </summary>
 public sealed class AppSettings
 {
     public bool StartWithWindows { get; set; }
@@ -47,9 +64,14 @@ public sealed class AppSettings
 
     public void EnsureDefaults()
     {
+        CliProfiles ??= CreateDefaultProfiles();
         foreach (var pair in CreateDefaultProfiles())
         {
             if (!CliProfiles.ContainsKey(pair.Key))
+            {
+                CliProfiles[pair.Key] = pair.Value;
+            }
+            else if (CliProfiles[pair.Key] is null)
             {
                 CliProfiles[pair.Key] = pair.Value;
             }
@@ -66,6 +88,9 @@ public sealed class AppSettings
     };
 }
 
+/// <summary>
+/// CLI 執行結果。
+/// </summary>
 public sealed class CliRunResult
 {
     public CliKind Cli { get; set; }
@@ -78,6 +103,9 @@ public sealed class CliRunResult
     public string LogPath { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// 排程工作模型。
+/// </summary>
 public sealed class ScheduledJob
 {
     public Guid Id { get; set; } = Guid.NewGuid();
@@ -86,7 +114,7 @@ public sealed class ScheduledJob
     public string Message { get; set; } = "早安";
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public List<CliKind> Targets { get; set; } = [CliKind.Antigravity, CliKind.Codex, CliKind.Claude];
-    public ScheduleRecurrence Recurrence { get; set; } = ScheduleRecurrence.Once;
+    public ScheduleRecurrence Recurrence { get; set; } = ScheduleRecurrence.Daily;
     public bool Enabled { get; set; } = true;
     public ScheduleStatus Status { get; set; } = ScheduleStatus.Pending;
     public DateTimeOffset? StartedAt { get; set; }
@@ -96,30 +124,33 @@ public sealed class ScheduledJob
     public ScheduledJob Clone() => new()
     {
         Id = Id,
-        Name = Name,
+        Name = Name ?? "AI 倒數喚醒",
         ScheduledAt = ScheduledAt,
-        Message = Message,
-        WorkingDirectory = WorkingDirectory,
-        Targets = [.. Targets],
+        Message = Message ?? "早安",
+        WorkingDirectory = WorkingDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        Targets = Targets != null ? [.. Targets] : [CliKind.Antigravity, CliKind.Codex, CliKind.Claude],
         Recurrence = Recurrence,
         Enabled = Enabled,
         Status = Status,
         StartedAt = StartedAt,
         FinishedAt = FinishedAt,
-        LastResults = LastResults.Select(result => new CliRunResult
+        LastResults = LastResults != null ? LastResults.Select(result => new CliRunResult
         {
             Cli = result.Cli,
             Succeeded = result.Succeeded,
             ExitCode = result.ExitCode,
             StartedAt = result.StartedAt,
             FinishedAt = result.FinishedAt,
-            ExecutablePath = result.ExecutablePath,
-            Error = result.Error,
-            LogPath = result.LogPath
-        }).ToList()
+            ExecutablePath = result.ExecutablePath ?? string.Empty,
+            Error = result.Error ?? string.Empty,
+            LogPath = result.LogPath ?? string.Empty
+        }).ToList() : []
     };
 }
 
+/// <summary>
+/// CLI 顯示名稱對照。
+/// </summary>
 public static class CliDisplayNames
 {
     public static string Get(CliKind kind) => kind switch
@@ -131,6 +162,9 @@ public static class CliDisplayNames
     };
 }
 
+/// <summary>
+/// 排程週期顯示名稱對照。
+/// </summary>
 public static class ScheduleRecurrenceNames
 {
     public static string Get(ScheduleRecurrence recurrence) => recurrence switch
@@ -141,3 +175,4 @@ public static class ScheduleRecurrenceNames
         _ => recurrence.ToString()
     };
 }
+

@@ -2,6 +2,9 @@ using System.Collections.Concurrent;
 
 namespace AiWakeScheduler.Core;
 
+/// <summary>
+/// 管理 AI 喚醒排程的初始化、掃描、手動觸發與背景對話執行。
+/// </summary>
 public sealed class ScheduleManager(
     JsonFileStore<List<ScheduledJob>> jobStore,
     CliRunner cliRunner,
@@ -12,17 +15,28 @@ public sealed class ScheduleManager(
     private readonly CancellationTokenSource _stopSource = new();
     private List<ScheduledJob> _jobs = [];
     private Task? _schedulerLoop;
+    private bool _disposed;
 
     public event EventHandler? JobsChanged;
     public event EventHandler<Exception>? BackgroundError;
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         var loaded = await jobStore.LoadAsync(cancellationToken).ConfigureAwait(false);
-        foreach (var job in loaded.Where(job => job.Status == ScheduleStatus.Running))
+        foreach (var job in loaded)
         {
-            job.Status = ScheduleStatus.Pending;
-            job.StartedAt = null;
+            // Older versions allowed one-time and weekly schedules. Keep their
+            // chosen hour/minute, but migrate every saved schedule to the app's
+            // daily HH:mm contract.
+            var local = job.ScheduledAt.LocalDateTime;
+            job.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(local.TimeOfDay, DateTimeOffset.Now.AddDays(-1));
+            job.Recurrence = ScheduleRecurrence.Daily;
+            if (job.Status == ScheduleStatus.Running)
+            {
+                job.Status = ScheduleStatus.Pending;
+                job.StartedAt = null;
+            }
         }
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -42,6 +56,7 @@ public sealed class ScheduleManager(
 
     public async Task<IReadOnlyList<ScheduledJob>> GetJobsAsync(CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -55,11 +70,16 @@ public sealed class ScheduleManager(
 
     public async Task UpsertAsync(ScheduledJob job, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         ValidateJob(job);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var saved = job.Clone();
+            saved.Recurrence = ScheduleRecurrence.Daily;
+            saved.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                saved.ScheduledAt.LocalDateTime.TimeOfDay,
+                DateTimeOffset.Now);
             saved.Status = saved.Enabled ? ScheduleStatus.Pending : ScheduleStatus.Disabled;
             saved.StartedAt = null;
             saved.FinishedAt = null;
@@ -88,6 +108,7 @@ public sealed class ScheduleManager(
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -107,6 +128,8 @@ public sealed class ScheduleManager(
 
     public async Task RunNowAsync(Guid id, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ScheduledJob execution;
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -117,11 +140,11 @@ public sealed class ScheduleManager(
                 throw new InvalidOperationException("排程已經在執行中。");
             }
             job.Enabled = true;
-            job.Status = ScheduleStatus.Pending;
-            job.ScheduledAt = DateTimeOffset.Now;
-            job.StartedAt = null;
+            job.Status = ScheduleStatus.Running;
+            job.StartedAt = DateTimeOffset.Now;
             job.FinishedAt = null;
             job.LastResults = [];
+            execution = job.Clone();
             await jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -129,6 +152,7 @@ public sealed class ScheduleManager(
             _gate.Release();
         }
         RaiseJobsChanged();
+        StartExecution(execution, cancellationToken);
     }
 
     private async Task RunSchedulerLoopAsync(CancellationToken cancellationToken)
@@ -147,7 +171,7 @@ public sealed class ScheduleManager(
         }
         catch (Exception ex)
         {
-            BackgroundError?.Invoke(this, ex);
+            RaiseBackgroundError(ex);
         }
     }
 
@@ -182,14 +206,19 @@ public sealed class ScheduleManager(
 
         foreach (var job in dueJobs)
         {
-            var task = ExecuteJobAsync(job, cancellationToken);
-            _executions[job.Id] = task;
-            _ = task.ContinueWith(
-                _ => _executions.TryRemove(job.Id, out Task? _),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
+            StartExecution(job, cancellationToken);
         }
+    }
+
+    private void StartExecution(ScheduledJob job, CancellationToken cancellationToken)
+    {
+        var task = ExecuteJobAsync(job, cancellationToken);
+        _executions[job.Id] = task;
+        _ = task.ContinueWith(
+            _ => _executions.TryRemove(job.Id, out Task? _),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task ExecuteJobAsync(ScheduledJob job, CancellationToken cancellationToken)
@@ -219,19 +248,20 @@ public sealed class ScheduleManager(
                 {
                     stored.LastResults = [.. results];
                     stored.FinishedAt = DateTimeOffset.Now;
-                    if (stored.Recurrence == ScheduleRecurrence.Once)
+                    if (!stored.Enabled)
                     {
                         stored.Status = results.All(result => result.Succeeded)
                             ? ScheduleStatus.Completed
                             : ScheduleStatus.Failed;
-                        stored.Enabled = false;
                     }
                     else
                     {
-                        stored.ScheduledAt = ScheduleCalculator.GetNextOccurrence(
-                            stored.ScheduledAt,
-                            stored.Recurrence,
-                            DateTimeOffset.Now);
+                        if (stored.ScheduledAt <= DateTimeOffset.Now)
+                        {
+                            stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                                stored.ScheduledAt.LocalDateTime.TimeOfDay,
+                                DateTimeOffset.Now);
+                        }
                         stored.Status = ScheduleStatus.Pending;
                         stored.Enabled = true;
                     }
@@ -246,7 +276,37 @@ public sealed class ScheduleManager(
         }
         catch (Exception ex)
         {
-            BackgroundError?.Invoke(this, ex);
+            try
+            {
+                await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                try
+                {
+                    var stored = _jobs.SingleOrDefault(item => item.Id == job.Id);
+                    if (stored is not null && stored.Status == ScheduleStatus.Running)
+                    {
+                        stored.FinishedAt = DateTimeOffset.Now;
+                        if (stored.ScheduledAt <= DateTimeOffset.Now)
+                        {
+                            stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                                stored.ScheduledAt.LocalDateTime.TimeOfDay,
+                                DateTimeOffset.Now);
+                        }
+                        stored.Status = stored.Enabled ? ScheduleStatus.Pending : ScheduleStatus.Failed;
+                        await jobStore.SaveAsync(_jobs, CancellationToken.None).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+                RaiseJobsChanged();
+            }
+            catch
+            {
+                // Ignore secondary cleanup errors
+            }
+
+            RaiseBackgroundError(ex);
         }
     }
 
@@ -264,7 +324,7 @@ public sealed class ScheduleManager(
         {
             throw new ArgumentException("為避免過量消耗 Token，喚醒訊息最多 50 個字元。");
         }
-        if (job.Targets.Count == 0)
+        if (job.Targets == null || job.Targets.Count == 0)
         {
             throw new ArgumentException("至少選擇一個 CLI。");
         }
@@ -274,20 +334,63 @@ public sealed class ScheduleManager(
         }
     }
 
-    private void RaiseJobsChanged() => JobsChanged?.Invoke(this, EventArgs.Empty);
+    private void RaiseJobsChanged()
+    {
+        try
+        {
+            JobsChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"JobsChanged event handler threw: {ex}");
+        }
+    }
+
+    private void RaiseBackgroundError(Exception ex)
+    {
+        try
+        {
+            BackgroundError?.Invoke(this, ex);
+        }
+        catch (Exception handlerEx)
+        {
+            System.Diagnostics.Debug.WriteLine($"BackgroundError event handler threw: {handlerEx}");
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+        _disposed = true;
+
         _stopSource.Cancel();
         if (_schedulerLoop is not null)
         {
-            await _schedulerLoop.ConfigureAwait(false);
+            try
+            {
+                await _schedulerLoop.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore background loop shutdown errors
+            }
         }
         if (!_executions.IsEmpty)
         {
-            await Task.WhenAll(_executions.Values).ConfigureAwait(false);
+            try
+            {
+                await Task.WhenAll(_executions.Values).ConfigureAwait(false);
+            }
+            catch
+            {
+                // Ignore background execution errors during dispose
+            }
         }
         _stopSource.Dispose();
         _gate.Dispose();
     }
 }
+

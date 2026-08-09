@@ -15,10 +15,8 @@ internal sealed class MainForm : Form
     private readonly DataGridView _grid = new();
     private SplitContainer? _mainSplit;
     private readonly TextBox _nameInput = new() { Dock = DockStyle.Fill };
-    private readonly DateTimePicker _dateInput = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "yyyy/MM/dd", Dock = DockStyle.Fill };
-    private readonly DateTimePicker _timeInput = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm:ss", ShowUpDown = true, Dock = DockStyle.Fill };
+    private readonly DateTimePicker _timeInput = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true, Dock = DockStyle.Fill };
     private readonly TextBox _messageInput = new() { Text = "早安", Dock = DockStyle.Fill };
-    private readonly ComboBox _recurrenceInput = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly TextBox _workingDirectoryInput = new() { Dock = DockStyle.Fill };
     private readonly CheckBox _agyCheck = new() { Text = "Antigravity CLI", Checked = true, AutoSize = true };
     private readonly CheckBox _codexCheck = new() { Text = "Codex CLI", Checked = true, AutoSize = true };
@@ -27,6 +25,9 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _statusLabel = new() { Text = "就緒" };
     private readonly ToolStripStatusLabel _clockLabel = new() { Spring = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 1000 };
+    private readonly SemaphoreSlim _gridRefreshLock = new(1, 1);
+    private readonly Font _headerTitleFont = new("Microsoft JhengHei UI", 18F, FontStyle.Bold);
+    private readonly Font _sectionTitleFont = new("Microsoft JhengHei UI", 12F, FontStyle.Bold);
     private readonly NotifyIcon _notifyIcon;
     private Guid? _editingId;
     private bool _reallyExit;
@@ -55,15 +56,6 @@ internal sealed class MainForm : Form
         Icon = SystemIcons.Application;
 
         _notifyIcon = BuildNotifyIcon();
-        _recurrenceInput.DataSource = Enum.GetValues<ScheduleRecurrence>();
-        _recurrenceInput.FormattingEnabled = true;
-        _recurrenceInput.Format += (_, e) =>
-        {
-            if (e.ListItem is ScheduleRecurrence recurrence)
-            {
-                e.Value = ScheduleRecurrenceNames.Get(recurrence);
-            }
-        };
         BuildLayout();
         ResetEditor();
 
@@ -74,6 +66,38 @@ internal sealed class MainForm : Form
 
         Shown += MainFormOnShown;
         FormClosing += MainFormOnFormClosing;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _uiTimer.Stop();
+            _uiTimer.Tick -= UiTimerOnTick;
+            _uiTimer.Dispose();
+
+            _gridRefreshLock.Dispose();
+            _headerTitleFont.Dispose();
+            _sectionTitleFont.Dispose();
+
+            if (_manager is not null)
+            {
+                _manager.JobsChanged -= ManagerOnJobsChanged;
+                _manager.BackgroundError -= ManagerOnBackgroundError;
+            }
+
+            if (_notifyIcon is not null)
+            {
+                _notifyIcon.Visible = false;
+                if (_notifyIcon.ContextMenuStrip is not null)
+                {
+                    _notifyIcon.ContextMenuStrip.Dispose();
+                    _notifyIcon.ContextMenuStrip = null;
+                }
+                _notifyIcon.Dispose();
+            }
+        }
+        base.Dispose(disposing);
     }
 
     private void BuildLayout()
@@ -87,14 +111,14 @@ internal sealed class MainForm : Form
         header.Controls.Add(new Label
         {
             Text = "AI 倒數喚醒",
-            Font = new Font("Microsoft JhengHei UI", 18F, FontStyle.Bold),
+            Font = _headerTitleFont,
             ForeColor = Color.White,
             AutoSize = true,
             Location = new Point(16, 9)
         });
         header.Controls.Add(new Label
         {
-            Text = "指定時間向勾選的 CLI 傳送一則簡短訊息（預設：早安）",
+            Text = "每天在指定的幾點幾分，向勾選的 CLI 傳送一則簡短訊息（預設：早安）",
             ForeColor = Color.FromArgb(203, 213, 225),
             AutoSize = true,
             Location = new Point(19, 43)
@@ -128,7 +152,7 @@ internal sealed class MainForm : Form
         panel.Controls.Add(new Label
         {
             Text = "已儲存排程",
-            Font = new Font("Microsoft JhengHei UI", 12F, FontStyle.Bold),
+            Font = _sectionTitleFont,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 8)
         }, 0, 0);
@@ -145,9 +169,8 @@ internal sealed class MainForm : Form
         _grid.RowHeadersVisible = false;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "名稱", Width = 135 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ScheduledAt", HeaderText = "執行時間", Width = 145 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ScheduledAt", HeaderText = "每天時間", Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Countdown", HeaderText = "倒數", Width = 100 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Recurrence", HeaderText = "週期", Width = 58 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Targets", HeaderText = "CLI", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 125 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "狀態", Width = 80 });
         _grid.SelectionChanged += GridOnSelectionChanged;
@@ -171,7 +194,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             AutoScroll = true,
             ColumnCount = 2,
-            RowCount = 10,
+            RowCount = 9,
             Padding = new Padding(14, 0, 0, 0)
         };
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
@@ -179,21 +202,15 @@ internal sealed class MainForm : Form
         editor.Controls.Add(new Label
         {
             Text = "排程內容",
-            Font = new Font("Microsoft JhengHei UI", 12F, FontStyle.Bold),
+            Font = _sectionTitleFont,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
         editor.SetColumnSpan(editor.GetControlFromPosition(0, 0)!, 2);
 
         AddEditorRow(editor, 1, "名稱", _nameInput);
-        var timePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
-        timePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 55));
-        timePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 45));
-        timePanel.Controls.Add(_dateInput, 0, 0);
-        timePanel.Controls.Add(_timeInput, 1, 0);
-        AddEditorRow(editor, 2, "執行時間", timePanel);
-        AddEditorRow(editor, 3, "重複", _recurrenceInput);
-        AddEditorRow(editor, 4, "訊息", _messageInput);
+        AddEditorRow(editor, 2, "每天時間", _timeInput);
+        AddEditorRow(editor, 3, "訊息", _messageInput);
 
         var directoryPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
         directoryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -202,24 +219,24 @@ internal sealed class MainForm : Form
         var browse = new Button { Text = "瀏覽…", Dock = DockStyle.Fill };
         browse.Click += BrowseWorkingDirectory;
         directoryPanel.Controls.Add(browse, 1, 0);
-        AddEditorRow(editor, 5, "工作目錄", directoryPanel);
+        AddEditorRow(editor, 4, "工作目錄", directoryPanel);
 
         var targets = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         targets.Controls.Add(_agyCheck);
         targets.Controls.Add(_codexCheck);
         targets.Controls.Add(_claudeCheck);
-        AddEditorRow(editor, 6, "傳送至", targets);
-        AddEditorRow(editor, 7, string.Empty, _enabledCheck);
+        AddEditorRow(editor, 5, "傳送至", targets);
+        AddEditorRow(editor, 6, string.Empty, _enabledCheck);
 
         var note = new Label
         {
-            Text = "預設節省 Token：每個 CLI 只送一次、不重試、低推理且只要求短回覆。程式可縮到系統匣持續排程。",
+            Text = "此排程每天在指定時分執行。預設節省 Token：每個 CLI 只送一次、不重試、低推理且只要求短回覆。",
             AutoSize = true,
             MaximumSize = new Size(350, 0),
             ForeColor = Color.DimGray,
             Margin = new Padding(0, 12, 0, 12)
         };
-        editor.Controls.Add(note, 0, 8);
+        editor.Controls.Add(note, 0, 7);
         editor.SetColumnSpan(note, 2);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
@@ -229,7 +246,7 @@ internal sealed class MainForm : Form
         save.FlatStyle = FlatStyle.Flat;
         buttons.Controls.Add(save);
         buttons.Controls.Add(ActionButton("CLI 設定…", OpenSettingsAsync));
-        editor.Controls.Add(buttons, 0, 9);
+        editor.Controls.Add(buttons, 0, 8);
         editor.SetColumnSpan(buttons, 2);
         parent.Controls.Add(editor);
     }
@@ -254,18 +271,30 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async void ManagerOnJobsChanged(object? sender, EventArgs e)
+    private void ManagerOnJobsChanged(object? sender, EventArgs e)
     {
         if (IsDisposed) return;
         try
         {
             if (InvokeRequired)
             {
-                BeginInvoke(async () => await RefreshGridAsync());
+                BeginInvoke(new Action(async () =>
+                {
+                    try
+                    {
+                        if (!IsDisposed)
+                        {
+                            await RefreshGridAsync();
+                        }
+                    }
+                    catch (Exception ex) when (IsDisposed || ex is InvalidOperationException)
+                    {
+                    }
+                }));
             }
             else
             {
-                await RefreshGridAsync();
+                _ = RefreshGridAsync();
             }
         }
         catch (InvalidOperationException) when (IsDisposed)
@@ -276,44 +305,76 @@ internal sealed class MainForm : Form
     private void ManagerOnBackgroundError(object? sender, Exception e)
     {
         if (IsDisposed) return;
-        BeginInvoke(() =>
+        try
         {
-            _statusLabel.Text = $"背景錯誤：{e.Message}";
-            _statusLabel.ForeColor = Color.Firebrick;
-        });
+            if (InvokeRequired)
+            {
+                BeginInvoke(() =>
+                {
+                    if (IsDisposed) return;
+                    _statusLabel.Text = $"背景錯誤：{e.Message}";
+                    _statusLabel.ForeColor = Color.Firebrick;
+                });
+            }
+            else
+            {
+                _statusLabel.Text = $"背景錯誤：{e.Message}";
+                _statusLabel.ForeColor = Color.Firebrick;
+            }
+        }
+        catch (InvalidOperationException) when (IsDisposed)
+        {
+        }
     }
 
     private async Task RefreshGridAsync()
     {
-        var selectedId = SelectedJob()?.Id ?? _editingId;
-        var jobs = await _manager.GetJobsAsync();
-        _refreshingSelection = true;
+        if (IsDisposed) return;
+        await _gridRefreshLock.WaitAsync();
         try
         {
-            _grid.Rows.Clear();
-            foreach (var job in jobs)
+            if (IsDisposed) return;
+            var selectedId = SelectedJob()?.Id ?? _editingId;
+            var jobs = await _manager.GetJobsAsync();
+            if (IsDisposed) return;
+
+            _refreshingSelection = true;
+            try
             {
-                var rowIndex = _grid.Rows.Add(
-                    job.Name,
-                    job.ScheduledAt.LocalDateTime.ToString("yyyy/MM/dd HH:mm:ss"),
-                    FormatCountdown(job),
-                    ScheduleRecurrenceNames.Get(job.Recurrence),
-                    string.Join("、", job.Targets.Select(ShortCliName)),
-                    StatusText(job.Status));
-                _grid.Rows[rowIndex].Tag = job;
-                if (job.Id == selectedId)
+                _grid.Rows.Clear();
+                foreach (var job in jobs)
                 {
-                    _grid.Rows[rowIndex].Selected = true;
-                    _grid.CurrentCell = _grid.Rows[rowIndex].Cells[0];
+                    var rowIndex = _grid.Rows.Add(
+                        job.Name,
+                        job.ScheduledAt.LocalDateTime.ToString("HH:mm"),
+                        FormatCountdown(job),
+                        string.Join("、", job.Targets.Select(ShortCliName)),
+                        StatusText(job.Status));
+                    _grid.Rows[rowIndex].Tag = job;
+                    if (job.Id == selectedId)
+                    {
+                        _grid.Rows[rowIndex].Selected = true;
+                        _grid.CurrentCell = _grid.Rows[rowIndex].Cells[0];
+                    }
+                    ApplyRowStyle(_grid.Rows[rowIndex], job.Status);
                 }
-                ApplyRowStyle(_grid.Rows[rowIndex], job.Status);
             }
+            finally
+            {
+                _refreshingSelection = false;
+            }
+            UpdateStatusSummary(jobs);
+        }
+        catch (Exception ex) when (IsDisposed || ex is InvalidOperationException)
+        {
         }
         finally
         {
-            _refreshingSelection = false;
+            if (!IsDisposed)
+            {
+                _gridRefreshLock.Release();
+            }
         }
-        UpdateStatusSummary(jobs);
     }
 
     private async void SaveScheduleAsync(object? sender, EventArgs e)
@@ -321,14 +382,6 @@ internal sealed class MainForm : Form
         try
         {
             var scheduledAt = ReadScheduledAt();
-            if (scheduledAt <= DateTimeOffset.Now && MessageBox.Show(
-                    "設定時間已到或已過，儲存後會立即執行。要繼續嗎？",
-                    Text,
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Question) != DialogResult.Yes)
-            {
-                return;
-            }
 
             var job = new ScheduledJob
             {
@@ -338,7 +391,7 @@ internal sealed class MainForm : Form
                 Message = _messageInput.Text.Trim(),
                 WorkingDirectory = _workingDirectoryInput.Text.Trim(),
                 Targets = SelectedTargets(),
-                Recurrence = (ScheduleRecurrence)(_recurrenceInput.SelectedItem ?? ScheduleRecurrence.Once),
+                Recurrence = ScheduleRecurrence.Daily,
                 Enabled = _enabledCheck.Checked
             };
             await _manager.UpsertAsync(job);
@@ -423,10 +476,8 @@ internal sealed class MainForm : Form
         if (job is null) return;
         _editingId = job.Id;
         _nameInput.Text = job.Name;
-        _dateInput.Value = ClampPickerValue(_dateInput, job.ScheduledAt.LocalDateTime.Date);
         _timeInput.Value = ClampPickerValue(_timeInput, DateTime.Today + job.ScheduledAt.LocalDateTime.TimeOfDay);
         _messageInput.Text = job.Message;
-        _recurrenceInput.SelectedItem = job.Recurrence;
         _workingDirectoryInput.Text = job.WorkingDirectory;
         _agyCheck.Checked = job.Targets.Contains(CliKind.Antigravity);
         _codexCheck.Checked = job.Targets.Contains(CliKind.Codex);
@@ -440,10 +491,8 @@ internal sealed class MainForm : Form
         _grid.ClearSelection();
         var proposed = DateTime.Now.AddMinutes(5);
         _nameInput.Text = "AI 倒數喚醒";
-        _dateInput.Value = proposed.Date;
-        _timeInput.Value = DateTime.Today + proposed.TimeOfDay;
+        _timeInput.Value = DateTime.Today.AddHours(proposed.Hour).AddMinutes(proposed.Minute);
         _messageInput.Text = "早安";
-        _recurrenceInput.SelectedItem = ScheduleRecurrence.Once;
         _workingDirectoryInput.Text = _paths.WakeupWorkspace;
         _agyCheck.Checked = _codexCheck.Checked = _claudeCheck.Checked = true;
         _enabledCheck.Checked = true;
@@ -451,12 +500,21 @@ internal sealed class MainForm : Form
 
     private void UiTimerOnTick(object? sender, EventArgs e)
     {
+        if (IsDisposed || !Visible || WindowState == FormWindowState.Minimized)
+        {
+            return;
+        }
+
         _clockLabel.Text = $"現在：{DateTime.Now:yyyy/MM/dd HH:mm:ss}";
         foreach (DataGridViewRow row in _grid.Rows)
         {
             if (row.Tag is ScheduledJob job)
             {
-                row.Cells["Countdown"].Value = FormatCountdown(job);
+                var countdown = FormatCountdown(job);
+                if (row.Cells["Countdown"].Value is not string current || current != countdown)
+                {
+                    row.Cells["Countdown"].Value = countdown;
+                }
             }
         }
     }
@@ -476,7 +534,6 @@ internal sealed class MainForm : Form
         _manager.JobsChanged -= ManagerOnJobsChanged;
         _manager.BackgroundError -= ManagerOnBackgroundError;
         _notifyIcon.Visible = false;
-        _notifyIcon.Dispose();
     }
 
     private NotifyIcon BuildNotifyIcon()
@@ -506,6 +563,7 @@ internal sealed class MainForm : Form
         Show();
         WindowState = FormWindowState.Normal;
         Activate();
+        UiTimerOnTick(null, EventArgs.Empty);
     }
 
     private void ShowSelectedResult()
@@ -546,8 +604,9 @@ internal sealed class MainForm : Form
 
     private DateTimeOffset ReadScheduledAt()
     {
-        var local = DateTime.SpecifyKind(_dateInput.Value.Date + _timeInput.Value.TimeOfDay, DateTimeKind.Local);
-        return new DateTimeOffset(local);
+        return ScheduleCalculator.GetNextDailyOccurrence(
+            new TimeSpan(_timeInput.Value.Hour, _timeInput.Value.Minute, 0),
+            DateTimeOffset.Now);
     }
 
     private void BrowseWorkingDirectory(object? sender, EventArgs e)
@@ -566,8 +625,15 @@ internal sealed class MainForm : Form
 
     private static void OpenFolder(string path)
     {
-        Directory.CreateDirectory(path);
-        Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
+        try
+        {
+            Directory.CreateDirectory(path);
+            Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"無法開啟資料夾：{ex.Message}", "AI 倒數喚醒", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private static void AddEditorRow(TableLayoutPanel panel, int row, string label, Control control)
@@ -659,3 +725,4 @@ internal sealed class MainForm : Form
         MessageBox.Show(message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }
+
