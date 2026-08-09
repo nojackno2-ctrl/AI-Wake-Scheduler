@@ -2,13 +2,14 @@
 
 ## 目前目標
 
-將已完成並驗證的 C# Windows 桌面程式首次上傳至 GitHub；目前資料夾尚未初始化 Git，GitHub CLI 已登入 `nojackno2-ctrl`，上傳前須再次驗證、檢查敏感資料並建立遠端儲存庫。
+已完成 C# Windows 桌面程式及首次 GitHub 上傳；後續維護以 `main` 與私人遠端儲存庫為準。
 
 ## 目前狀態（2026-08-10）
 
 - 起始工作目錄為空，且尚未初始化 Git。
 - 2026-08-10 使用者明確要求上傳 GitHub；本機 `gh 2.95.0` 已登入 `nojackno2-ctrl`，token 具 `repo` 與 `workflow` scope。
 - 上傳前敏感字串掃描未發現 API key、token 或密碼；`nojackno2-ctrl` 帳號下未找到同名或近似名稱的既有儲存庫。
+- 已初始化 Git `main`，提交 `75fa303`（`Initial AI wake scheduler`），並建立私人儲存庫 `https://github.com/nojackno2-ctrl/AI-Wake-Scheduler`；首次推送成功。
 - 本機已安裝 .NET SDK 10.0.302；.NET 8 與 10 Windows Desktop Runtime 均存在。
 - 本機 `agy.exe` 位於 `%LOCALAPPDATA%\agy\bin\agy.exe`，已由 `agy --help` 證實非互動模式為 `agy --print <訊息>`。
 - 本機 `claude.exe` 位於 `%USERPROFILE%\.local\bin\claude.exe`，已由 `claude --help` 證實非互動模式為 `claude --print <訊息>`。
