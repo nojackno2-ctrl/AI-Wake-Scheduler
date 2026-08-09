@@ -42,3 +42,22 @@
 - Release EXE 已實際啟動且視窗有回應；最終程式路徑為 `src/AiWakeScheduler.WinForms/bin/Release/net8.0-windows/AI倒數喚醒.exe`。
 - 刻意未真的送出「早安」，避免開發驗證消耗三個 AI 訂閱；執行路徑已用三個假 CLI 驗證，真實喚醒由使用者在 UI 明確排程或按「立即執行」。
 - GitHub 上傳前重新執行 Release 建置成功（0 警告、0 錯誤），無 NuGet 測試再次 6/6 通過；平行 CLI 測試耗時 1225 ms。
+- 2026-08-10 使用者釐清「時間設定」是每天固定的幾點幾分，不需要日期、單次或每週選項。主介面已改為單一 `HH:mm` 選擇器與「每天時間」列表欄，核心儲存一律正規化成 Daily 並計算下一個未來觸發點；舊排程載入時保留時分並轉為每日。另調整「立即執行」使它不改變或跳過原本的下一次每日排程。
+- 第一次驗證誤將方案建置與 `dotnet run` 測試平行執行，兩者同時寫入 `AiWakeScheduler.Core\obj\Release`，造成 CS2012 檔案鎖衝突；這不是原始碼編譯診斷。後續驗證必須依序執行。
+- 依序 Release 建置已成功（0 警告、0 錯誤）。首次測試為 5/6：`ScheduleManagerDueJob` 已實際回到新規格的 `Pending`，但測試迴圈仍等待舊版一次性排程的 `Completed`，逾時後觸發過時斷言；已改為等待 `Pending` 且三個結果齊全，待重跑。
+- 修正過時斷言並把新排程模型預設值改為 Daily 後，最終 Release 建置成功（0 警告、0 錯誤），無 NuGet 測試 6/6 通過；三個各延遲 1 秒的假 CLI 最新平行完成耗時 1225 ms。
+- Release EXE 已實際啟動。Computer Use 可找到視窗但畫面擷取仍回報 `node_repl exec context not found`；改用 Windows UI Automation 讀取真實控制項並以 Win32 前景畫面檢查。已確認設定區只剩「每天時間」`HH:mm`、列表只有「每天時間／倒數」而沒有日期或週期，版面顯示正常。
+- 已完成 WinForms 專案（MainForm.cs, Program.cs, SettingsForm.cs, StartupManager.cs）優化：
+  1. `MainForm.cs`：
+     - 加入 `Dispose(bool disposing)` 覆寫，正確釋放 `_uiTimer`、`_notifyIcon` (及其 `ContextMenuStrip`)、`_gridRefreshLock` (SemaphoreSlim) 與快取的 GDI `Font` 物件。
+     - 優化 `UiTimerOnTick`：當主視窗縮小至系統匣 (`!Visible || WindowState == Minimized`) 時暫停計時器畫面更新與倒數計算，節省背景運作 CPU 與字串記憶體分配；僅在倒數文字實際變更時才更新 DataGridView 儲存格。從系統匣還原視窗時立即觸發觸發一次刷整。
+     - 強化 UI 線程安全性：`ManagerOnJobsChanged` 與 `ManagerOnBackgroundError` 使用跨執行緒呼叫防護與 delegate 異常捕捉；`RefreshGridAsync` 引入 `SemaphoreSlim` 重入保護。
+     - 增加 `OpenFolder` 與檔案開啟異常防禦。
+  2. `Program.cs`：
+     - 完善單一執行個體 `Mutex` 的 `ReleaseMutex()` 釋放保護；確保 `ScheduleManager.DisposeAsync()` 於 `try-finally` 中執行，避免 UI 或初始化異常時遺留背景工作與資源。
+  3. `SettingsForm.cs`：
+     - 快取並處置 GDI `Font` 物件，避免屢次點擊 Header 重複創建 Font 洩漏 GDI 控制點；在 `ProbeAllAsync` 中加入 `IsDisposed` 防禦與異常補捉。
+  4. `StartupManager.cs`：
+     - 增加 `Process.GetCurrentProcess().MainModule?.FileName` 的安全備用路徑，並對登錄機碼 `UnauthorizedAccessException` / `SecurityException` 與 `null` 進行防禦性檢查與訊息包裝。
+- Debug 與 Release 方案均重新建置成功（0 警告、0 錯誤）。
+

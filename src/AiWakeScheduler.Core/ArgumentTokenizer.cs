@@ -2,17 +2,26 @@ using System.Text;
 
 namespace AiWakeScheduler.Core;
 
+/// <summary>
+/// 提供命令列參數字串的解析與 Token 化處理。
+/// </summary>
 public static class ArgumentTokenizer
 {
+    /// <summary>
+    /// 解析命令列參數字串，處理雙引號與斜線轉義。
+    /// </summary>
+    /// <param name="commandLine">傳入的命令列參數字串</param>
+    /// <returns>解析後的參數清單</returns>
+    /// <exception cref="FormatException">當雙引號未正常閉合時擲出</exception>
     public static IReadOnlyList<string> Parse(string? commandLine)
     {
         if (string.IsNullOrWhiteSpace(commandLine))
         {
-            return [];
+            return Array.Empty<string>();
         }
 
         var arguments = new List<string>();
-        var current = new StringBuilder();
+        var current = new StringBuilder(commandLine.Length);
         var inQuotes = false;
         var backslashes = 0;
 
@@ -71,4 +80,5 @@ public static class ArgumentTokenizer
         return arguments;
     }
 }
+
 

@@ -1,22 +1,31 @@
 namespace AiWakeScheduler.Core;
 
+/// <summary>
+/// 負責搜尋與定位 CLI 可執行檔路徑。
+/// </summary>
 public static class ExecutableLocator
 {
+    /// <summary>
+    /// 解析指定 CLI 種類的可執行檔路徑。
+    /// </summary>
     public static string? Resolve(CliKind kind, string? configuredValue, string workingDirectory)
     {
-        var configured = Environment.ExpandEnvironmentVariables(configuredValue?.Trim() ?? string.Empty);
-        if (!string.IsNullOrWhiteSpace(configured))
+        var expanded = string.IsNullOrWhiteSpace(configuredValue)
+            ? string.Empty
+            : Environment.ExpandEnvironmentVariables(configuredValue.Trim());
+
+        if (!string.IsNullOrWhiteSpace(expanded))
         {
-            var explicitPath = ResolveExplicitPath(configured, workingDirectory);
+            var explicitPath = ResolveExplicitPath(expanded, workingDirectory);
             if (explicitPath is not null)
             {
                 return explicitPath;
             }
 
-            if (!configured.Contains(Path.DirectorySeparatorChar) &&
-                !configured.Contains(Path.AltDirectorySeparatorChar))
+            if (!expanded.Contains(Path.DirectorySeparatorChar) &&
+                !expanded.Contains(Path.AltDirectorySeparatorChar))
             {
-                var fromPath = FindOnPath(configured);
+                var fromPath = FindOnPath(expanded);
                 if (fromPath is not null)
                 {
                     return fromPath;
@@ -26,9 +35,16 @@ public static class ExecutableLocator
 
         foreach (var candidate in KnownCandidates(kind))
         {
-            if (File.Exists(candidate))
+            try
             {
-                return Path.GetFullPath(candidate);
+                if (File.Exists(candidate))
+                {
+                    return Path.GetFullPath(candidate);
+                }
+            }
+            catch (Exception)
+            {
+                // Ignore invalid candidate paths
             }
         }
 
@@ -43,18 +59,25 @@ public static class ExecutableLocator
 
     private static string? ResolveExplicitPath(string value, string workingDirectory)
     {
-        if (Path.IsPathRooted(value))
+        try
         {
-            return File.Exists(value) ? Path.GetFullPath(value) : null;
-        }
+            if (Path.IsPathRooted(value))
+            {
+                return File.Exists(value) ? Path.GetFullPath(value) : null;
+            }
 
-        if (!value.Contains(Path.DirectorySeparatorChar) && !value.Contains(Path.AltDirectorySeparatorChar))
+            if (!value.Contains(Path.DirectorySeparatorChar) && !value.Contains(Path.AltDirectorySeparatorChar))
+            {
+                return null;
+            }
+
+            var combined = Path.Combine(workingDirectory, value);
+            return File.Exists(combined) ? Path.GetFullPath(combined) : null;
+        }
+        catch (Exception)
         {
             return null;
         }
-
-        var combined = Path.Combine(workingDirectory, value);
-        return File.Exists(combined) ? Path.GetFullPath(combined) : null;
     }
 
     private static string? FindOnPath(string command)
@@ -63,20 +86,32 @@ public static class ExecutableLocator
             ? [string.Empty]
             : GetPathExtensions();
 
-        foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-                     .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        var pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathEnv))
         {
+            return null;
+        }
+
+        var directories = pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        foreach (var rawDir in directories)
+        {
+            var directory = rawDir.Trim('"');
+            if (directory.Length == 0)
+            {
+                continue;
+            }
+
             foreach (var extension in extensions)
             {
                 try
                 {
-                    var candidate = Path.Combine(directory.Trim('"'), command + extension);
+                    var candidate = Path.Combine(directory, command + extension);
                     if (File.Exists(candidate))
                     {
                         return Path.GetFullPath(candidate);
                     }
                 }
-                catch (Exception) when (directory.Length > 0)
+                catch (Exception)
                 {
                     // Ignore malformed or inaccessible PATH entries and continue searching.
                 }
@@ -123,4 +158,5 @@ public static class ExecutableLocator
         };
     }
 }
+
 

@@ -3,6 +3,9 @@ using System.Text;
 
 namespace AiWakeScheduler.Core;
 
+/// <summary>
+/// CLI 探測結果模型。
+/// </summary>
 public sealed class CliProbeResult
 {
     public required CliKind Cli { get; init; }
@@ -11,8 +14,14 @@ public sealed class CliProbeResult
     public string ExecutablePath { get; init; } = string.Empty;
 }
 
+/// <summary>
+/// 負責 CLI 程序的執行、日誌記錄與探測。
+/// </summary>
 public sealed class CliRunner(AppDataPaths paths)
 {
+    /// <summary>
+    /// 執行指定的 CLI 命令，並記錄執行日誌。
+    /// </summary>
     public async Task<CliRunResult> RunAsync(
         CliKind kind,
         CliProfile profile,
@@ -62,6 +71,9 @@ public sealed class CliRunner(AppDataPaths paths)
         return result;
     }
 
+    /// <summary>
+    /// 探測指定 CLI 是否可正常執行 (--version)。
+    /// </summary>
     public async Task<CliProbeResult> ProbeAsync(
         CliKind kind,
         CliProfile profile,
@@ -161,10 +173,30 @@ public sealed class CliRunner(AppDataPaths paths)
             throw;
         }
 
+        string stdout;
+        string stderr;
+        try
+        {
+            stdout = await outputTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            stdout = string.Empty;
+        }
+
+        try
+        {
+            stderr = await errorTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            stderr = string.Empty;
+        }
+
         return new ProcessExecution(
             process.ExitCode,
-            await outputTask.ConfigureAwait(false),
-            await errorTask.ConfigureAwait(false),
+            stdout,
+            stderr,
             timedOut,
             shellScript);
     }
@@ -177,34 +209,48 @@ public sealed class CliRunner(AppDataPaths paths)
         ProcessExecution execution,
         string error)
     {
-        paths.EnsureCreated();
-        var logPath = Path.Combine(paths.LogsDirectory, $"{startedAt:yyyyMMdd-HHmmss}-{kind}.log");
-        var body = new StringBuilder()
-            .AppendLine($"CLI: {CliDisplayNames.Get(kind)}")
-            .AppendLine($"開始時間: {startedAt:O}")
-            .AppendLine($"執行檔: {executable}")
-            .AppendLine($"參數: {string.Join(' ', arguments.Select(MaskForLog))}")
-            .AppendLine($"結束碼: {execution.ExitCode}")
-            .AppendLine($"Shell 模式: {execution.UsedShell}")
-            .AppendLine($"錯誤摘要: {error}")
-            .AppendLine("--- stdout ---")
-            .AppendLine(execution.StandardOutput)
-            .AppendLine("--- stderr ---")
-            .AppendLine(execution.StandardError)
-            .ToString();
-        await File.WriteAllTextAsync(logPath, body, new UTF8Encoding(false)).ConfigureAwait(false);
-        return logPath;
+        try
+        {
+            paths.EnsureCreated();
+            var logPath = Path.Combine(paths.LogsDirectory, $"{startedAt:yyyyMMdd-HHmmss}-{kind}.log");
+            var body = new StringBuilder()
+                .AppendLine($"CLI: {CliDisplayNames.Get(kind)}")
+                .AppendLine($"開始時間: {startedAt:O}")
+                .AppendLine($"執行檔: {executable}")
+                .AppendLine($"參數: {string.Join(' ', arguments.Select(MaskForLog))}")
+                .AppendLine($"結束碼: {execution.ExitCode}")
+                .AppendLine($"Shell 模式: {execution.UsedShell}")
+                .AppendLine($"錯誤摘要: {error}")
+                .AppendLine("--- stdout ---")
+                .AppendLine(execution.StandardOutput)
+                .AppendLine("--- stderr ---")
+                .AppendLine(execution.StandardError)
+                .ToString();
+            await File.WriteAllTextAsync(logPath, body, new UTF8Encoding(false)).ConfigureAwait(false);
+            return logPath;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private async Task<string> WriteFailureLogAsync(CliKind kind, DateTimeOffset startedAt, string executable, Exception exception)
     {
-        paths.EnsureCreated();
-        var logPath = Path.Combine(paths.LogsDirectory, $"{startedAt:yyyyMMdd-HHmmss}-{kind}-error.log");
-        await File.WriteAllTextAsync(
-            logPath,
-            $"CLI: {CliDisplayNames.Get(kind)}{Environment.NewLine}開始時間: {startedAt:O}{Environment.NewLine}執行檔: {executable}{Environment.NewLine}{exception}",
-            new UTF8Encoding(false)).ConfigureAwait(false);
-        return logPath;
+        try
+        {
+            paths.EnsureCreated();
+            var logPath = Path.Combine(paths.LogsDirectory, $"{startedAt:yyyyMMdd-HHmmss}-{kind}-error.log");
+            await File.WriteAllTextAsync(
+                logPath,
+                $"CLI: {CliDisplayNames.Get(kind)}{Environment.NewLine}開始時間: {startedAt:O}{Environment.NewLine}執行檔: {executable}{Environment.NewLine}{exception}",
+                new UTF8Encoding(false)).ConfigureAwait(false);
+            return logPath;
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
     private static string MaskForLog(string argument) => argument.Contains(' ') ? $"\"{argument}\"" : argument;
@@ -226,7 +272,7 @@ public sealed class CliRunner(AppDataPaths paths)
                 process.Kill(true);
             }
         }
-        catch (InvalidOperationException)
+        catch
         {
         }
     }
@@ -238,3 +284,4 @@ public sealed class CliRunner(AppDataPaths paths)
         bool TimedOut,
         bool UsedShell);
 }
+

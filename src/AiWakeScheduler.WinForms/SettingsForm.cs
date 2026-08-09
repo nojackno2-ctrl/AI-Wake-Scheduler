@@ -22,6 +22,7 @@ internal sealed class SettingsForm : Form
         MaximumSize = new Size(790, 0),
         Margin = new Padding(0, 6, 0, 0)
     };
+    private readonly Font _headerFont = new("Microsoft JhengHei UI", 9F, FontStyle.Bold);
 
     public SettingsForm(AppSettings source, CliRunner runner)
     {
@@ -37,6 +38,15 @@ internal sealed class SettingsForm : Form
     }
 
     public AppSettings ResultSettings { get; }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _headerFont.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 
     private void BuildLayout()
     {
@@ -137,7 +147,7 @@ internal sealed class SettingsForm : Form
         _startupCheck.Checked = ResultSettings.StartWithWindows;
         _trayCheck.Checked = ResultSettings.MinimizeToTray;
         _tokenSaverCheck.Checked = ResultSettings.TokenSaverMode;
-        _timeoutInput.Value = ResultSettings.ExecutionTimeoutMinutes;
+        _timeoutInput.Value = Math.Clamp(ResultSettings.ExecutionTimeoutMinutes, _timeoutInput.Minimum, _timeoutInput.Maximum);
     }
 
     private void SaveValues(object? sender, EventArgs e)
@@ -171,24 +181,41 @@ internal sealed class SettingsForm : Form
 
     private async void ProbeAllAsync(object? sender, EventArgs e)
     {
-        if (sender is not Button button) return;
+        if (sender is not Button button || !button.Enabled) return;
         button.Enabled = false;
         _probeStatus.Text = "檢查中…";
-        var workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var checks = Enum.GetValues<CliKind>().Select(async kind =>
+        _probeStatus.ForeColor = Color.DimGray;
+        try
         {
-            var profile = new CliProfile
+            var workingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var checks = Enum.GetValues<CliKind>().Select(async kind =>
             {
-                Executable = _pathInputs[kind].Text.Trim(),
-                AdditionalArguments = _argumentInputs[kind].Text.Trim()
-            };
-            return await _runner.ProbeAsync(kind, profile, workingDirectory);
-        });
-        var results = await Task.WhenAll(checks);
-        _probeStatus.Text = string.Join(Environment.NewLine, results.Select(result =>
-            $"{CliDisplayNames.Get(result.Cli)}：{(result.Succeeded ? "✓" : "✗")} {result.Summary}"));
-        _probeStatus.ForeColor = results.All(result => result.Succeeded) ? Color.DarkGreen : Color.Firebrick;
-        button.Enabled = true;
+                var profile = new CliProfile
+                {
+                    Executable = _pathInputs[kind].Text.Trim(),
+                    AdditionalArguments = _argumentInputs[kind].Text.Trim()
+                };
+                return await _runner.ProbeAsync(kind, profile, workingDirectory);
+            });
+            var results = await Task.WhenAll(checks);
+            if (IsDisposed) return;
+            _probeStatus.Text = string.Join(Environment.NewLine, results.Select(result =>
+                $"{CliDisplayNames.Get(result.Cli)}：{(result.Succeeded ? "✓" : "✗")} {result.Summary}"));
+            _probeStatus.ForeColor = results.All(result => result.Succeeded) ? Color.DarkGreen : Color.Firebrick;
+        }
+        catch (Exception ex)
+        {
+            if (IsDisposed) return;
+            _probeStatus.Text = $"檢查失敗：{ex.Message}";
+            _probeStatus.ForeColor = Color.Firebrick;
+        }
+        finally
+        {
+            if (!IsDisposed)
+            {
+                button.Enabled = true;
+            }
+        }
     }
 
     private void BrowseExecutable(object? sender, EventArgs e)
@@ -206,11 +233,11 @@ internal sealed class SettingsForm : Form
         }
     }
 
-    private static Label Header(string text) => new()
+    private Label Header(string text) => new()
     {
         Text = text,
         AutoSize = true,
-        Font = new Font("Microsoft JhengHei UI", 9F, FontStyle.Bold),
+        Font = _headerFont,
         Anchor = AnchorStyles.Left
     };
 
@@ -227,3 +254,4 @@ internal sealed class SettingsForm : Form
         };
     }
 }
+
