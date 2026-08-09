@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>AI倒數喚醒</AssemblyName>
+    <RootNamespace>AiWakeScheduler.WinForms</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AiWakeScheduler.Core\AiWakeScheduler.Core.csproj" />
+  </ItemGroup>
+</Project>
+
