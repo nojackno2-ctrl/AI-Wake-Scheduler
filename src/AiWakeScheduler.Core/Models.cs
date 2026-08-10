@@ -6,6 +6,7 @@ namespace AiWakeScheduler.Core;
 public enum CliKind
 {
     Antigravity,
+    AntigravityClaude,
     Codex,
     Claude
 }
@@ -83,6 +84,7 @@ public sealed class AppSettings
     private static Dictionary<CliKind, CliProfile> CreateDefaultProfiles() => new()
     {
         [CliKind.Antigravity] = new CliProfile { Executable = "agy" },
+        [CliKind.AntigravityClaude] = new CliProfile { Executable = "agy" },
         [CliKind.Codex] = new CliProfile { Executable = "codex" },
         [CliKind.Claude] = new CliProfile { Executable = "claude" }
     };
@@ -113,7 +115,7 @@ public sealed class ScheduledJob
     public DateTimeOffset ScheduledAt { get; set; } = DateTimeOffset.Now.AddMinutes(5);
     public string Message { get; set; } = "早安";
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-    public List<CliKind> Targets { get; set; } = [CliKind.Antigravity, CliKind.Codex, CliKind.Claude];
+    public List<CliKind> Targets { get; set; } = [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Codex, CliKind.Claude];
     public ScheduleRecurrence Recurrence { get; set; } = ScheduleRecurrence.Daily;
     public bool Enabled { get; set; } = true;
     public ScheduleStatus Status { get; set; } = ScheduleStatus.Pending;
@@ -128,7 +130,7 @@ public sealed class ScheduledJob
         ScheduledAt = ScheduledAt,
         Message = Message ?? "早安",
         WorkingDirectory = WorkingDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        Targets = Targets != null ? [.. Targets] : [CliKind.Antigravity, CliKind.Codex, CliKind.Claude],
+        Targets = Targets != null ? [.. Targets] : [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Codex, CliKind.Claude],
         Recurrence = Recurrence,
         Enabled = Enabled,
         Status = Status,
@@ -155,7 +157,8 @@ public static class CliDisplayNames
 {
     public static string Get(CliKind kind) => kind switch
     {
-        CliKind.Antigravity => "Antigravity CLI",
+        CliKind.Antigravity => "Antigravity (Gemini)",
+        CliKind.AntigravityClaude => "Antigravity (Claude / GPT)",
         CliKind.Codex => "Codex CLI",
         CliKind.Claude => "Claude CLI",
         _ => kind.ToString()

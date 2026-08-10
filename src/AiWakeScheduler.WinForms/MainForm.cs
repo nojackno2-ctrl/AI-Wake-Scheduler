@@ -18,7 +18,8 @@ internal sealed class MainForm : Form
     private readonly DateTimePicker _timeInput = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true, Dock = DockStyle.Fill };
     private readonly TextBox _messageInput = new() { Text = "早安", Dock = DockStyle.Fill };
     private readonly TextBox _workingDirectoryInput = new() { Dock = DockStyle.Fill };
-    private readonly CheckBox _agyCheck = new() { Text = "Antigravity CLI", Checked = true, AutoSize = true };
+    private readonly CheckBox _agyGeminiCheck = new() { Text = "Antigravity (Gemini)", Checked = true, AutoSize = true };
+    private readonly CheckBox _agyClaudeCheck = new() { Text = "Antigravity (Claude / GPT)", Checked = true, AutoSize = true };
     private readonly CheckBox _codexCheck = new() { Text = "Codex CLI", Checked = true, AutoSize = true };
     private readonly CheckBox _claudeCheck = new() { Text = "Claude CLI", Checked = true, AutoSize = true };
     private readonly CheckBox _enabledCheck = new() { Text = "啟用此排程", Checked = true, AutoSize = true };
@@ -223,7 +224,8 @@ internal sealed class MainForm : Form
         AddEditorRow(editor, 4, "工作目錄", directoryPanel);
 
         var targets = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        targets.Controls.Add(_agyCheck);
+        targets.Controls.Add(_agyGeminiCheck);
+        targets.Controls.Add(_agyClaudeCheck);
         targets.Controls.Add(_codexCheck);
         targets.Controls.Add(_claudeCheck);
         AddEditorRow(editor, 5, "傳送至", targets);
@@ -480,7 +482,8 @@ internal sealed class MainForm : Form
         _timeInput.Value = ClampPickerValue(_timeInput, DateTime.Today + job.ScheduledAt.LocalDateTime.TimeOfDay);
         _messageInput.Text = job.Message;
         _workingDirectoryInput.Text = job.WorkingDirectory;
-        _agyCheck.Checked = job.Targets.Contains(CliKind.Antigravity);
+        _agyGeminiCheck.Checked = job.Targets.Contains(CliKind.Antigravity);
+        _agyClaudeCheck.Checked = job.Targets.Contains(CliKind.AntigravityClaude);
         _codexCheck.Checked = job.Targets.Contains(CliKind.Codex);
         _claudeCheck.Checked = job.Targets.Contains(CliKind.Claude);
         _enabledCheck.Checked = job.Enabled;
@@ -495,7 +498,7 @@ internal sealed class MainForm : Form
         _timeInput.Value = DateTime.Today.AddHours(proposed.Hour).AddMinutes(proposed.Minute);
         _messageInput.Text = "早安";
         _workingDirectoryInput.Text = _paths.WakeupWorkspace;
-        _agyCheck.Checked = _codexCheck.Checked = _claudeCheck.Checked = true;
+        _agyGeminiCheck.Checked = _agyClaudeCheck.Checked = _codexCheck.Checked = _claudeCheck.Checked = true;
         _enabledCheck.Checked = true;
     }
 
@@ -625,7 +628,8 @@ internal sealed class MainForm : Form
     private List<CliKind> SelectedTargets()
     {
         var result = new List<CliKind>();
-        if (_agyCheck.Checked) result.Add(CliKind.Antigravity);
+        if (_agyGeminiCheck.Checked) result.Add(CliKind.Antigravity);
+        if (_agyClaudeCheck.Checked) result.Add(CliKind.AntigravityClaude);
         if (_codexCheck.Checked) result.Add(CliKind.Codex);
         if (_claudeCheck.Checked) result.Add(CliKind.Claude);
         return result;
@@ -642,7 +646,7 @@ internal sealed class MainForm : Form
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description = "選擇三個 CLI 執行時使用的工作目錄",
+            Description = "選擇 CLI 執行時使用的工作目錄",
             UseDescriptionForTitle = true,
             InitialDirectory = Directory.Exists(_workingDirectoryInput.Text) ? _workingDirectoryInput.Text : string.Empty
         };
@@ -710,7 +714,8 @@ internal sealed class MainForm : Form
 
     private static string ShortCliName(CliKind kind) => kind switch
     {
-        CliKind.Antigravity => "AGY",
+        CliKind.Antigravity => "AGY(Gemini)",
+        CliKind.AntigravityClaude => "AGY(Claude)",
         CliKind.Codex => "Codex",
         CliKind.Claude => "Claude",
         _ => kind.ToString()

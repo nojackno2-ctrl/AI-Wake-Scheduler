@@ -66,8 +66,15 @@ static Task TestArgumentTokenizerAsync()
 static Task TestCliCommandBuilderAsync()
 {
     Equal(["--print", "早安"], CliCommandBuilder.Build(CliKind.Antigravity, "早安", tokenSaverMode: false));
+    Equal(["--model", "Claude Sonnet 4.6 (Thinking)", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", tokenSaverMode: false));
+    Equal(["--print", "--model", "custom-model", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "--model custom-model", tokenSaverMode: false));
     Equal(["exec", "--skip-git-repo-check", "早安"], CliCommandBuilder.Build(CliKind.Codex, "早安", tokenSaverMode: false));
     Equal(["--print", "--model", "sonnet", "早安"], CliCommandBuilder.Build(CliKind.Claude, "早安", "--model sonnet", tokenSaverMode: false));
+
+    var saverAgyClaude = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安");
+    Assert(saverAgyClaude.Contains("--model") && saverAgyClaude.Contains("Claude Sonnet 4.6 (Thinking)"), "AntigravityClaude 預設應使用 Claude Sonnet 模型。");
+    Assert(saverAgyClaude.Contains("--effort") && saverAgyClaude.Contains("low"), "AntigravityClaude 節省模式應包含 low effort。");
+    Assert(saverAgyClaude.Contains("--disable-slash-commands"), "AntigravityClaude 節省模式應停用斜線指令。");
 
     var saverCodex = CliCommandBuilder.Build(CliKind.Codex, "早安");
     Assert(saverCodex.Contains("read-only"), "節省 Token 模式應使用 Codex 唯讀沙箱。");
@@ -286,7 +293,7 @@ static async Task TestScheduleManagerAsync()
                 ScheduledAt = DateTimeOffset.Now.AddSeconds(-1),
                 Message = "早安",
                 WorkingDirectory = directory,
-                Targets = [CliKind.Antigravity, CliKind.Codex, CliKind.Claude]
+                Targets = [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Codex, CliKind.Claude]
             }
         ]);
 
@@ -298,7 +305,7 @@ static async Task TestScheduleManagerAsync()
         while (DateTime.UtcNow < deadline)
         {
             finished = (await manager.GetJobsAsync()).Single();
-            if (finished.Status == ScheduleStatus.Pending && finished.LastResults.Count == 3)
+            if (finished.Status == ScheduleStatus.Pending && finished.LastResults.Count == 4)
             {
                 break;
             }
@@ -307,16 +314,16 @@ static async Task TestScheduleManagerAsync()
         Assert(finished is { Status: ScheduleStatus.Pending, Enabled: true }, "舊排程應轉為每日排程並繼續等待。");
         Assert(finished?.Recurrence == ScheduleRecurrence.Daily, "舊排程載入後應轉為每日排程。");
         Assert(finished?.ScheduledAt > DateTimeOffset.Now, "每日排程執行後應排到下一個未來時分。");
-        Assert(finished?.LastResults.Count == 3, "排程器應記錄三個 CLI 的結果。");
+        Assert(finished?.LastResults.Count == 4, "排程器應記錄四個 CLI 的結果。");
         foreach (var outputPath in outputPaths.Values)
         {
-            Assert(File.Exists(outputPath), "排程器應真的啟動三個假 CLI。");
+            Assert(File.Exists(outputPath), "排程器應真的啟動四個假 CLI。");
         }
         concurrentStopwatch.Stop();
         Console.WriteLine($"  concurrent CLI elapsed: {concurrentStopwatch.Elapsed.TotalMilliseconds:0} ms");
         Assert(
             concurrentStopwatch.Elapsed < TimeSpan.FromMilliseconds(2500),
-            $"三個各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {concurrentStopwatch.Elapsed.TotalMilliseconds:0} ms。");
+            $"四個各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {concurrentStopwatch.Elapsed.TotalMilliseconds:0} ms。");
 
         var recurringId = Guid.NewGuid();
         var selectedTime = DateTimeOffset.Now.AddHours(-2);
@@ -480,9 +487,12 @@ static async Task TestExecutableLocatorAsync()
 {
     var workingDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-    // 1. 測試解析本機已安裝的 CLI（三者均應成功解析）
+    // 1. 測試解析本機已安裝的 CLI（四者均應成功解析）
     var agy = ExecutableLocator.Resolve(CliKind.Antigravity, "agy", workingDir);
     Assert(agy is not null && File.Exists(agy), $"Antigravity CLI 應成功解析到可執行檔：{agy}");
+
+    var agyClaude = ExecutableLocator.Resolve(CliKind.AntigravityClaude, "agy", workingDir);
+    Assert(agyClaude is not null && File.Exists(agyClaude), $"Antigravity Claude/GPT CLI 應成功解析到可執行檔：{agyClaude}");
 
     var codex = ExecutableLocator.Resolve(CliKind.Codex, "codex", workingDir);
     Assert(codex is not null && File.Exists(codex), $"Codex CLI 應成功解析到子目錄或已知路徑中的可執行檔：{codex}");
@@ -503,12 +513,15 @@ static async Task TestExecutableLocatorAsync()
         var relative = ExecutableLocator.Resolve(CliKind.Codex, "custom_app.exe", tempDir);
         Assert(relative is not null && Path.GetFullPath(relative) == dummyExe, "傳入工作目錄中的相對路徑應成功解析。");
 
-        // 4. 測試真實 CLI ProbeAsync（三者均應回傳 Succeeded == true）
+        // 4. 測試真實 CLI ProbeAsync（四者均應回傳 Succeeded == true）
         var paths = new AppDataPaths(Path.Combine(tempDir, "data"));
         var runner = new CliRunner(paths);
 
         var probeAgy = await runner.ProbeAsync(CliKind.Antigravity, new CliProfile { Executable = "agy" }, workingDir);
         Assert(probeAgy.Succeeded, $"Antigravity Probe 應成功：{probeAgy.Summary}");
+
+        var probeAgyClaude = await runner.ProbeAsync(CliKind.AntigravityClaude, new CliProfile { Executable = "agy" }, workingDir);
+        Assert(probeAgyClaude.Succeeded, $"Antigravity Claude Probe 應成功：{probeAgyClaude.Summary}");
 
         var probeCodex = await runner.ProbeAsync(CliKind.Codex, new CliProfile { Executable = "codex" }, workingDir);
         Assert(probeCodex.Succeeded, $"Codex Probe 應成功：{probeCodex.Summary}");

@@ -28,6 +28,24 @@ public static class CliCommandBuilder
                     arguments.Add("--disable-slash-commands");
                 }
                 break;
+            case CliKind.AntigravityClaude:
+                var userExtraArgs = ArgumentTokenizer.Parse(additionalArguments);
+                var hasCustomModel = userExtraArgs.Any(arg =>
+                    string.Equals(arg, "--model", StringComparison.OrdinalIgnoreCase) ||
+                    arg.StartsWith("--model=", StringComparison.OrdinalIgnoreCase));
+                if (!hasCustomModel)
+                {
+                    arguments.Add("--model");
+                    arguments.Add("Claude Sonnet 4.6 (Thinking)");
+                }
+                arguments.Add("--print");
+                if (tokenSaverMode)
+                {
+                    arguments.Add("--effort");
+                    arguments.Add("low");
+                    arguments.Add("--disable-slash-commands");
+                }
+                break;
             case CliKind.Codex:
                 arguments.Add("exec");
                 arguments.Add("--skip-git-repo-check");
