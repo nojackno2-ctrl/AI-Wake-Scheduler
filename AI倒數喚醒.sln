@@ -1,0 +1,31 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AiWakeScheduler.Core", "src\AiWakeScheduler.Core\AiWakeScheduler.Core.csproj", "{0A0F9A04-905D-4D15-B394-14EF8393C2DD}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AiWakeScheduler.WinForms", "src\AiWakeScheduler.WinForms\AiWakeScheduler.WinForms.csproj", "{00A9EA6B-4F81-4F1C-BBAE-C89F8560B36F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AiWakeScheduler.Tests", "tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj", "{14723CFB-5AE5-44BD-B926-701C730F9B25}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{0A0F9A04-905D-4D15-B394-14EF8393C2DD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0A0F9A04-905D-4D15-B394-14EF8393C2DD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0A0F9A04-905D-4D15-B394-14EF8393C2DD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0A0F9A04-905D-4D15-B394-14EF8393C2DD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{00A9EA6B-4F81-4F1C-BBAE-C89F8560B36F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00A9EA6B-4F81-4F1C-BBAE-C89F8560B36F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00A9EA6B-4F81-4F1C-BBAE-C89F8560B36F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00A9EA6B-4F81-4F1C-BBAE-C89F8560B36F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{14723CFB-5AE5-44BD-B926-701C730F9B25}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{14723CFB-5AE5-44BD-B926-701C730F9B25}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{14723CFB-5AE5-44BD-B926-701C730F9B25}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{14723CFB-5AE5-44BD-B926-701C730F9B25}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
+
