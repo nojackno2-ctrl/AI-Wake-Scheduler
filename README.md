@@ -1,48 +1,152 @@
-# AI 倒數喚醒
+# AI 倒數喚醒 (AI Wake Scheduler)
 
-一個以 C# / WinForms 製作的 Windows 排程工具。它會在指定時間向 Antigravity CLI、Codex CLI、Claude CLI 傳送一則簡短訊息（預設為「早安」），用途是啟動 AI 訂閱的使用倒數。
+[![.NET 8.0](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+[![UI](https://img.shields.io/badge/UI-WinForms%20(Native)-blue)](https://learn.microsoft.com/dotnet/desktop/winforms/)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20NuGet-success)](#)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](#)
 
-## 功能
+一個專為 AI 輔助開發者設計的 Windows 輕量排程工具。
 
-- 建立並保存多筆每日排程；時間設定只需選擇每天的幾點幾分。
-- 每筆排程可獨立選擇 Antigravity、Codex、Claude；三者到點時各自平行啟動，不會等待前一個 CLI 結束。
-- 主畫面即時顯示每天執行時分與距離下一次執行的倒數。
-- 可按「立即執行」手動觸發已保存排程。
-- 縮到系統匣後繼續執行；可選擇登入 Windows 後自動啟動。
-- 可自訂三個 CLI 的命令、完整路徑及額外參數。
-- 預設開啟節省 Token 模式：低推理、低詳細度、短回覆、禁止 Claude 工具、Codex 唯讀沙箱。
-- 「檢查三個 CLI」只執行 `--version`，不會送出 AI 訊息或消耗對話額度。
-- 每次執行保存 stdout、stderr、結束碼與錯誤日誌至 `%LOCALAPPDATA%\AI倒數喚醒\logs`。
+許多 AI 開發工具（如 Google Antigravity、Anthropic Claude Code、OpenAI Codex）採用**滾動時間窗口額度機制**（例如「5 小時重設窗口」，自發送第一次請求起算）。本工具可在每天指定的固定時間，自動向各大 AI CLI 發送極簡短語（預設為「早安」），自動觸發並啟動使用額度倒數，確保你在開始工作時，AI 的使用額度已經準備就緒。
 
-## Visual Studio 編譯
+---
 
-1. 使用 Visual Studio 2022 開啟 `AI倒數喚醒.sln`。
-2. 確認已安裝「.NET 桌面開發」工作負載及 .NET 8 SDK。
-3. 將 `AiWakeScheduler.WinForms` 設為啟始專案。
-4. 選擇 `Debug` 或 `Release` 後按 F5。
+## ✨ 核心特色
 
-命令列亦可執行：
+- ⏰ **極簡每日排程**：直接設定每天固定觸發時分（`HH:mm`），支援多組排程管理，主畫面即時顯示距離下一次執行的倒數計時。
+- 🚀 **三大多模型 CLI 平行喚醒**：同時支援 **Google Antigravity (`agy`)**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
+- 💡 **極致 Token 節省模式 (Token Saver)**：
+  - 自動套用最低推理與簡短模式（`--effort low`、`model_reasoning_effort=low`）。
+  - 禁用 Claude 所有 Tool 呼叫（`--tools ""`）。
+  - 啟用 Codex 唯讀沙箱（`--sandbox read-only`）。
+  - 隔離於空白專用工作區（`%LOCALAPPDATA%\AI倒數喚醒\workspace`），避免掃描本機龐大原始碼目錄。
+  - 自動附加限制指令（「只回覆上面這句，不要使用工具」），將 Token 消耗降至極限。
+- 🛡️ **安全無注入設計**：透過 .NET 原生 `ProcessStartInfo.ArgumentList` 結構化傳遞參數，杜絕 Shell 注入與跳脫字元問題。
+- 🔍 **無損安全檢查**：提供「檢查三個 CLI」功能，僅執行 `--version` 探針檢查，絕不送出 AI 訊息或消耗對話額度。
+- 🪟 **輕量背景常駐與開機自啟**：原生 Windows Forms 打造，關閉主視窗時自動縮至系統匣（System Tray）持續倒數；支援登入 Windows 自動啟動。
+- 📦 **零外部 NuGet 相依**：100% 依賴 .NET 8 原生基礎類別庫（BCL），無任何第三方套件負擔，編譯乾淨且維護容易。
+- 📜 **完整日誌追蹤**：完整留存每次執行的 stdout、stderr、結束代碼與錯誤記錄，排查問題一目了然。
 
+---
+
+## 🖥️ 支援的 AI CLI 工具
+
+| AI 工具 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
+| :--- | :--- | :--- | :--- |
+| **Google Antigravity** | `agy` | `agy --print --effort low --disable-slash-commands <提示>` | 非互動印出模式、低思考 effort、停用斜線指令 |
+| **OpenAI Codex** | `codex` | `codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -c model_verbosity="low" <提示>` | 非互動 exec、跳過 Git 檢查、唯讀沙箱、低推理與低詳細度 |
+| **Anthropic Claude** | `claude` | `claude --print --effort low --tools "" --no-session-persistence <提示>` | 非互動印出模式、低 effort、停用工具呼叫、不持久化對話 Session |
+
+> [!TIP]
+> 實際執行時，使用者訊息會以安全參數傳入，每個排程與每個 CLI 僅呼叫一次且失敗不自動重試，最大字數限制為 50 字元。
+
+---
+
+## 🚀 快速上手
+
+### 1. 下載與執行
+- 下載釋出的發行版本，或使用 Visual Studio / .NET CLI 自行編譯。
+- 執行 `AI倒數喚醒.exe`。
+
+### 2. 初次設定與 CLI 檢查
+1. 點擊主畫面右上角的 **「CLI 設定」** 按鈕。
+2. 點擊 **「檢查三個 CLI」** 按鈕，程式會自動執行 `--version` 檢查本機 CLI 是否已就緒。
+3. 若你的 CLI 安裝於特殊路徑（例如透過 npm、專屬安裝目錄等），可點擊 **「瀏覽」** 自訂 `.exe` 完整路徑。
+4. （可選）勾選 **「登入 Windows 後自動啟動」**，確保開機或重啟後仍能在背景常駐。
+5. 點擊 **「儲存設定」**。
+
+### 3. 建立每日排程
+1. 在右側「排程編輯」區：
+   - **排程名稱**：輸入易辨識的名稱（例如「早晨 AI 喚醒」）。
+   - **每天時間**：設定每天觸發的時與分（例如 `08:00`）。
+   - **喚醒 CLI**：勾選欲啟動的 CLI（Antigravity / Codex / Claude）。
+   - **喚醒訊息**：輸入觸發短語（預設為「早安」）。
+   - **節省 Token 模式**：建議保持勾選（預設已開啟）。
+2. 點擊 **「新增排程」** 或 **「儲存變更」**。
+
+### 4. 測試與常駐
+- 可選取排程並點擊 **「立即執行」** 進行手動測試（不會跳過或影響原定的下一次每日排程時間）。
+- 點擊視窗右上角關閉按鈕，程式會自動最小化並縮至 Windows 右下角系統匣持續監控。
+- 雙擊系統匣圖示或右鍵選擇「開啟主視窗」即可還原主畫面。
+
+---
+
+## 🛠️ 開發與建置
+
+### 系統需求
+- **作業系統**：Windows 10 / 11
+- **開發工具**：Visual Studio 2022（需勾選「.NET 桌面開發」工作負載）或 [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+
+### 專案結構
+```
+AI倒數喚醒/
+├── AI倒數喚醒.sln                # Visual Studio 方案檔
+├── Directory.Build.props         # 專案共用建置設定
+├── src/
+│   ├── AiWakeScheduler.Core/     # 核心邏輯庫（排程引擎、CLI 執行器、參數建構器、JSON 儲存）
+│   └── AiWakeScheduler.WinForms/ # Windows Forms 繁體中文桌面使用者介面
+└── tests/
+    └── AiWakeScheduler.Tests/    # 原生輕量化單元與整合測試（0 NuGet 相依）
+```
+
+### 命令列建置與測試
+
+**建置專案 (Release 模式)：**
 ```powershell
 dotnet build '.\AI倒數喚醒.sln' --configuration Release
+```
+
+**執行測試套件：**
+```powershell
 dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release
 ```
 
-專案不使用第三方 NuGet 套件。
+建置完成的可執行檔將位於：
+`src/AiWakeScheduler.WinForms/bin/Release/net8.0-windows/AI倒數喚醒.exe`
 
-## CLI 呼叫方式
+---
 
-- Antigravity：`agy --print --effort low --disable-slash-commands <短提示>`
-- Codex：`codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort=\"low\" -c model_verbosity=\"low\" <短提示>`
-- Claude：`claude --print --effort low --tools "" --no-session-persistence <短提示>`
+## 📁 資料與日誌路徑
 
-實際執行時，訊息會透過 `ProcessStartInfo.ArgumentList` 當作單一參數傳入，不會直接拼接成 Shell 指令。
+本程式的所有使用者設定、排程資料與執行日誌均存放於本機使用者目錄：
 
-節省 Token 模式會在使用者輸入的短詞後附加「只回覆上面這句，不要使用工具」。每個排程、每個 CLI 只呼叫一次，失敗不自動重試；訊息最多 50 個字元。新排程預設在 `%LOCALAPPDATA%\AI倒數喚醒\workspace` 空白目錄執行，避免掃描大型專案內容。
+- **根目錄**：`%LOCALAPPDATA%\AI倒數喚醒\`
+- **排程設定**：`%LOCALAPPDATA%\AI倒數喚醒\schedules.json`
+- **CLI 設定**：`%LOCALAPPDATA%\AI倒數喚醒\settings.json`
+- **執行日誌**：`%LOCALAPPDATA%\AI倒數喚醒\logs\`（包含每次執行的標準輸出與錯誤訊息）
+- **隔離工作區**：`%LOCALAPPDATA%\AI倒數喚醒\workspace\`（喚醒執行時的專用空白目錄）
 
-## 使用提醒
+---
 
-- 排程器位於此程式內，因此程式必須保持執行；按右上角關閉時預設只會縮到系統匣。
-- 若電腦重新啟動，請在「CLI 設定」開啟登入 Windows 自動啟動。程式重新啟動後會立刻處理仍為等待狀態且已到期的排程。
-- 第一次使用前先按「CLI 設定」→「檢查三個 CLI」。若 PATH 指向無法執行的 WindowsApps 別名，請按「瀏覽」指定實際可執行的 `.exe`。
-- 排程真的到點時會產生 AI 請求。測試排程時可只勾選一個 CLI，確認後再啟用其餘項目。
+## ❓ 常見問題 (FAQ)
+
+<details>
+<summary><b>Q1: 為什麼關閉視窗後，程式仍然在背景執行？</b></summary>
+
+> 本程式為排程常駐工具，點擊右上角關閉視窗時會自動縮小至「Windows 系統匣」。若要完全關閉程式，請在系統匣圖示點擊滑鼠右鍵並選擇「結束」。
+</details>
+
+<details>
+<summary><b>Q2: Codex CLI 檢查時出現「Access is denied」或無法執行？</b></summary>
+
+> 在 Windows 上，透過 Microsoft Store 安裝的應用程式別名（位於 `WindowsApps`）有時會因權限限制導致外部程式無法直接調用。請前往「CLI 設定」，點擊「瀏覽」並直接指定實際的 `codex.exe` 實體執行路徑即可解決。
+</details>
+
+<details>
+<summary><b>Q3: 如果電腦在排程時間處於睡眠或關機狀態，開機後會發生什麼事？</b></summary>
+
+> 當程式啟動或重新登入時，排程引擎會自動偵測已到期但尚未執行的排程，並在背景補行處理，隨後自動計算並推進至下一個未來的每日觸發時間。
+</details>
+
+<details>
+<summary><b>Q4: 每天自動喚醒會不會消耗很多 Token 或 API 費用？</b></summary>
+
+> 不會。本工具預設開啟「節省 Token 模式」，指令均已強制限制為最低推理級別（Low Effort）、關閉 Tool 調用、使用唯讀沙箱並限制最大 50 字元短語，單次喚醒消耗的 Token 量極少。
+</details>
+
+---
+
+## 📄 授權條款
+
+本專案採用 [MIT License](LICENSE) 授權。
