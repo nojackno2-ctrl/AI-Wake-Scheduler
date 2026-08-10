@@ -66,13 +66,16 @@ public static class ExecutableLocator
                 return File.Exists(value) ? Path.GetFullPath(value) : null;
             }
 
-            if (!value.Contains(Path.DirectorySeparatorChar) && !value.Contains(Path.AltDirectorySeparatorChar))
+            if (!string.IsNullOrWhiteSpace(workingDirectory))
             {
-                return null;
+                var combined = Path.Combine(workingDirectory, value);
+                if (File.Exists(combined))
+                {
+                    return Path.GetFullPath(combined);
+                }
             }
 
-            var combined = Path.Combine(workingDirectory, value);
-            return File.Exists(combined) ? Path.GetFullPath(combined) : null;
+            return null;
         }
         catch (Exception)
         {
@@ -137,25 +140,152 @@ public static class ExecutableLocator
     private static IEnumerable<string> KnownCandidates(CliKind kind)
     {
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
 
-        return kind switch
+        switch (kind)
         {
-            CliKind.Antigravity =>
-            [
-                Path.Combine(localAppData, "agy", "bin", "agy.exe")
-            ],
-            CliKind.Codex =>
-            [
-                Path.Combine(localAppData, "OpenAI", "Codex", "bin", "codex.exe"),
-                Path.Combine(localAppData, "Programs", "Codex", "codex.exe")
-            ],
-            CliKind.Claude =>
-            [
-                Path.Combine(profile, ".local", "bin", "claude.exe")
-            ],
-            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
-        };
+            case CliKind.Antigravity:
+            {
+                yield return Path.Combine(localAppData, "agy", "bin", "agy.exe");
+
+                var agyBin = Path.Combine(localAppData, "agy", "bin");
+                foreach (var exe in FindInSubdirectories(agyBin, "agy.exe", maxDepth: 2))
+                {
+                    yield return exe;
+                }
+
+                yield return Path.Combine(localAppData, "Programs", "agy", "bin", "agy.exe");
+                yield return Path.Combine(localAppData, "Programs", "agy", "agy.exe");
+                yield return Path.Combine(localAppData, "Programs", "Antigravity", "bin", "agy.exe");
+                yield return Path.Combine(localAppData, "Programs", "Antigravity", "agy.exe");
+                yield return Path.Combine(profile, ".local", "bin", "agy.exe");
+                yield return Path.Combine(profile, ".antigravity", "bin", "agy.exe");
+                yield return Path.Combine(profile, ".gemini", "antigravity", "bin", "agy.exe");
+                yield return Path.Combine(appData, "npm", "agy.cmd");
+                yield return Path.Combine(appData, "npm", "agy.exe");
+                break;
+            }
+            case CliKind.Codex:
+            {
+                // 1. OpenAI Codex bin 子目錄（按最後修改時間遞減，支援 cfac6bda2d141e07 等雜湊目錄）
+                var openAiCodexBin = Path.Combine(localAppData, "OpenAI", "Codex", "bin");
+                foreach (var exe in FindInSubdirectories(openAiCodexBin, "codex.exe", maxDepth: 2))
+                {
+                    yield return exe;
+                }
+
+                // 2. OpenAI Codex 根目錄與直屬 bin
+                yield return Path.Combine(localAppData, "OpenAI", "Codex", "bin", "codex.exe");
+                yield return Path.Combine(localAppData, "OpenAI", "Codex", "codex.exe");
+
+                // 3. Programs 目錄中的 OpenAI Codex
+                var programsOpenAiCodex = Path.Combine(localAppData, "Programs", "OpenAI", "Codex");
+                foreach (var exe in FindInSubdirectories(programsOpenAiCodex, "codex.exe", maxDepth: 2))
+                {
+                    yield return exe;
+                }
+                yield return Path.Combine(localAppData, "Programs", "OpenAI", "Codex", "bin", "codex.exe");
+                yield return Path.Combine(localAppData, "Programs", "OpenAI", "Codex", "codex.exe");
+
+                // 4. Programs / Codex 歷史路徑
+                var programsCodex = Path.Combine(localAppData, "Programs", "Codex");
+                foreach (var exe in FindInSubdirectories(programsCodex, "codex.exe", maxDepth: 2))
+                {
+                    yield return exe;
+                }
+                yield return Path.Combine(localAppData, "Programs", "Codex", "codex.exe");
+                yield return Path.Combine(localAppData, "Programs", "Codex", "bin", "codex.exe");
+
+                // 5. 使用者家目錄與 Local bin
+                yield return Path.Combine(profile, ".local", "bin", "codex.exe");
+                yield return Path.Combine(profile, ".local", "bin", "codex.cmd");
+                yield return Path.Combine(profile, ".codex", "bin", "codex.exe");
+
+                // 6. npm 全域安裝
+                yield return Path.Combine(appData, "npm", "codex.cmd");
+                yield return Path.Combine(appData, "npm", "codex.exe");
+
+                // 7. Program Files 安裝路徑
+                if (!string.IsNullOrWhiteSpace(programFiles))
+                {
+                    var pfCodex = Path.Combine(programFiles, "OpenAI", "Codex");
+                    foreach (var exe in FindInSubdirectories(pfCodex, "codex.exe", maxDepth: 2))
+                    {
+                        yield return exe;
+                    }
+                    yield return Path.Combine(programFiles, "OpenAI", "Codex", "codex.exe");
+                    yield return Path.Combine(programFiles, "OpenAI", "Codex", "bin", "codex.exe");
+                }
+                if (!string.IsNullOrWhiteSpace(programFilesX86))
+                {
+                    var pfx86Codex = Path.Combine(programFilesX86, "OpenAI", "Codex");
+                    foreach (var exe in FindInSubdirectories(pfx86Codex, "codex.exe", maxDepth: 2))
+                    {
+                        yield return exe;
+                    }
+                    yield return Path.Combine(programFilesX86, "OpenAI", "Codex", "codex.exe");
+                    yield return Path.Combine(programFilesX86, "OpenAI", "Codex", "bin", "codex.exe");
+                }
+                break;
+            }
+            case CliKind.Claude:
+            {
+                yield return Path.Combine(profile, ".local", "bin", "claude.exe");
+                yield return Path.Combine(profile, ".local", "bin", "claude.cmd");
+                yield return Path.Combine(localAppData, "Programs", "Claude", "claude.exe");
+                yield return Path.Combine(localAppData, "Claude", "bin", "claude.exe");
+
+                var claudePrograms = Path.Combine(localAppData, "Programs", "Claude");
+                foreach (var exe in FindInSubdirectories(claudePrograms, "claude.exe", maxDepth: 2))
+                {
+                    yield return exe;
+                }
+
+                yield return Path.Combine(appData, "npm", "claude.cmd");
+                yield return Path.Combine(appData, "npm", "claude.exe");
+                break;
+            }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, null);
+        }
+    }
+
+    private static IEnumerable<string> FindInSubdirectories(string baseDirectory, string fileName, int maxDepth = 2)
+    {
+        if (string.IsNullOrWhiteSpace(baseDirectory) || !Directory.Exists(baseDirectory))
+        {
+            yield break;
+        }
+
+        List<string> matches;
+        try
+        {
+            var searchOption = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                MaxRecursionDepth = maxDepth,
+                IgnoreInaccessible = true,
+                MatchCasing = MatchCasing.CaseInsensitive,
+                ReturnSpecialDirectories = false
+            };
+            matches = Directory.EnumerateFiles(baseDirectory, fileName, searchOption)
+                .Select(path => new FileInfo(path))
+                .OrderByDescending(fi => fi.LastWriteTimeUtc)
+                .Select(fi => fi.FullName)
+                .ToList();
+        }
+        catch
+        {
+            yield break;
+        }
+
+        foreach (var match in matches)
+        {
+            yield return match;
+        }
     }
 }
 

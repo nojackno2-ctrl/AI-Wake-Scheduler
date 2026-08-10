@@ -5,9 +5,23 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>AI倒數喚醒</AssemblyName>
     <RootNamespace>AiWakeScheduler.WinForms</RootNamespace>
+    <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>AI 倒數喚醒</Product>
+    <Company>AI Wake Scheduler</Company>
+    <Authors>AI Wake Scheduler</Authors>
+    <Description>每日定時平行喚醒 Antigravity、Claude 與 OpenAI Codex CLI 之 Windows 桌面工具</Description>
+    <Copyright>Copyright © 2026</Copyright>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\AiWakeScheduler.Core\AiWakeScheduler.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\..\assets\app.ico" Link="app.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 </Project>
 

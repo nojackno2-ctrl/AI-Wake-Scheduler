@@ -62,3 +62,32 @@
 - Debug 與 Release 方案均重新建置成功（0 警告、0 錯誤）。
 - 2026-08-10 分支整合：`optimize/robustness-and-daily-schedule` 已整合併入 `main`，7/7 測試驗證通過，並已清理刪除已整併的遠端與本機功能分支。
 - 2026-08-10 檔案更新：已更新對外公開的繁體中文 `README.md`，包含專案簡介、核心特色徽章、三大多模型 CLI 平行喚醒與 Token 節省參數說明、快速上手與排程設定教學、Visual Studio 與 CLI 建置指引、資料路徑及常見問答（FAQ）。
+- 2026-08-10 修復 CLI 搜尋與探測問題：
+  1. 問題診斷：設定視窗點擊「檢查三個 CLI」時回報「✗ 找不到 Codex CLI。」。原因為 Windows 上的 OpenAI Codex Desktop / CLI 會將 `codex.exe` 安裝於 `%LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe` 等雜湊版本子目錄，而舊版 `ExecutableLocator` 僅檢查固定路徑且本機 PATH 未註冊 codex。
+  2. 解決方案：
+     - `ExecutableLocator.cs`：實作 `FindInSubdirectories`，自動遞迴掃描 `%LOCALAPPDATA%\OpenAI\Codex\bin`、`%LOCALAPPDATA%\Programs\OpenAI\Codex` 及常見安裝位置下的 `codex.exe`（按最後寫入時間排序取最新），並擴充 Antigravity、Claude 與 Codex 支援多種標準目錄與全域 npm / local bin。
+     - `ResolveExplicitPath`：強化支援相對路徑與工作目錄內檔案直接解析。
+     - `CliRunner.cs`：ProbeAsync 輸出讀取支援 stdout 為空時從 stderr 擷取版本資訊。
+  3. 驗證結果：
+     - Release 方案建置成功（0 警告、0 錯誤）。
+     - 新增 `ExecutableLocatorResolution` 測試（包含實測本機真實 `agy`、`codex`、`claude` 之解析與 `--version` 探測，Codex 實測輸出 `codex-cli 0.147.0-alpha.6.5`，Claude `2.1.220 (Claude Code)`，Antigravity `1.1.11`，全數 Probe 成功）。
+     - 單元測試 8/8 全數通過。
+- 2026-08-10 完成 Windows 繁體中文安裝版（Setup.exe）製作與自動化打包：
+  1. 專案資產與元資料：
+     - 產生具備 16x16, 32x32, 48x48, 64x64, 128x128, 256x256 多解析度之應用程式圖示 `assets/app.ico`。
+     - `AiWakeScheduler.WinForms.csproj` 加入 `<ApplicationIcon>`, `<Product>`, `<Version>1.0.0</Version>`, `<AssemblyTitle>`, `<Company>`, `<Authors>`, `<Description>` 等元資料。
+     - `MainForm.cs` 加入 `GetApplicationIcon()`，主視窗與系統匣統一顯示自訂圖示。
+     - `StartupManager.cs` 修復單一檔案/Self-Contained 發布下 `Assembly.Location` 的 IL3000 警告。
+  2. Inno Setup 6 繁中安裝程式（`installer/`）：
+     - `installer/AI倒數喚醒.iss`：支援自訂目錄、`PrivilegesRequiredOverridesAllowed=dialog`（允許使用者選擇為本機或所有使用者安裝）、桌面與開始功能表捷徑、升級前自動關閉舊版進程、安裝後立即啟動、以及乾淨反安裝。
+     - `installer/languages/ChineseTraditional.isl`：完整繁體中文語系檔。
+  3. 一鍵自動建置腳本（`build-installer.ps1`）：
+     - 自動定位 Inno Setup `ISCC.exe` 與 .NET SDK。
+     - 自動執行單元測試 8/8 通過。
+     - 執行 `dotnet publish` 發布 Self-Contained Win-x64（獨立內含 .NET 8 執行環境，使用者電腦不需額外安裝 .NET Runtime）。
+     - 調用 `ISCC.exe` 使用 LZMA2/Ultra64 最高壓縮比產出 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（約 16.77 MB）。
+  4. 驗證結果：
+     - 單元測試 8/8 通過。
+     - `build-installer.ps1` 一鍵建置成功，產出 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（SHA256: `9CF0A101C6057A0CE98DEBE671A6B3D6B5EE3BECA5E07137CEB3753AE77539EA`）。
+     - 靜默安裝與反安裝在隔離目錄實測通過（安裝驗證 `AI倒數喚醒.exe` 存在、反安裝後 0 檔案殘留）。
+     - `.gitignore` 與 `README.md` 已同步更新。

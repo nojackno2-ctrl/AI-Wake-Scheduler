@@ -45,9 +45,16 @@
 
 ## 🚀 快速上手
 
-### 1. 下載與執行
-- 下載釋出的發行版本，或使用 Visual Studio / .NET CLI 自行編譯。
-- 執行 `AI倒數喚醒.exe`。
+### 1. 下載與安裝
+
+#### 方法 A：使用 Windows 安裝版（推薦）
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.0.0_x64.exe`**。
+2. 執行安裝程式，依照精靈指示選擇安裝位置與是否建立桌面捷徑。
+3. 安裝完成後可勾選立即啟動，或於開始功能表 / 桌面捷徑啟動。
+4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
+
+#### 方法 B：綠色免安裝版 / 自行編譯
+- 下載免安裝可執行檔或從原始碼建置，直接執行 `AI倒數喚醒.exe`。
 
 ### 2. 初次設定與 CLI 檢查
 1. 點擊主畫面右上角的 **「CLI 設定」** 按鈕。
@@ -77,12 +84,16 @@
 ### 系統需求
 - **作業系統**：Windows 10 / 11
 - **開發工具**：Visual Studio 2022（需勾選「.NET 桌面開發」工作負載）或 [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- **安裝包編譯工具（選用）**：[Inno Setup 6](https://jrsoftware.org/isinfo.php)（如需產出 Setup.exe）
 
 ### 專案結構
 ```
 AI倒數喚醒/
 ├── AI倒數喚醒.sln                # Visual Studio 方案檔
 ├── Directory.Build.props         # 專案共用建置設定
+├── build-installer.ps1           # 一鍵自動測試、發布與編譯安裝包腳本
+├── assets/                       # 應用程式高解析度圖示 (app.ico)
+├── installer/                    # Inno Setup 6 繁中安裝腳本與語系檔
 ├── src/
 │   ├── AiWakeScheduler.Core/     # 核心邏輯庫（排程引擎、CLI 執行器、參數建構器、JSON 儲存）
 │   └── AiWakeScheduler.WinForms/ # Windows Forms 繁體中文桌面使用者介面
@@ -102,8 +113,11 @@ dotnet build '.\AI倒數喚醒.sln' --configuration Release
 dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release
 ```
 
-建置完成的可執行檔將位於：
-`src/AiWakeScheduler.WinForms/bin/Release/net8.0-windows/AI倒數喚醒.exe`
+**一鍵打包 Windows 安裝版 (Setup.exe)：**
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
+```
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`。
 
 ---
 
