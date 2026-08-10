@@ -48,7 +48,7 @@ internal static class StartupManager
 
         if (string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.OrdinalIgnoreCase))
         {
-            var assemblyPath = Assembly.GetExecutingAssembly().Location;
+            var assemblyPath = Path.Combine(AppContext.BaseDirectory, "AI倒數喚醒.dll");
             return $"\"{processPath}\" \"{assemblyPath}\" --minimized";
         }
         return $"\"{processPath}\" --minimized";

@@ -91,7 +91,10 @@ public sealed class CliRunner(AppDataPaths paths)
                 workingDirectory,
                 TimeSpan.FromSeconds(15),
                 cancellationToken).ConfigureAwait(false);
-            var firstLine = execution.StandardOutput
+            var output = string.IsNullOrWhiteSpace(execution.StandardOutput)
+                ? execution.StandardError
+                : execution.StandardOutput;
+            var firstLine = output
                 .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
                 .FirstOrDefault();
 

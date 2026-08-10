@@ -53,9 +53,10 @@ internal sealed class MainForm : Form
         MinimumSize = new Size(980, 650);
         Size = new Size(1180, 760);
         Font = new Font("Microsoft JhengHei UI", 9F);
-        Icon = SystemIcons.Application;
+        var appIcon = GetApplicationIcon();
+        Icon = appIcon;
 
-        _notifyIcon = BuildNotifyIcon();
+        _notifyIcon = BuildNotifyIcon(appIcon);
         BuildLayout();
         ResetEditor();
 
@@ -536,7 +537,7 @@ internal sealed class MainForm : Form
         _notifyIcon.Visible = false;
     }
 
-    private NotifyIcon BuildNotifyIcon()
+    private NotifyIcon BuildNotifyIcon(Icon appIcon)
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("開啟主視窗", null, (_, _) => ShowFromTray());
@@ -550,12 +551,40 @@ internal sealed class MainForm : Form
         var icon = new NotifyIcon
         {
             Text = "AI 倒數喚醒",
-            Icon = SystemIcons.Application,
+            Icon = appIcon,
             ContextMenuStrip = menu,
             Visible = true
         };
         icon.DoubleClick += (_, _) => ShowFromTray();
         return icon;
+    }
+
+    private static Icon GetApplicationIcon()
+    {
+        try
+        {
+            var appPath = Environment.ProcessPath;
+            if (!string.IsNullOrWhiteSpace(appPath) && File.Exists(appPath))
+            {
+                var extracted = Icon.ExtractAssociatedIcon(appPath);
+                if (extracted is not null)
+                {
+                    return extracted;
+                }
+            }
+
+            var localIconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
+            if (File.Exists(localIconPath))
+            {
+                return new Icon(localIconPath);
+            }
+        }
+        catch
+        {
+            // 若提取圖示失敗，回退至系統預設
+        }
+
+        return SystemIcons.Application;
     }
 
     private void ShowFromTray()

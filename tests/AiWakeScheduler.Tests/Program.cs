@@ -30,7 +30,8 @@ var tests = new (string Name, Func<Task> Run)[]
     ("JsonFileStore", TestJsonFileStoreAsync),
     ("CliRunnerSafeArguments", TestCliRunnerAsync),
     ("ScheduleManagerDueJob", TestScheduleManagerAsync),
-    ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync)
+    ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
+    ("ExecutableLocatorResolution", TestExecutableLocatorAsync)
 };
 
 var failures = new List<string>();
@@ -472,6 +473,52 @@ static async Task TestScheduleManagerBoundariesAndStateAsync()
     finally
     {
         Directory.Delete(directory, true);
+    }
+}
+
+static async Task TestExecutableLocatorAsync()
+{
+    var workingDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+    // 1. 測試解析本機已安裝的 CLI（三者均應成功解析）
+    var agy = ExecutableLocator.Resolve(CliKind.Antigravity, "agy", workingDir);
+    Assert(agy is not null && File.Exists(agy), $"Antigravity CLI 應成功解析到可執行檔：{agy}");
+
+    var codex = ExecutableLocator.Resolve(CliKind.Codex, "codex", workingDir);
+    Assert(codex is not null && File.Exists(codex), $"Codex CLI 應成功解析到子目錄或已知路徑中的可執行檔：{codex}");
+
+    var claude = ExecutableLocator.Resolve(CliKind.Claude, "claude", workingDir);
+    Assert(claude is not null && File.Exists(claude), $"Claude CLI 應成功解析到可執行檔：{claude}");
+
+    // 2. 測試明確絕對路徑
+    var explicitFound = ExecutableLocator.Resolve(CliKind.Codex, codex, workingDir);
+    Assert(explicitFound == codex, "傳入明確存在的絕對路徑應直接解析。");
+
+    var tempDir = CreateTemporaryDirectory();
+    try
+    {
+        // 3. 測試相對路徑
+        var dummyExe = Path.Combine(tempDir, "custom_app.exe");
+        await File.WriteAllTextAsync(dummyExe, "dummy");
+        var relative = ExecutableLocator.Resolve(CliKind.Codex, "custom_app.exe", tempDir);
+        Assert(relative is not null && Path.GetFullPath(relative) == dummyExe, "傳入工作目錄中的相對路徑應成功解析。");
+
+        // 4. 測試真實 CLI ProbeAsync（三者均應回傳 Succeeded == true）
+        var paths = new AppDataPaths(Path.Combine(tempDir, "data"));
+        var runner = new CliRunner(paths);
+
+        var probeAgy = await runner.ProbeAsync(CliKind.Antigravity, new CliProfile { Executable = "agy" }, workingDir);
+        Assert(probeAgy.Succeeded, $"Antigravity Probe 應成功：{probeAgy.Summary}");
+
+        var probeCodex = await runner.ProbeAsync(CliKind.Codex, new CliProfile { Executable = "codex" }, workingDir);
+        Assert(probeCodex.Succeeded, $"Codex Probe 應成功：{probeCodex.Summary}");
+
+        var probeClaude = await runner.ProbeAsync(CliKind.Claude, new CliProfile { Executable = "claude" }, workingDir);
+        Assert(probeClaude.Succeeded, $"Claude Probe 應成功：{probeClaude.Summary}");
+    }
+    finally
+    {
+        Directory.Delete(tempDir, true);
     }
 }
 
