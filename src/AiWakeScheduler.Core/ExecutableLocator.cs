@@ -50,7 +50,7 @@ public static class ExecutableLocator
 
         return FindOnPath(kind switch
         {
-            CliKind.Antigravity => "agy",
+            CliKind.Antigravity or CliKind.AntigravityClaude => "agy",
             CliKind.Codex => "codex",
             CliKind.Claude => "claude",
             _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
@@ -148,6 +148,7 @@ public static class ExecutableLocator
         switch (kind)
         {
             case CliKind.Antigravity:
+            case CliKind.AntigravityClaude:
             {
                 yield return Path.Combine(localAppData, "agy", "bin", "agy.exe");
 

@@ -89,3 +89,19 @@
      - `build-installer.ps1` 一鍵建置成功，產出 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（SHA256: `9CF0A101C6057A0CE98DEBE671A6B3D6B5EE3BECA5E07137CEB3753AE77539EA`）。
      - 靜默安裝與反安裝在隔離目錄實測通過（安裝驗證 `AI倒數喚醒.exe` 存在、反安裝後 0 檔案殘留）。
      - `.gitignore` 與 `README.md` 已同步更新。
+- 2026-08-11 擴充支援 Antigravity (Claude / GPT) 額度計數器獨立喚醒：
+  1. 問題診斷：
+     - Google Antigravity 的配額分為兩組獨立計數器：Gemini Models（Gemini 3.6 Flash / Pro 等）與 Claude and GPT models（Claude Sonnet 4.6 Thinking / Claude Opus 4.6 / GPT-OSS 120B 等）。
+     - 過去呼叫 `agy --print` 只會喚醒 AGY 預設的 Gemini 模型，使得「Gemini Models」的 5 小時倒數啟動，但「Claude and GPT models」的 5 小時額度維持未觸發。
+  2. 解決方案：
+     - `Models.cs`：`CliKind` 新增 `AntigravityClaude`。更新 `CliDisplayNames`（`Antigravity` -> `Antigravity (Gemini)`、`AntigravityClaude` -> `Antigravity (Claude / GPT)`），更新預設 Profile 與排程目標預設值，並在 `EnsureDefaults()` 具備向後相容補齊機制。
+     - `ExecutableLocator.cs`：`AntigravityClaude` 支援定位本機 `agy.exe`。
+     - `CliCommandBuilder.cs`：`AntigravityClaude` 預設指定 `--model "Claude Sonnet 4.6 (Thinking)"`，並支援在額外參數中自訂 `--model` 覆寫。
+     - `MainForm.cs`：主介面「傳送至」支援 4 個 CheckBox，排程列表 CLI 簡稱與資料繫結全面支援 4 個目標。
+     - `SettingsForm.cs`：設定表格自適應調整為 4 組 CLI，標籤欄拓寬至 175px，按鈕更新為「檢查全部 CLI（只執行 --version）」。
+     - `Program.cs` (Tests)：新增 `AntigravityClaude` 參數建構測試、4 CLI 平行執行測試與探測測試。
+     - `README.md`：同步更新 4 項目標說明與雙額度池機制介紹。
+  3. 驗證結果：
+     - Release 方案建置成功（0 警告、0 錯誤）。
+     - 單元測試 8/8 全數通過（含 4 個假 CLI 平行耗時 1205 ms）。
+     - `build-installer.ps1` 自動打包成功，產出最新 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（16.77 MB）。

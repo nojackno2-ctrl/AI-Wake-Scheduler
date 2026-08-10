@@ -15,7 +15,7 @@
 ## ✨ 核心特色
 
 - ⏰ **極簡每日排程**：直接設定每天固定觸發時分（`HH:mm`），支援多組排程管理，主畫面即時顯示距離下一次執行的倒數計時。
-- 🚀 **三大多模型 CLI 平行喚醒**：同時支援 **Google Antigravity (`agy`)**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
+- 🚀 **四大多模型目標平行喚醒**：同時支援 **Google Antigravity (`agy`) Gemini 額度池**、**Antigravity Claude / GPT 額度池**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
 - 💡 **極致 Token 節省模式 (Token Saver)**：
   - 自動套用最低推理與簡短模式（`--effort low`、`model_reasoning_effort=low`）。
   - 禁用 Claude 所有 Tool 呼叫（`--tools ""`）。
@@ -23,22 +23,24 @@
   - 隔離於空白專用工作區（`%LOCALAPPDATA%\AI倒數喚醒\workspace`），避免掃描本機龐大原始碼目錄。
   - 自動附加限制指令（「只回覆上面這句，不要使用工具」），將 Token 消耗降至極限。
 - 🛡️ **安全無注入設計**：透過 .NET 原生 `ProcessStartInfo.ArgumentList` 結構化傳遞參數，杜絕 Shell 注入與跳脫字元問題。
-- 🔍 **無損安全檢查**：提供「檢查三個 CLI」功能，僅執行 `--version` 探針檢查，絕不送出 AI 訊息或消耗對話額度。
+- 🔍 **無損安全檢查**：提供「檢查全部 CLI」功能，僅執行 `--version` 探針檢查，絕不送出 AI 訊息或消耗對話額度。
 - 🪟 **輕量背景常駐與開機自啟**：原生 Windows Forms 打造，關閉主視窗時自動縮至系統匣（System Tray）持續倒數；支援登入 Windows 自動啟動。
 - 📦 **零外部 NuGet 相依**：100% 依賴 .NET 8 原生基礎類別庫（BCL），無任何第三方套件負擔，編譯乾淨且維護容易。
 - 📜 **完整日誌追蹤**：完整留存每次執行的 stdout、stderr、結束代碼與錯誤記錄，排查問題一目了然。
 
 ---
 
-## 🖥️ 支援的 AI CLI 工具
+## 🖥️ 支援的 AI CLI 工具與額度池
 
-| AI 工具 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
+| AI 工具 / 額度池 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
 | :--- | :--- | :--- | :--- |
-| **Google Antigravity** | `agy` | `agy --print --effort low --disable-slash-commands <提示>` | 非互動印出模式、低思考 effort、停用斜線指令 |
+| **Antigravity (Gemini)** | `agy` | `agy --print --effort low --disable-slash-commands <提示>` | 喚醒 AGY 的 Gemini 模型 5 小時額度池、非互動印出模式、低思考 effort、停用斜線指令 |
+| **Antigravity (Claude / GPT)** | `agy` | `agy --model "Claude Sonnet 4.6 (Thinking)" --print --effort low --disable-slash-commands <提示>` | 喚醒 AGY 的 Claude & GPT 模型 5 小時額度池、低思考 effort、停用斜線指令（亦可於額外參數自訂 `--model`） |
 | **OpenAI Codex** | `codex` | `codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -c model_verbosity="low" <提示>` | 非互動 exec、跳過 Git 檢查、唯讀沙箱、低推理與低詳細度 |
 | **Anthropic Claude** | `claude` | `claude --print --effort low --tools "" --no-session-persistence <提示>` | 非互動印出模式、低 effort、停用工具呼叫、不持久化對話 Session |
 
 > [!TIP]
+> Google Antigravity 內部將額度切分為 **Gemini Models** 與 **Claude and GPT models** 兩組獨立計數器。勾選本工具中的這兩項目標，可同時喚醒兩邊的 5 小時滾動重設窗口！
 > 實際執行時，使用者訊息會以安全參數傳入，每個排程與每個 CLI 僅呼叫一次且失敗不自動重試，最大字數限制為 50 字元。
 
 ---
@@ -57,20 +59,20 @@
 - 下載免安裝可執行檔或從原始碼建置，直接執行 `AI倒數喚醒.exe`。
 
 ### 2. 初次設定與 CLI 檢查
-1. 點擊主畫面右上角的 **「CLI 設定」** 按鈕。
-2. 點擊 **「檢查三個 CLI」** 按鈕，程式會自動執行 `--version` 檢查本機 CLI 是否已就緒。
-3. 若你的 CLI 安裝於特殊路徑（例如透過 npm、專屬安裝目錄等），可點擊 **「瀏覽」** 自訂 `.exe` 完整路徑。
+1. 點擊主畫面右下角的 **「CLI 設定…」** 按鈕。
+2. 點擊 **「檢查全部 CLI」** 按鈕，程式會自動執行 `--version` 檢查本機 CLI 是否已就緒。
+3. 若你的 CLI 安裝於特殊路徑（例如透過 npm、專屬安裝目錄等），可點擊 **「瀏覽…」** 自訂 `.exe` 完整路徑。
 4. （可選）勾選 **「登入 Windows 後自動啟動」**，確保開機或重啟後仍能在背景常駐。
-5. 點擊 **「儲存設定」**。
+5. 點擊 **「儲存」**。
 
 ### 3. 建立每日排程
-1. 在右側「排程編輯」區：
-   - **排程名稱**：輸入易辨識的名稱（例如「早晨 AI 喚醒」）。
+1. 在右側「排程內容」區：
+   - **名稱**：輸入易辨識的名稱（例如「早晨 AI 喚醒」）。
    - **每天時間**：設定每天觸發的時與分（例如 `08:00`）。
-   - **喚醒 CLI**：勾選欲啟動的 CLI（Antigravity / Codex / Claude）。
-   - **喚醒訊息**：輸入觸發短語（預設為「早安」）。
-   - **節省 Token 模式**：建議保持勾選（預設已開啟）。
-2. 點擊 **「新增排程」** 或 **「儲存變更」**。
+   - **工作目錄**：選擇或保持預設隔離目錄。
+   - **傳送至**：勾選欲啟動的 CLI 目標（Antigravity (Gemini) / Antigravity (Claude / GPT) / Codex CLI / Claude CLI）。
+   - **訊息**：輸入觸發短語（預設為「早安」）。
+2. 點擊 **「儲存排程」**。
 
 ### 4. 測試與常駐
 - 可選取排程並點擊 **「立即執行」** 進行手動測試（不會跳過或影響原定的下一次每日排程時間）。

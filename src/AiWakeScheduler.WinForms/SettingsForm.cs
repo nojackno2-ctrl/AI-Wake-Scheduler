@@ -30,8 +30,8 @@ internal sealed class SettingsForm : Form
         ResultSettings = CloneSettings(source);
         Text = "CLI 與程式設定";
         StartPosition = FormStartPosition.CenterParent;
-        MinimumSize = new Size(760, 470);
-        Size = new Size(860, 520);
+        MinimumSize = new Size(780, 520);
+        Size = new Size(880, 570);
         Font = new Font("Microsoft JhengHei UI", 9F);
         BuildLayout();
         LoadValues();
@@ -65,27 +65,29 @@ internal sealed class SettingsForm : Form
 
         root.Controls.Add(new Label
         {
-            Text = "可執行檔可填命令名稱（agy / codex / claude）或完整 .exe 路徑。額外參數可留空。",
+            Text = "可執行檔可填命令名稱（agy / codex / claude）或完整 .exe 路徑。額外參數可留空（Antigravity Claude / GPT 預設使用 Claude Sonnet，亦可於額外參數填寫 --model 自訂）。",
             AutoSize = true,
             ForeColor = Color.DimGray,
             Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
 
-        var cliTable = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 4, RowCount = 4 };
-        cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-        cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 65));
-        cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 35));
+        var kinds = Enum.GetValues<CliKind>();
+        var cliTable = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 4, RowCount = kinds.Length + 1 };
+        cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 175));
+        cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         cliTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 86));
         cliTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-        cliTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        cliTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
-        cliTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        for (var i = 0; i < kinds.Length; i++)
+        {
+            cliTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        }
         cliTable.Controls.Add(Header("CLI"), 0, 0);
         cliTable.Controls.Add(Header("可執行檔或命令"), 1, 0);
         cliTable.Controls.Add(Header("額外參數（選填）"), 2, 0);
 
         var row = 1;
-        foreach (var kind in Enum.GetValues<CliKind>())
+        foreach (var kind in kinds)
         {
             var pathInput = new TextBox { Dock = DockStyle.Fill };
             var argumentInput = new TextBox { Dock = DockStyle.Fill };
@@ -118,7 +120,7 @@ internal sealed class SettingsForm : Form
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false
         };
-        var probeButton = new Button { Text = "檢查三個 CLI（只執行 --version）", AutoSize = true };
+        var probeButton = new Button { Text = "檢查全部 CLI（只執行 --version）", AutoSize = true };
         probeButton.Click += ProbeAllAsync;
         probeRow.Controls.Add(probeButton);
         probeRow.Controls.Add(_probeStatus);
