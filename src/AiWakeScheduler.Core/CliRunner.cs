@@ -1,6 +1,3 @@
-using System.Diagnostics;
-using System.Text;
-
 namespace AiWakeScheduler.Core;
 
 /// <summary>
@@ -15,10 +12,16 @@ public sealed class CliProbeResult
 }
 
 /// <summary>
-/// 負責 CLI 程序的執行、日誌記錄與探測。
+/// 決定「要對哪個 CLI 執行什麼」的政策層。
+/// 實際的程序啟動交給 <see cref="ProcessRunner"/>，日誌交給 <see cref="CliLogWriter"/>。
 /// </summary>
-public sealed class CliRunner(AppDataPaths paths)
+public sealed class CliRunner(AppDataPaths paths) : ICliRunner
 {
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
+    private static readonly string[] ProbeArguments = ["--version"];
+
+    private readonly CliLogWriter _log = new(paths);
+
     /// <summary>
     /// 執行指定的 CLI 命令，並記錄執行日誌。
     /// </summary>
@@ -41,8 +44,14 @@ public sealed class CliRunner(AppDataPaths paths)
                 ?? throw new FileNotFoundException($"找不到 {CliDisplayNames.Get(kind)}。請在設定中指定可執行檔。");
             result.ExecutablePath = executable;
 
-            var arguments = CliCommandBuilder.Build(kind, message, profile.AdditionalArguments, tokenSaverMode);
-            var execution = await ExecuteProcessAsync(
+            var arguments = CliCommandBuilder.Build(
+                kind,
+                message,
+                profile.AdditionalArguments,
+                tokenSaverMode,
+                timeout);
+
+            var execution = await ProcessRunner.ExecuteAsync(
                 executable,
                 arguments,
                 workingDirectory,
@@ -54,7 +63,8 @@ public sealed class CliRunner(AppDataPaths paths)
             result.Error = execution.TimedOut
                 ? $"超過 {timeout.TotalMinutes:0} 分鐘，程序已終止。"
                 : execution.ExitCode == 0 ? string.Empty : $"CLI 結束碼為 {execution.ExitCode}。";
-            result.LogPath = await WriteLogAsync(kind, startedAt, executable, arguments, execution, result.Error)
+            result.LogPath = await _log
+                .WriteRunLogAsync(kind, startedAt, executable, arguments, execution, result.Error)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -64,7 +74,9 @@ public sealed class CliRunner(AppDataPaths paths)
         catch (Exception ex)
         {
             result.Error = ex.Message;
-            result.LogPath = await WriteFailureLogAsync(kind, startedAt, result.ExecutablePath, ex).ConfigureAwait(false);
+            result.LogPath = await _log
+                .WriteFailureLogAsync(kind, startedAt, result.ExecutablePath, ex)
+                .ConfigureAwait(false);
         }
 
         result.FinishedAt = DateTimeOffset.Now;
@@ -72,7 +84,7 @@ public sealed class CliRunner(AppDataPaths paths)
     }
 
     /// <summary>
-    /// 探測指定 CLI 是否可正常執行 (--version)。
+    /// 探測指定 CLI 是否可正常執行（只跑 --version，不會消耗任何 Token）。
     /// </summary>
     public async Task<CliProbeResult> ProbeAsync(
         CliKind kind,
@@ -85,31 +97,20 @@ public sealed class CliRunner(AppDataPaths paths)
             ValidateWorkingDirectory(workingDirectory);
             var executable = ExecutableLocator.Resolve(kind, profile.Executable, workingDirectory)
                 ?? throw new FileNotFoundException($"找不到 {CliDisplayNames.Get(kind)}。");
-            var execution = await ExecuteProcessAsync(
+
+            var execution = await ProcessRunner.ExecuteAsync(
                 executable,
-                ["--version"],
+                ProbeArguments,
                 workingDirectory,
-                TimeSpan.FromSeconds(15),
+                ProbeTimeout,
                 cancellationToken).ConfigureAwait(false);
-            var output = string.IsNullOrWhiteSpace(execution.StandardOutput)
-                ? execution.StandardError
-                : execution.StandardOutput;
-            var firstLine = output
-                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault();
 
             return new CliProbeResult
             {
                 Cli = kind,
                 Succeeded = execution.ExitCode == 0 && !execution.TimedOut,
                 ExecutablePath = executable,
-                Summary = execution.TimedOut
-                    ? "檢查逾時"
-                    : execution.ExitCode == 0
-                        ? firstLine ?? "可執行"
-                        : string.IsNullOrWhiteSpace(execution.StandardError)
-                            ? $"結束碼 {execution.ExitCode}"
-                            : execution.StandardError.Trim()
+                Summary = SummarizeProbe(execution)
             };
         }
         catch (Exception ex)
@@ -118,145 +119,48 @@ public sealed class CliRunner(AppDataPaths paths)
         }
     }
 
-    private static async Task<ProcessExecution> ExecuteProcessAsync(
-        string executable,
-        IReadOnlyList<string> arguments,
-        string workingDirectory,
-        TimeSpan timeout,
-        CancellationToken cancellationToken)
+    private static string SummarizeProbe(ProcessExecution execution)
     {
-        var shellScript = OperatingSystem.IsWindows() &&
-                          (executable.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
-                           executable.EndsWith(".bat", StringComparison.OrdinalIgnoreCase));
-        var startInfo = new ProcessStartInfo
+        if (execution.TimedOut)
         {
-            FileName = executable,
-            WorkingDirectory = workingDirectory,
-            UseShellExecute = shellScript,
-            CreateNoWindow = !shellScript,
-            RedirectStandardOutput = !shellScript,
-            RedirectStandardError = !shellScript,
-            StandardOutputEncoding = shellScript ? null : Encoding.UTF8,
-            StandardErrorEncoding = shellScript ? null : Encoding.UTF8
-        };
-        foreach (var argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-        if (!shellScript)
-        {
-            startInfo.Environment["NO_COLOR"] = "1";
+            return "檢查逾時";
         }
 
-        using var process = new Process { StartInfo = startInfo };
-        if (!process.Start())
+        if (execution.ExitCode != 0)
         {
-            throw new InvalidOperationException("無法啟動 CLI 程序。");
+            return string.IsNullOrWhiteSpace(execution.StandardError)
+                ? $"結束碼 {execution.ExitCode}"
+                : execution.StandardError.Trim();
         }
 
-        var outputTask = shellScript ? Task.FromResult(string.Empty) : process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var errorTask = shellScript ? Task.FromResult(string.Empty) : process.StandardError.ReadToEndAsync(cancellationToken);
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(timeout);
-        var timedOut = false;
+        var output = string.IsNullOrWhiteSpace(execution.StandardOutput)
+            ? execution.StandardError
+            : execution.StandardOutput;
 
-        try
-        {
-            await process.WaitForExitAsync(timeoutSource.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            timedOut = true;
-            TryKill(process);
-            await process.WaitForExitAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            TryKill(process);
-            throw;
-        }
-
-        string stdout;
-        string stderr;
-        try
-        {
-            stdout = await outputTask.ConfigureAwait(false);
-        }
-        catch
-        {
-            stdout = string.Empty;
-        }
-
-        try
-        {
-            stderr = await errorTask.ConfigureAwait(false);
-        }
-        catch
-        {
-            stderr = string.Empty;
-        }
-
-        return new ProcessExecution(
-            process.ExitCode,
-            stdout,
-            stderr,
-            timedOut,
-            shellScript);
+        return FirstNonEmptyLine(output) ?? "可執行";
     }
 
-    private async Task<string> WriteLogAsync(
-        CliKind kind,
-        DateTimeOffset startedAt,
-        string executable,
-        IReadOnlyList<string> arguments,
-        ProcessExecution execution,
-        string error)
+    private static string? FirstNonEmptyLine(string text)
     {
-        try
+        var start = 0;
+        while (start < text.Length)
         {
-            paths.EnsureCreated();
-            var logPath = Path.Combine(paths.LogsDirectory, $"{startedAt:yyyyMMdd-HHmmss}-{kind}.log");
-            var body = new StringBuilder()
-                .AppendLine($"CLI: {CliDisplayNames.Get(kind)}")
-                .AppendLine($"開始時間: {startedAt:O}")
-                .AppendLine($"執行檔: {executable}")
-                .AppendLine($"參數: {string.Join(' ', arguments.Select(MaskForLog))}")
-                .AppendLine($"結束碼: {execution.ExitCode}")
-                .AppendLine($"Shell 模式: {execution.UsedShell}")
-                .AppendLine($"錯誤摘要: {error}")
-                .AppendLine("--- stdout ---")
-                .AppendLine(execution.StandardOutput)
-                .AppendLine("--- stderr ---")
-                .AppendLine(execution.StandardError)
-                .ToString();
-            await File.WriteAllTextAsync(logPath, body, new UTF8Encoding(false)).ConfigureAwait(false);
-            return logPath;
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
+            var end = text.IndexOfAny(['\r', '\n'], start);
+            if (end < 0)
+            {
+                end = text.Length;
+            }
 
-    private async Task<string> WriteFailureLogAsync(CliKind kind, DateTimeOffset startedAt, string executable, Exception exception)
-    {
-        try
-        {
-            paths.EnsureCreated();
-            var logPath = Path.Combine(paths.LogsDirectory, $"{startedAt:yyyyMMdd-HHmmss}-{kind}-error.log");
-            await File.WriteAllTextAsync(
-                logPath,
-                $"CLI: {CliDisplayNames.Get(kind)}{Environment.NewLine}開始時間: {startedAt:O}{Environment.NewLine}執行檔: {executable}{Environment.NewLine}{exception}",
-                new UTF8Encoding(false)).ConfigureAwait(false);
-            return logPath;
-        }
-        catch
-        {
-            return string.Empty;
-        }
-    }
+            if (end > start)
+            {
+                return text[start..end];
+            }
 
-    private static string MaskForLog(string argument) => argument.Contains(' ') ? $"\"{argument}\"" : argument;
+            start = end + 1;
+        }
+
+        return null;
+    }
 
     private static void ValidateWorkingDirectory(string workingDirectory)
     {
@@ -265,26 +169,4 @@ public sealed class CliRunner(AppDataPaths paths)
             throw new DirectoryNotFoundException($"工作目錄不存在：{workingDirectory}");
         }
     }
-
-    private static void TryKill(Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(true);
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private sealed record ProcessExecution(
-        int ExitCode,
-        string StandardOutput,
-        string StandardError,
-        bool TimedOut,
-        bool UsedShell);
 }
-

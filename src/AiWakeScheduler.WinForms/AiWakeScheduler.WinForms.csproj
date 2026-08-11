@@ -6,6 +6,14 @@
     <AssemblyName>AI倒數喚醒</AssemblyName>
     <RootNamespace>AiWakeScheduler.WinForms</RootNamespace>
     <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
+    <!-- 每個螢幕各自的 DPI 都會正確套用，多螢幕混合縮放時文字不會糊掉 -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- 常駐系統匣的桌面程式：工作站 GC 且不使用背景 GC 執行緒，
+         閒置時記憶體與 CPU 都比預設低 -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <RetainVMGarbageCollection>false</RetainVMGarbageCollection>
+    <TieredPGO>true</TieredPGO>
     <Version>1.0.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <FileVersion>1.0.0.0</FileVersion>
