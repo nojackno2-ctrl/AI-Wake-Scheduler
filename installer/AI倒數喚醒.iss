@@ -1,6 +1,6 @@
 ; AI 倒數喚醒 (AI Wake Scheduler) Inno Setup 6 腳本
 #define MyAppName "AI 倒數喚醒"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "AI Wake Scheduler"
 #define MyAppURL "https://github.com/nojackno2-ctrl/AI-Wake-Scheduler"
 #define MyAppExeName "AI倒數喚醒.exe"
@@ -15,11 +15,11 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.1.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=AI 倒數喚醒 安裝程式
 VersionInfoTextVersion={#MyAppVersion}
-VersionInfoProductVersion=1.0.0.0
+VersionInfoProductVersion=1.1.0.0
 VersionInfoProductName={#MyAppName}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
