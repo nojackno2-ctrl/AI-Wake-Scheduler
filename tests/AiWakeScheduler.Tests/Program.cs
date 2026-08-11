@@ -25,11 +25,14 @@ if (args.Contains("--fake-cli", StringComparer.Ordinal))
 var tests = new (string Name, Func<Task> Run)[]
 {
     ("ArgumentTokenizer", TestArgumentTokenizerAsync),
+    ("CliCatalog", TestCliCatalogAsync),
     ("CliCommandBuilder", TestCliCommandBuilderAsync),
     ("ScheduleCalculator", TestScheduleCalculatorAsync),
     ("JsonFileStore", TestJsonFileStoreAsync),
     ("CliRunnerSafeArguments", TestCliRunnerAsync),
     ("ScheduleManagerDueJob", TestScheduleManagerAsync),
+    ("ScheduleManagerAdaptiveWait", TestScheduleManagerAdaptiveWaitAsync),
+    ("ScheduleManagerRestartDoesNotRefire", TestScheduleManagerRestartDoesNotRefireAsync),
     ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
     ("ExecutableLocatorResolution", TestExecutableLocatorAsync)
 };
@@ -65,18 +68,217 @@ static Task TestArgumentTokenizerAsync()
 
 static Task TestCliCommandBuilderAsync()
 {
+    // Antigravity 的 --print 是「值就是提示詞」的字串旗標，必須排在所有旗標的最後
     Equal(["--print", "早安"], CliCommandBuilder.Build(CliKind.Antigravity, "早安", tokenSaverMode: false));
-    Equal(["exec", "--skip-git-repo-check", "早安"], CliCommandBuilder.Build(CliKind.Codex, "早安", tokenSaverMode: false));
+    Equal(["--model", "claude-sonnet-4-6", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", tokenSaverMode: false));
+    Equal(["--model", "custom-model", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "--model custom-model", tokenSaverMode: false));
+    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "早安"], CliCommandBuilder.Build(CliKind.Codex, "早安", tokenSaverMode: false));
     Equal(["--print", "--model", "sonnet", "早安"], CliCommandBuilder.Build(CliKind.Claude, "早安", "--model sonnet", tokenSaverMode: false));
+
+    // 迴歸測試：Antigravity 的旗標絕不能出現在 --print 之後，
+    // 否則會被當成提示詞送出，其餘旗標則全部失效。
+    foreach (var agyKind in new[] { CliKind.Antigravity, CliKind.AntigravityClaude })
+    {
+        var built = CliCommandBuilder.Build(agyKind, "早安", "--add-dir C:\\tmp", timeout: TimeSpan.FromMinutes(2));
+        var printIndex = built.ToList().IndexOf("--print");
+        Assert(printIndex == built.Count - 2, $"{agyKind}：--print 必須是倒數第二個參數。");
+        Assert(built[^1].StartsWith("早安", StringComparison.Ordinal), $"{agyKind}：提示詞必須是 --print 的值。");
+        for (var i = 0; i < printIndex; i++)
+        {
+            Assert(built[i] != "早安", $"{agyKind}：提示詞不應出現在旗標之間。");
+        }
+    }
+
+    // 使用者以 -m 指定模型時，也不應再附加預設模型
+    var shortModelOverride = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "-m custom", tokenSaverMode: false);
+    Assert(!shortModelOverride.Contains("Claude Sonnet 4.6 (Thinking)"), "使用者以 -m 指定模型時不應覆寫。");
+
+    var saverAgy = CliCommandBuilder.Build(CliKind.Antigravity, "早安", timeout: TimeSpan.FromMinutes(3));
+    Assert(saverAgy.Contains("--effort") && saverAgy.Contains("low"), "Antigravity 節省模式應包含 low effort。");
+    Assert(saverAgy.Contains("--disable-slash-commands"), "Antigravity 節省模式應停用斜線指令。");
+    Assert(saverAgy.Contains("--print-timeout") && saverAgy.Contains("180s"), "應把應用程式逾時轉為 CLI 自身的 --print-timeout。");
+
+    var saverAgyClaude = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安");
+    Assert(saverAgyClaude.Contains("--model") && saverAgyClaude.Contains("claude-sonnet-4-6"), "AntigravityClaude 預設應使用 Claude Sonnet 模型 ID。");
+    Assert(saverAgyClaude.Contains("--disable-slash-commands"), "AntigravityClaude 節省模式應停用技能展開。");
+    // Claude 系列模型不接受 --effort，帶上去 agy 會直接拒絕整個呼叫
+    Assert(!saverAgyClaude.Contains("--effort"), "AntigravityClaude 不可帶 --effort，Claude 模型不支援。");
+    Assert(!saverAgyClaude.Contains("--print-timeout"), "未指定逾時時不應產生 --print-timeout。");
 
     var saverCodex = CliCommandBuilder.Build(CliKind.Codex, "早安");
     Assert(saverCodex.Contains("read-only"), "節省 Token 模式應使用 Codex 唯讀沙箱。");
     Assert(saverCodex.Contains("model_reasoning_effort=\"low\""), "節省 Token 模式應降低 Codex 推理量。");
-    Assert(saverCodex.Last().Contains("只回覆上面這句", StringComparison.Ordinal), "節省模式應要求短回覆。");
+    Assert(saverCodex.Contains("--ignore-user-config"), "節省 Token 模式應略過 config.toml，避免載入 MCP 伺服器與自訂指示。");
+    Assert(saverCodex.Last().Contains("只回「OK」", StringComparison.Ordinal), "節省模式應要求最短回覆。");
 
     var saverClaude = CliCommandBuilder.Build(CliKind.Claude, "早安");
-    Assert(saverClaude.Contains("--tools") && saverClaude.Contains(string.Empty), "節省模式應停用 Claude 工具。");
+    Assert(saverClaude.Contains("--tools") && saverClaude.Contains(string.Empty), "節省模式應停用 Claude 內建工具。");
+    Assert(saverClaude.Contains("--safe-mode"), "節省模式應停用 CLAUDE.md、技能、外掛與 MCP 伺服器。");
+    Assert(saverClaude.Contains("--strict-mcp-config"), "節省模式應確保不載入任何 MCP 工具結構描述。");
+
+    // --tools 是可變長度參數，後面必須緊接旗標，否則會吃掉提示詞
+    var toolsIndex = saverClaude.ToList().IndexOf("--tools");
+    Assert(toolsIndex >= 0 && saverClaude[toolsIndex + 1].Length == 0, "--tools 之後應緊接空字串。");
+    Assert(saverClaude[toolsIndex + 2].StartsWith("--", StringComparison.Ordinal), "--tools 的值之後必須是旗標，避免吞掉位置參數。");
+
     return Task.CompletedTask;
+}
+
+static async Task TestScheduleManagerRestartDoesNotRefireAsync()
+{
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        var paths = new AppDataPaths(Path.Combine(directory, "data"));
+        var store = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, () => []);
+        var settings = AppSettings.CreateDefault();
+        var runner = new CountingCliRunner();
+
+        // 今天的時分已經過了，而且今天已經跑過一次（FinishedAt 在該時點之後）
+        var alreadyRanAt = DateTimeOffset.Now.AddMinutes(-30);
+        var id = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = id,
+                Name = "今天已執行",
+                ScheduledAt = alreadyRanAt,
+                FinishedAt = alreadyRanAt.AddSeconds(20),
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity]
+            }
+        ]);
+
+        await using (var manager = new ScheduleManager(store, runner, () => settings))
+        {
+            await manager.InitializeAsync();
+            await Task.Delay(1500);
+
+            var job = (await manager.GetJobsAsync()).Single(item => item.Id == id);
+            Assert(runner.CallCount == 0, $"重開程式不應重跑今天已完成的喚醒，實際呼叫 {runner.CallCount} 次。");
+            Assert(job.ScheduledAt > DateTimeOffset.Now, "今天已執行過的排程應排到明天。");
+            Assert(job.Status == ScheduleStatus.Pending, "排程應維持等待中。");
+        }
+
+        // 相對地，程式關閉期間錯過的喚醒仍應補做一次
+        var missedRunner = new CountingCliRunner();
+        var missedId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = missedId,
+                Name = "錯過未執行",
+                ScheduledAt = DateTimeOffset.Now.AddMinutes(-30),
+                FinishedAt = null,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity]
+            }
+        ]);
+
+        await using (var manager = new ScheduleManager(store, missedRunner, () => settings))
+        {
+            await manager.InitializeAsync();
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && missedRunner.CallCount == 0)
+            {
+                await Task.Delay(25);
+            }
+            Assert(missedRunner.CallCount == 1, "程式關閉期間錯過的喚醒仍應補做一次。");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
+static Task TestCliCatalogAsync()
+{
+    foreach (var kind in Enum.GetValues<CliKind>())
+    {
+        var descriptor = CliCatalog.Get(kind);
+        Assert(descriptor.Kind == kind, "描述應對應到正確的 CLI 種類。");
+        Assert(!string.IsNullOrWhiteSpace(descriptor.DisplayName), "每個 CLI 都應有顯示名稱。");
+        Assert(!string.IsNullOrWhiteSpace(descriptor.ShortName), "每個 CLI 都應有短名稱。");
+        Assert(!string.IsNullOrWhiteSpace(descriptor.DefaultCommand), "每個 CLI 都應有預設命令。");
+        Assert(CliDisplayNames.Get(kind) == descriptor.DisplayName, "顯示名稱應由目錄提供。");
+        Assert(CliDisplayNames.GetShort(kind) == descriptor.ShortName, "短名稱應由目錄提供。");
+    }
+
+    Assert(CliCatalog.All.Count == Enum.GetValues<CliKind>().Length, "目錄應涵蓋所有 CliKind。");
+    return Task.CompletedTask;
+}
+
+static async Task TestScheduleManagerAdaptiveWaitAsync()
+{
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        var paths = new AppDataPaths(Path.Combine(directory, "data"));
+        var store = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, () => []);
+        var settings = AppSettings.CreateDefault();
+        var runner = new CountingCliRunner();
+
+        var id = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = id,
+                Name = "到期喚醒",
+                ScheduledAt = DateTimeOffset.Now.AddSeconds(-1),
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity, CliKind.Claude]
+            }
+        ]);
+
+        await using var manager = new ScheduleManager(store, runner, () => settings);
+
+        // 排程器改為自適應等待後，第一輪掃描必須在啟動時立即發生，
+        // 而不是等待任何固定間隔。
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await manager.InitializeAsync();
+
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline && runner.CallCount < 2)
+        {
+            await Task.Delay(25);
+        }
+        stopwatch.Stop();
+
+        Assert(runner.CallCount == 2, $"應對兩個 CLI 各呼叫一次，實際 {runner.CallCount} 次。");
+        Assert(runner.LastTokenSaverMode, "預設應以節省 Token 模式執行。");
+        Assert(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"到期排程應立即啟動，不應等待輪詢間隔；實際 {stopwatch.Elapsed.TotalMilliseconds:0} ms。");
+
+        var job = (await manager.GetJobsAsync()).Single(item => item.Id == id);
+        Assert(job.Status == ScheduleStatus.Pending, "執行完成後應回到等待狀態。");
+        Assert(job.ScheduledAt > DateTimeOffset.Now, "應排到下一個未來時分。");
+
+        // 手動觸發應透過喚醒訊號立即執行，而非等到下一個間隔
+        var manualStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        await manager.RunNowAsync(id);
+        deadline = DateTime.UtcNow.AddSeconds(15);
+        while (DateTime.UtcNow < deadline && runner.CallCount < 4)
+        {
+            await Task.Delay(25);
+        }
+        manualStopwatch.Stop();
+        Assert(runner.CallCount == 4, $"立即執行應再呼叫兩次，實際共 {runner.CallCount} 次。");
+        Assert(
+            manualStopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"立即執行應馬上啟動；實際 {manualStopwatch.Elapsed.TotalMilliseconds:0} ms。");
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
 }
 
 static Task TestScheduleCalculatorAsync()
@@ -286,7 +488,7 @@ static async Task TestScheduleManagerAsync()
                 ScheduledAt = DateTimeOffset.Now.AddSeconds(-1),
                 Message = "早安",
                 WorkingDirectory = directory,
-                Targets = [CliKind.Antigravity, CliKind.Codex, CliKind.Claude]
+                Targets = [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Codex, CliKind.Claude]
             }
         ]);
 
@@ -298,7 +500,7 @@ static async Task TestScheduleManagerAsync()
         while (DateTime.UtcNow < deadline)
         {
             finished = (await manager.GetJobsAsync()).Single();
-            if (finished.Status == ScheduleStatus.Pending && finished.LastResults.Count == 3)
+            if (finished.Status == ScheduleStatus.Pending && finished.LastResults.Count == 4)
             {
                 break;
             }
@@ -307,16 +509,16 @@ static async Task TestScheduleManagerAsync()
         Assert(finished is { Status: ScheduleStatus.Pending, Enabled: true }, "舊排程應轉為每日排程並繼續等待。");
         Assert(finished?.Recurrence == ScheduleRecurrence.Daily, "舊排程載入後應轉為每日排程。");
         Assert(finished?.ScheduledAt > DateTimeOffset.Now, "每日排程執行後應排到下一個未來時分。");
-        Assert(finished?.LastResults.Count == 3, "排程器應記錄三個 CLI 的結果。");
+        Assert(finished?.LastResults.Count == 4, "排程器應記錄四個 CLI 的結果。");
         foreach (var outputPath in outputPaths.Values)
         {
-            Assert(File.Exists(outputPath), "排程器應真的啟動三個假 CLI。");
+            Assert(File.Exists(outputPath), "排程器應真的啟動四個假 CLI。");
         }
         concurrentStopwatch.Stop();
         Console.WriteLine($"  concurrent CLI elapsed: {concurrentStopwatch.Elapsed.TotalMilliseconds:0} ms");
         Assert(
             concurrentStopwatch.Elapsed < TimeSpan.FromMilliseconds(2500),
-            $"三個各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {concurrentStopwatch.Elapsed.TotalMilliseconds:0} ms。");
+            $"四個各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {concurrentStopwatch.Elapsed.TotalMilliseconds:0} ms。");
 
         var recurringId = Guid.NewGuid();
         var selectedTime = DateTimeOffset.Now.AddHours(-2);
@@ -480,9 +682,12 @@ static async Task TestExecutableLocatorAsync()
 {
     var workingDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-    // 1. 測試解析本機已安裝的 CLI（三者均應成功解析）
+    // 1. 測試解析本機已安裝的 CLI（四者均應成功解析）
     var agy = ExecutableLocator.Resolve(CliKind.Antigravity, "agy", workingDir);
     Assert(agy is not null && File.Exists(agy), $"Antigravity CLI 應成功解析到可執行檔：{agy}");
+
+    var agyClaude = ExecutableLocator.Resolve(CliKind.AntigravityClaude, "agy", workingDir);
+    Assert(agyClaude is not null && File.Exists(agyClaude), $"Antigravity Claude/GPT CLI 應成功解析到可執行檔：{agyClaude}");
 
     var codex = ExecutableLocator.Resolve(CliKind.Codex, "codex", workingDir);
     Assert(codex is not null && File.Exists(codex), $"Codex CLI 應成功解析到子目錄或已知路徑中的可執行檔：{codex}");
@@ -503,12 +708,15 @@ static async Task TestExecutableLocatorAsync()
         var relative = ExecutableLocator.Resolve(CliKind.Codex, "custom_app.exe", tempDir);
         Assert(relative is not null && Path.GetFullPath(relative) == dummyExe, "傳入工作目錄中的相對路徑應成功解析。");
 
-        // 4. 測試真實 CLI ProbeAsync（三者均應回傳 Succeeded == true）
+        // 4. 測試真實 CLI ProbeAsync（四者均應回傳 Succeeded == true）
         var paths = new AppDataPaths(Path.Combine(tempDir, "data"));
         var runner = new CliRunner(paths);
 
         var probeAgy = await runner.ProbeAsync(CliKind.Antigravity, new CliProfile { Executable = "agy" }, workingDir);
         Assert(probeAgy.Succeeded, $"Antigravity Probe 應成功：{probeAgy.Summary}");
+
+        var probeAgyClaude = await runner.ProbeAsync(CliKind.AntigravityClaude, new CliProfile { Executable = "agy" }, workingDir);
+        Assert(probeAgyClaude.Succeeded, $"Antigravity Claude Probe 應成功：{probeAgyClaude.Summary}");
 
         var probeCodex = await runner.ProbeAsync(CliKind.Codex, new CliProfile { Executable = "codex" }, workingDir);
         Assert(probeCodex.Succeeded, $"Codex Probe 應成功：{probeCodex.Summary}");
@@ -588,4 +796,45 @@ static async Task ThrowsAsync<TException>(Func<Task> action) where TException : 
         throw new InvalidOperationException($"預期擲出 {typeof(TException).Name}，實際擲出 {ex.GetType().Name}: {ex.Message}");
     }
     throw new InvalidOperationException($"預期擲出 {typeof(TException).Name}。");
+}
+
+/// <summary>
+/// 假的 CLI 執行器。ScheduleManager 只依賴 ICliRunner，
+/// 因此排程邏輯可以完全不啟動任何子程序就驗證。
+/// </summary>
+internal sealed class CountingCliRunner : ICliRunner
+{
+    private int _callCount;
+
+    public int CallCount => Volatile.Read(ref _callCount);
+
+    public bool LastTokenSaverMode { get; private set; }
+
+    public Task<CliRunResult> RunAsync(
+        CliKind kind,
+        CliProfile profile,
+        string message,
+        string workingDirectory,
+        TimeSpan timeout,
+        bool tokenSaverMode = true,
+        CancellationToken cancellationToken = default)
+    {
+        Interlocked.Increment(ref _callCount);
+        LastTokenSaverMode = tokenSaverMode;
+        return Task.FromResult(new CliRunResult
+        {
+            Cli = kind,
+            Succeeded = true,
+            ExitCode = 0,
+            StartedAt = DateTimeOffset.Now,
+            FinishedAt = DateTimeOffset.Now
+        });
+    }
+
+    public Task<CliProbeResult> ProbeAsync(
+        CliKind kind,
+        CliProfile profile,
+        string workingDirectory,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new CliProbeResult { Cli = kind, Succeeded = true, Summary = "fake" });
 }

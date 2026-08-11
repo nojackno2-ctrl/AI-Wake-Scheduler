@@ -30,6 +30,31 @@ public static class ScheduleCalculator
     }
 
     /// <summary>
+    /// 計算「不晚於現在」的最近一次每日執行時間。
+    /// 用來判斷程式關閉期間是否錯過了今天的喚醒。
+    /// </summary>
+    public static DateTimeOffset GetPreviousDailyOccurrence(
+        TimeSpan timeOfDay,
+        DateTimeOffset now)
+    {
+        if (timeOfDay < TimeSpan.Zero || timeOfDay >= TimeSpan.FromDays(1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeOfDay), "每日時間必須介於 00:00 到 23:59。");
+        }
+
+        var localNow = now.LocalDateTime;
+        var targetTime = new TimeSpan(timeOfDay.Hours, timeOfDay.Minutes, 0);
+        var localCandidate = localNow.Date.Add(targetTime);
+
+        if (localCandidate > localNow)
+        {
+            localCandidate = localCandidate.AddDays(-1);
+        }
+
+        return CreateLocalDateTimeOffset(localCandidate);
+    }
+
+    /// <summary>
     /// 計算指定週期下一次的執行時間。
     /// </summary>
     public static DateTimeOffset GetNextOccurrence(

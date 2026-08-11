@@ -4,17 +4,29 @@ using System.Text.Json.Serialization;
 namespace AiWakeScheduler.Core;
 
 /// <summary>
-/// 提供 JSON 檔案的安全讀寫與原子寫入機制。
+/// 共用的 JSON 序列化選項。
+/// <see cref="JsonSerializerOptions"/> 內部會快取型別中繼資料，共用單一實例
+/// 可讓所有資料檔共享同一份快取，減少記憶體與首次序列化成本。
 /// </summary>
-/// <typeparam name="T">資料模型類別</typeparam>
-public sealed class JsonFileStore<T>(string path, Func<T> defaultFactory) : IDisposable where T : class
+internal static class JsonStoreOptions
 {
-    private static readonly JsonSerializerOptions Options = new()
+    // 第一次序列化時會自動補上預設的 TypeInfoResolver 並轉為唯讀，之後即可安全地跨執行緒共用。
+    public static readonly JsonSerializerOptions Shared = new()
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true,
         Converters = { new JsonStringEnumConverter() }
     };
+}
+
+/// <summary>
+/// 提供 JSON 檔案的安全讀寫與原子寫入機制。
+/// </summary>
+/// <typeparam name="T">資料模型類別</typeparam>
+public sealed class JsonFileStore<T>(string path, Func<T> defaultFactory) : IDataStore<T>, IDisposable where T : class
+{
+    // 所有具現型別共用同一組選項，避免每個泛型具現各自建立一份序列化中繼資料。
+    private static readonly JsonSerializerOptions Options = JsonStoreOptions.Shared;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private bool _disposed;

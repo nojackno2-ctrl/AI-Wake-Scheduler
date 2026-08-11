@@ -2,14 +2,12 @@
 
 ## 目前目標
 
-已完成 C# Windows 桌面程式及首次 GitHub 上傳；後續維護以 `main` 與私人遠端儲存庫為準。
+已完成 C# Windows 桌面程式、Inno Setup 安裝包打包，並成功完成 GitHub v1.0.0 官方版本（含 Setup 安裝檔 Asset）發布；後續維持維護狀態。
 
 ## 目前狀態（2026-08-10）
 
-- 起始工作目錄為空，且尚未初始化 Git。
-- 2026-08-10 使用者明確要求上傳 GitHub；本機 `gh 2.95.0` 已登入 `nojackno2-ctrl`，token 具 `repo` 與 `workflow` scope。
-- 上傳前敏感字串掃描未發現 API key、token 或密碼；`nojackno2-ctrl` 帳號下未找到同名或近似名稱的既有儲存庫。
-- 已初始化 Git `main`，提交 `75fa303`（`Initial AI wake scheduler`），並建立私人儲存庫 `https://github.com/nojackno2-ctrl/AI-Wake-Scheduler`；首次推送成功。
+- 已完成 v1.0.0 正式版 Release 發布與 Asset 上傳。
+- 已初始化 Git `main`，提交 `75fa303`（`Initial AI wake scheduler`），並建立儲存庫 `https://github.com/nojackno2-ctrl/AI-Wake-Scheduler`。
 - 本機已安裝 .NET SDK 10.0.302；.NET 8 與 10 Windows Desktop Runtime 均存在。
 - 本機 `agy.exe` 位於 `%LOCALAPPDATA%\agy\bin\agy.exe`，已由 `agy --help` 證實非互動模式為 `agy --print <訊息>`。
 - 本機 `claude.exe` 位於 `%USERPROFILE%\.local\bin\claude.exe`，已由 `claude --help` 證實非互動模式為 `claude --print <訊息>`。
@@ -91,3 +89,73 @@
      - `build-installer.ps1` 一鍵建置成功，產出 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（SHA256: `9CF0A101C6057A0CE98DEBE671A6B3D6B5EE3BECA5E07137CEB3753AE77539EA`）。
      - 靜默安裝與反安裝在隔離目錄實測通過（安裝驗證 `AI倒數喚醒.exe` 存在、反安裝後 0 檔案殘留）。
      - `.gitignore` 與 `README.md` 已同步更新。
+- 2026-08-11 擴充支援 Antigravity (Claude / GPT) 額度計數器獨立喚醒：
+  1. 問題診斷：
+     - Google Antigravity 的配額分為兩組獨立計數器：Gemini Models（Gemini 3.6 Flash / Pro 等）與 Claude and GPT models（Claude Sonnet 4.6 Thinking / Claude Opus 4.6 / GPT-OSS 120B 等）。
+     - 過去呼叫 `agy --print` 只會喚醒 AGY 預設的 Gemini 模型，使得「Gemini Models」的 5 小時倒數啟動，但「Claude and GPT models」的 5 小時額度維持未觸發。
+  2. 解決方案：
+     - `Models.cs`：`CliKind` 新增 `AntigravityClaude`。更新 `CliDisplayNames`（`Antigravity` -> `Antigravity (Gemini)`、`AntigravityClaude` -> `Antigravity (Claude / GPT)`），更新預設 Profile 與排程目標預設值，並在 `EnsureDefaults()` 具備向後相容補齊機制。
+     - `ExecutableLocator.cs`：`AntigravityClaude` 支援定位本機 `agy.exe`。
+     - `CliCommandBuilder.cs`：`AntigravityClaude` 預設指定 `--model "Claude Sonnet 4.6 (Thinking)"`，並支援在額外參數中自訂 `--model` 覆寫。
+     - `MainForm.cs`：主介面「傳送至」支援 4 個 CheckBox，排程列表 CLI 簡稱與資料繫結全面支援 4 個目標。
+     - `SettingsForm.cs`：設定表格自適應調整為 4 組 CLI，標籤欄拓寬至 175px，按鈕更新為「檢查全部 CLI（只執行 --version）」。
+     - `Program.cs` (Tests)：新增 `AntigravityClaude` 參數建構測試、4 CLI 平行執行測試與探測測試。
+     - `README.md`：同步更新 4 項目標說明與雙額度池機制介紹。
+  3. 驗證結果：
+     - Release 方案建置成功（0 警告、0 錯誤）。
+     - 單元測試 8/8 全數通過（含 4 個假 CLI 平行耗時 1205 ms）。
+     - `build-installer.ps1` 自動打包成功，產出最新 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（16.77 MB）。
+- 2026-08-11 解耦重構與效能／Token 用量最佳化：
+  1. 修正兩個實際導致喚醒失效的參數順序問題（本次最重要的發現）：
+     - `agy` 的 `--print` 是「值就是提示詞」的字串旗標，單獨給會得到 `flag needs an argument: -print`；
+       且 Go 的 flag 套件遇到第一個非旗標參數就停止解析。
+       原本產生的 `--print --effort low ... 早安` 等於把 `--effort` 當成提示詞送出，
+       實際日誌可見模型在解釋「--effort 是什麼」，`早安` 從未送達，節省 Token 的旗標也全部失效。
+     - `AntigravityClaude` 更嚴重：`--print --model "Claude Sonnet 4.6 (Thinking)" ...` 使 `--model` 成為提示詞、
+       模型名稱成為位置參數，之後所有旗標被丟棄，實際回覆為
+       「You are currently using **Gemini 3.6 Flash**」——也就是 Claude / GPT 額度池從未真正被喚醒過。
+     - 修正：`CliDescriptor.PromptFlag` 明確表示提示詞要接在哪個旗標之後，Antigravity 一律排在所有旗標最後。
+     - 另發現 Claude 系列模型不接受 `--effort`（`Error: --effort is not supported for model ...`），
+       `AntigravityClaude` 已移除該旗標；模型改用 `agy models` 列出的 ID `claude-sonnet-4-6`。
+  2. 解耦：
+     - 新增 `CliCatalog.cs`，把顯示名稱、短名稱、預設命令、參數計畫與安裝路徑候選集中為單一知識來源，
+       取代原本分散在 `Models.cs`、`CliCommandBuilder.cs`、`ExecutableLocator.cs`、`MainForm.cs` 的四份 switch。
+       新增一個 CLI 現在只需新增一筆描述，視窗與參數建構都不必修改。
+     - 新增 `Abstractions.cs`（`IDataStore<T>`、`ICliRunner`），`ScheduleManager` 改為只依賴介面與 `TimeProvider`。
+     - `CliRunner` 拆為政策層 + `ProcessRunner`（程序機制）+ `CliLogWriter`（日誌與保留策略）。
+     - WinForms 新增 `AppHost`（組合根）、`JobPresenter`（顯示格式化）、`AppTheme`（共用字型色彩）、`NativeMethods`。
+  3. Token 用量（旗標皆以 `--help` 實測解析通過，未捏造）：
+     - Claude CLI 追加 `--safe-mode`（停用 CLAUDE.md、技能、外掛、hooks 與 MCP 伺服器）與 `--strict-mcp-config`，
+       與既有的 `--tools ""` 合計移除請求中絕大多數的固定輸入；認證與內建行為不受影響。
+     - Codex 追加 `--ignore-user-config`（不載入 config.toml，連帶不載入 MCP 伺服器與自訂指示）、`--ignore-rules`、
+       `--ephemeral`（不寫 session 檔）、`--color never`。
+     - 提示詞改為要求只回「OK」，把單價最高的輸出 Token 壓到最低。
+     - 修正重開程式會重跑今天已完成喚醒的問題：改以 `FinishedAt` 與 `GetPreviousDailyOccurrence` 判斷，
+       「關閉期間錯過」仍會補做一次，「今天已跑過」則直接排到明天。原本每重開一次就多花一整輪 Token。
+  4. CPU／記憶體／視窗：
+     - `ScheduleManager` 由每秒 `PeriodicTimer` 輪詢改為自適應等待（直接睡到下一個到期時間，上限 30 秒），
+       並以號誌在排程異動時立即喚醒；系統匣待機期間 20 秒 CPU 用量實測 0.016 秒。
+     - `MainForm` 清單改為就地更新（原本每次 `Rows.Clear()` + `Add()`），事件合併避免四個 CLI 同時完成時重複重繪，
+       DataGridView 開啟雙緩衝，UI 計時器在視窗隱藏時完全停止。
+     - 縮到系統匣時執行壓縮式 GC 並釋放工作集；`ProcessRunner` 限制單一串流最多擷取 32 KB，
+       避免話多的 CLI 撐大記憶體與日誌；日誌檔保留上限 200 個。
+     - 字型改為全程式共用並於結束時釋放（原本每個視窗各自 `new Font` 且未釋放）。
+     - 視窗啟用 PerMonitorV2 DPI、`AutoScaleMode.Font`，標題列改用 TableLayoutPanel 取代絕對座標，
+       視窗尺寸依螢幕工作區夾限，`SplitterDistance` 設定加上安全檢查。
+     - csproj 設定工作站非並行 GC（常駐系統匣情境下記憶體與 CPU 較低）。
+  5. 驗證結果：
+     - 建置 0 警告、0 錯誤；單元測試 11/11 通過（新增 CliCatalog、自適應等待、重開不重跑、Antigravity 參數順序迴歸測試）。
+     - 四個 CLI 皆以新參數實際執行成功（exit 0），Antigravity (Gemini) 與 Antigravity (Claude / GPT) 皆回覆單一「OK」。
+     - GUI 以 UI Automation 驗證：僅一個視窗（無例外對話框）、排程列表 5 個儲存格正確填入；重開程式未再觸發喚醒。
+- 2026-08-11 版本升至 v1.1.0 並重新打包安裝檔：
+  - 因本次含實質行為修正（Antigravity Claude / GPT 額度池從未真正被喚醒），
+    `AiWakeScheduler.WinForms.csproj` 與 `installer/AI倒數喚醒.iss` 版本號由 1.0.0 升至 1.1.0。
+  - 產出 `dist\AI倒數喚醒_Setup_v1.1.0_x64.exe`
+    （47.84 MB / 50,162,478 位元組，
+    SHA256: `1394136AEDB04276A2C1FBE30667DE981ECC7F6C5E6DC7C0B2921A0AC8F7CD93`）。
+  - 已確認發布的 `AiWakeScheduler.Core.dll` 內含 `claude-sonnet-4-6`、`--safe-mode`、
+    `--ignore-user-config`，即安裝檔確實包含本次修正；`AI倒數喚醒.exe` 檔案版本為 1.1.0.0。
+  - 修正先前紀錄的檔案大小：本文件早先記載安裝檔為 16.77 MB，但打包一直是
+    `--self-contained true` 且未啟用 trimming，發布輸出實測 467 個檔案／約 160 MB，
+    以 LZMA2/Ultra64 solid 壓縮後為 47.84 MB。16.77 MB 應為誤植，並非本次變更造成
+    （本次 csproj 只新增 GC 與 TieredPGO 等 runtimeconfig 設定，不影響酬載大小）。
