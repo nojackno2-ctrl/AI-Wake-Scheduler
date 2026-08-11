@@ -155,7 +155,20 @@
     SHA256: `1394136AEDB04276A2C1FBE30667DE981ECC7F6C5E6DC7C0B2921A0AC8F7CD93`）。
   - 已確認發布的 `AiWakeScheduler.Core.dll` 內含 `claude-sonnet-4-6`、`--safe-mode`、
     `--ignore-user-config`，即安裝檔確實包含本次修正；`AI倒數喚醒.exe` 檔案版本為 1.1.0.0。
-  - 修正先前紀錄的檔案大小：本文件早先記載安裝檔為 16.77 MB，但打包一直是
-    `--self-contained true` 且未啟用 trimming，發布輸出實測 467 個檔案／約 160 MB，
-    以 LZMA2/Ultra64 solid 壓縮後為 47.84 MB。16.77 MB 應為誤植，並非本次變更造成
-    （本次 csproj 只新增 GC 與 TieredPGO 等 runtimeconfig 設定，不影響酬載大小）。
+  - 已在 GitHub 建立 v1.1.0 Release 並上傳安裝檔（標記為 Latest）。
+    注意：GitHub 會移除 Asset 檔名中的非 ASCII 字元，實際 Asset 名稱為
+    `AI._Setup_v1.1.0_x64.exe`（v1.0.0 的 Asset 同樣是 `AI._Setup_v1.0.0_x64.exe`，屬既有行為）。
+  - 安裝檔大小紀錄不一致，已查明並非本次變更造成：
+    - 本文件先前記載 16.77 MB，但 GitHub v1.0.0 Release 的實際 Asset 為 20.02 MB，
+      兩者皆與目前打包設定產出的 47.84 MB 不符。
+    - 以 `git worktree` 檢出 tag `v1.0.0`，用與 `build-installer.ps1` 完全相同的 publish
+      指令實測，輸出為 **467 個檔案／159.96 MB**；目前版本為 467 個檔案／159.98 MB。
+      酬載形狀相同，證實本次變更未增加任何檔案
+      （csproj 只新增 GC 與 TieredPGO 等 runtimeconfig 設定，不影響酬載大小）。
+    - 結論：以儲存庫現行打包設定（`--self-contained true`、未啟用 trimming）產出的安裝檔
+      就是約 47.84 MB。先前發布的 20.02 MB Asset 與文件中的 16.77 MB 是以不同設定產生的，
+      與現行 `build-installer.ps1` 不一致；此差異在本次之前就已存在。
+    - 若日後要縮小體積，最安全的選項是排除未使用的衛星語言資源：目前含 13 個語言資料夾
+      （cs, de, es, fr, it, ja, ko, pl, pt-BR, ru, tr, zh-Hans, zh-Hant）共 15.5 MB（未壓縮），
+      可用 `<SatelliteResourceLanguages>zh-Hant;en</SatelliteResourceLanguages>` 限定。
+      WinForms 專案不建議啟用 PublishTrimmed。
