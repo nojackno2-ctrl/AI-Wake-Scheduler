@@ -63,31 +63,63 @@ public sealed class AppSettings
 
     public static AppSettings CreateDefault() => new();
 
+    /// <summary>把目前設定套用到另一個實例（保留對方的物件識別）。</summary>
+    public void CopyTo(AppSettings destination)
+    {
+        ArgumentNullException.ThrowIfNull(destination);
+        EnsureDefaults();
+
+        destination.StartWithWindows = StartWithWindows;
+        destination.MinimizeToTray = MinimizeToTray;
+        destination.TokenSaverMode = TokenSaverMode;
+        destination.ExecutionTimeoutMinutes = ExecutionTimeoutMinutes;
+
+        var profiles = new Dictionary<CliKind, CliProfile>(CliProfiles.Count);
+        foreach (var pair in CliProfiles)
+        {
+            profiles[pair.Key] = pair.Value.Clone();
+        }
+        destination.CliProfiles = profiles;
+    }
+
+    public AppSettings Clone()
+    {
+        var clone = new AppSettings();
+        CopyTo(clone);
+        return clone;
+    }
+
+    /// <summary>
+    /// 補齊缺少的 CLI 設定並修正超出範圍的值。
+    /// 只有真的缺項時才會配置新物件，正常情況下不產生任何垃圾。
+    /// </summary>
     public void EnsureDefaults()
     {
         CliProfiles ??= CreateDefaultProfiles();
-        foreach (var pair in CreateDefaultProfiles())
+
+        var descriptors = CliCatalog.All;
+        for (var i = 0; i < descriptors.Count; i++)
         {
-            if (!CliProfiles.ContainsKey(pair.Key))
+            var descriptor = descriptors[i];
+            if (!CliProfiles.TryGetValue(descriptor.Kind, out var profile) || profile is null)
             {
-                CliProfiles[pair.Key] = pair.Value;
-            }
-            else if (CliProfiles[pair.Key] is null)
-            {
-                CliProfiles[pair.Key] = pair.Value;
+                CliProfiles[descriptor.Kind] = new CliProfile { Executable = descriptor.DefaultCommand };
             }
         }
 
         ExecutionTimeoutMinutes = Math.Clamp(ExecutionTimeoutMinutes, 1, 120);
     }
 
-    private static Dictionary<CliKind, CliProfile> CreateDefaultProfiles() => new()
+    private static Dictionary<CliKind, CliProfile> CreateDefaultProfiles()
     {
-        [CliKind.Antigravity] = new CliProfile { Executable = "agy" },
-        [CliKind.AntigravityClaude] = new CliProfile { Executable = "agy" },
-        [CliKind.Codex] = new CliProfile { Executable = "codex" },
-        [CliKind.Claude] = new CliProfile { Executable = "claude" }
-    };
+        var descriptors = CliCatalog.All;
+        var profiles = new Dictionary<CliKind, CliProfile>(descriptors.Count);
+        for (var i = 0; i < descriptors.Count; i++)
+        {
+            profiles[descriptors[i].Kind] = new CliProfile { Executable = descriptors[i].DefaultCommand };
+        }
+        return profiles;
+    }
 }
 
 /// <summary>
@@ -103,6 +135,18 @@ public sealed class CliRunResult
     public string ExecutablePath { get; set; } = string.Empty;
     public string Error { get; set; } = string.Empty;
     public string LogPath { get; set; } = string.Empty;
+
+    public CliRunResult Clone() => new()
+    {
+        Cli = Cli,
+        Succeeded = Succeeded,
+        ExitCode = ExitCode,
+        StartedAt = StartedAt,
+        FinishedAt = FinishedAt,
+        ExecutablePath = ExecutablePath ?? string.Empty,
+        Error = Error ?? string.Empty,
+        LogPath = LogPath ?? string.Empty
+    };
 }
 
 /// <summary>
@@ -123,46 +167,64 @@ public sealed class ScheduledJob
     public DateTimeOffset? FinishedAt { get; set; }
     public List<CliRunResult> LastResults { get; set; } = [];
 
-    public ScheduledJob Clone() => new()
+    public ScheduledJob Clone()
     {
-        Id = Id,
-        Name = Name ?? "AI 倒數喚醒",
-        ScheduledAt = ScheduledAt,
-        Message = Message ?? "早安",
-        WorkingDirectory = WorkingDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        Targets = Targets != null ? [.. Targets] : [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Codex, CliKind.Claude],
-        Recurrence = Recurrence,
-        Enabled = Enabled,
-        Status = Status,
-        StartedAt = StartedAt,
-        FinishedAt = FinishedAt,
-        LastResults = LastResults != null ? LastResults.Select(result => new CliRunResult
+        var targets = Targets is { Count: > 0 } source
+            ? new List<CliKind>(source)
+            : DefaultTargets();
+
+        List<CliRunResult> results;
+        if (LastResults is { Count: > 0 } sourceResults)
         {
-            Cli = result.Cli,
-            Succeeded = result.Succeeded,
-            ExitCode = result.ExitCode,
-            StartedAt = result.StartedAt,
-            FinishedAt = result.FinishedAt,
-            ExecutablePath = result.ExecutablePath ?? string.Empty,
-            Error = result.Error ?? string.Empty,
-            LogPath = result.LogPath ?? string.Empty
-        }).ToList() : []
-    };
+            results = new List<CliRunResult>(sourceResults.Count);
+            for (var i = 0; i < sourceResults.Count; i++)
+            {
+                results.Add(sourceResults[i].Clone());
+            }
+        }
+        else
+        {
+            results = [];
+        }
+
+        return new ScheduledJob
+        {
+            Id = Id,
+            Name = Name ?? "AI 倒數喚醒",
+            ScheduledAt = ScheduledAt,
+            Message = Message ?? "早安",
+            WorkingDirectory = WorkingDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            Targets = targets,
+            Recurrence = Recurrence,
+            Enabled = Enabled,
+            Status = Status,
+            StartedAt = StartedAt,
+            FinishedAt = FinishedAt,
+            LastResults = results
+        };
+    }
+
+    private static List<CliKind> DefaultTargets()
+    {
+        var descriptors = CliCatalog.All;
+        var targets = new List<CliKind>(descriptors.Count);
+        for (var i = 0; i < descriptors.Count; i++)
+        {
+            targets.Add(descriptors[i].Kind);
+        }
+        return targets;
+    }
 }
 
 /// <summary>
-/// CLI 顯示名稱對照。
+/// CLI 顯示名稱對照，實際內容來自 <see cref="CliCatalog"/>。
 /// </summary>
 public static class CliDisplayNames
 {
-    public static string Get(CliKind kind) => kind switch
-    {
-        CliKind.Antigravity => "Antigravity (Gemini)",
-        CliKind.AntigravityClaude => "Antigravity (Claude / GPT)",
-        CliKind.Codex => "Codex CLI",
-        CliKind.Claude => "Claude CLI",
-        _ => kind.ToString()
-    };
+    public static string Get(CliKind kind) => CliCatalog.Get(kind).DisplayName;
+
+    /// <summary>清單欄位使用的短名稱。</summary>
+    public static string GetShort(CliKind kind) => CliCatalog.Get(kind).ShortName;
 }
 
 /// <summary>

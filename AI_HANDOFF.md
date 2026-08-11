@@ -105,3 +105,45 @@
      - Release 方案建置成功（0 警告、0 錯誤）。
      - 單元測試 8/8 全數通過（含 4 個假 CLI 平行耗時 1205 ms）。
      - `build-installer.ps1` 自動打包成功，產出最新 `dist\AI倒數喚醒_Setup_v1.0.0_x64.exe`（16.77 MB）。
+- 2026-08-11 解耦重構與效能／Token 用量最佳化：
+  1. 修正兩個實際導致喚醒失效的參數順序問題（本次最重要的發現）：
+     - `agy` 的 `--print` 是「值就是提示詞」的字串旗標，單獨給會得到 `flag needs an argument: -print`；
+       且 Go 的 flag 套件遇到第一個非旗標參數就停止解析。
+       原本產生的 `--print --effort low ... 早安` 等於把 `--effort` 當成提示詞送出，
+       實際日誌可見模型在解釋「--effort 是什麼」，`早安` 從未送達，節省 Token 的旗標也全部失效。
+     - `AntigravityClaude` 更嚴重：`--print --model "Claude Sonnet 4.6 (Thinking)" ...` 使 `--model` 成為提示詞、
+       模型名稱成為位置參數，之後所有旗標被丟棄，實際回覆為
+       「You are currently using **Gemini 3.6 Flash**」——也就是 Claude / GPT 額度池從未真正被喚醒過。
+     - 修正：`CliDescriptor.PromptFlag` 明確表示提示詞要接在哪個旗標之後，Antigravity 一律排在所有旗標最後。
+     - 另發現 Claude 系列模型不接受 `--effort`（`Error: --effort is not supported for model ...`），
+       `AntigravityClaude` 已移除該旗標；模型改用 `agy models` 列出的 ID `claude-sonnet-4-6`。
+  2. 解耦：
+     - 新增 `CliCatalog.cs`，把顯示名稱、短名稱、預設命令、參數計畫與安裝路徑候選集中為單一知識來源，
+       取代原本分散在 `Models.cs`、`CliCommandBuilder.cs`、`ExecutableLocator.cs`、`MainForm.cs` 的四份 switch。
+       新增一個 CLI 現在只需新增一筆描述，視窗與參數建構都不必修改。
+     - 新增 `Abstractions.cs`（`IDataStore<T>`、`ICliRunner`），`ScheduleManager` 改為只依賴介面與 `TimeProvider`。
+     - `CliRunner` 拆為政策層 + `ProcessRunner`（程序機制）+ `CliLogWriter`（日誌與保留策略）。
+     - WinForms 新增 `AppHost`（組合根）、`JobPresenter`（顯示格式化）、`AppTheme`（共用字型色彩）、`NativeMethods`。
+  3. Token 用量（旗標皆以 `--help` 實測解析通過，未捏造）：
+     - Claude CLI 追加 `--safe-mode`（停用 CLAUDE.md、技能、外掛、hooks 與 MCP 伺服器）與 `--strict-mcp-config`，
+       與既有的 `--tools ""` 合計移除請求中絕大多數的固定輸入；認證與內建行為不受影響。
+     - Codex 追加 `--ignore-user-config`（不載入 config.toml，連帶不載入 MCP 伺服器與自訂指示）、`--ignore-rules`、
+       `--ephemeral`（不寫 session 檔）、`--color never`。
+     - 提示詞改為要求只回「OK」，把單價最高的輸出 Token 壓到最低。
+     - 修正重開程式會重跑今天已完成喚醒的問題：改以 `FinishedAt` 與 `GetPreviousDailyOccurrence` 判斷，
+       「關閉期間錯過」仍會補做一次，「今天已跑過」則直接排到明天。原本每重開一次就多花一整輪 Token。
+  4. CPU／記憶體／視窗：
+     - `ScheduleManager` 由每秒 `PeriodicTimer` 輪詢改為自適應等待（直接睡到下一個到期時間，上限 30 秒），
+       並以號誌在排程異動時立即喚醒；系統匣待機期間 20 秒 CPU 用量實測 0.016 秒。
+     - `MainForm` 清單改為就地更新（原本每次 `Rows.Clear()` + `Add()`），事件合併避免四個 CLI 同時完成時重複重繪，
+       DataGridView 開啟雙緩衝，UI 計時器在視窗隱藏時完全停止。
+     - 縮到系統匣時執行壓縮式 GC 並釋放工作集；`ProcessRunner` 限制單一串流最多擷取 32 KB，
+       避免話多的 CLI 撐大記憶體與日誌；日誌檔保留上限 200 個。
+     - 字型改為全程式共用並於結束時釋放（原本每個視窗各自 `new Font` 且未釋放）。
+     - 視窗啟用 PerMonitorV2 DPI、`AutoScaleMode.Font`，標題列改用 TableLayoutPanel 取代絕對座標，
+       視窗尺寸依螢幕工作區夾限，`SplitterDistance` 設定加上安全檢查。
+     - csproj 設定工作站非並行 GC（常駐系統匣情境下記憶體與 CPU 較低）。
+  5. 驗證結果：
+     - 建置 0 警告、0 錯誤；單元測試 11/11 通過（新增 CliCatalog、自適應等待、重開不重跑、Antigravity 參數順序迴歸測試）。
+     - 四個 CLI 皆以新參數實際執行成功（exit 0），Antigravity (Gemini) 與 Antigravity (Claude / GPT) 皆回覆單一「OK」。
+     - GUI 以 UI Automation 驗證：僅一個視窗（無例外對話框）、排程列表 5 個儲存格正確填入；重開程式未再觸發喚醒。

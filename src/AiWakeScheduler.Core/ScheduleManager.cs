@@ -3,37 +3,80 @@ using System.Collections.Concurrent;
 namespace AiWakeScheduler.Core;
 
 /// <summary>
-/// 管理 AI 喚醒排程的初始化、掃描、手動觸發與背景對話執行。
+/// 管理 AI 喚醒排程的初始化、掃描、手動觸發與背景執行。
+///
+/// 只依賴 <see cref="IDataStore{T}"/>、<see cref="ICliRunner"/> 與 <see cref="TimeProvider"/>，
+/// 不知道資料存在哪裡、CLI 怎麼啟動，也不知道現在幾點。
 /// </summary>
-public sealed class ScheduleManager(
-    JsonFileStore<List<ScheduledJob>> jobStore,
-    CliRunner cliRunner,
-    Func<AppSettings> settingsProvider) : IAsyncDisposable
+public sealed class ScheduleManager : IAsyncDisposable
 {
+    /// <summary>
+    /// 閒置時最長的等待間隔。
+    /// 排程器不再每秒輪詢，而是直接睡到下一個到期時間；這個上限只是為了
+    /// 在系統休眠、時鐘調整或時區變更後仍能在可接受的時間內重新校準。
+    /// </summary>
+    private static readonly TimeSpan MaxIdleWait = TimeSpan.FromSeconds(30);
+
+    /// <summary>最短等待間隔，避免時間已到但狀態尚未落地時空轉。</summary>
+    private static readonly TimeSpan MinWait = TimeSpan.FromMilliseconds(200);
+
+    private readonly IDataStore<List<ScheduledJob>> _jobStore;
+    private readonly ICliRunner _cliRunner;
+    private readonly Func<AppSettings> _settingsProvider;
+    private readonly TimeProvider _time;
+
     private readonly SemaphoreSlim _gate = new(1, 1);
+    /// <summary>排程異動時用來立刻喚醒背景迴圈，不必等到下一個間隔。</summary>
+    private readonly SemaphoreSlim _wakeSignal = new(0);
     private readonly ConcurrentDictionary<Guid, Task> _executions = new();
     private readonly CancellationTokenSource _stopSource = new();
+
     private List<ScheduledJob> _jobs = [];
     private Task? _schedulerLoop;
     private bool _disposed;
 
+    public ScheduleManager(
+        IDataStore<List<ScheduledJob>> jobStore,
+        ICliRunner cliRunner,
+        Func<AppSettings> settingsProvider,
+        TimeProvider? timeProvider = null)
+    {
+        _jobStore = jobStore;
+        _cliRunner = cliRunner;
+        _settingsProvider = settingsProvider;
+        _time = timeProvider ?? TimeProvider.System;
+    }
+
     public event EventHandler? JobsChanged;
     public event EventHandler<Exception>? BackgroundError;
+
+    private DateTimeOffset Now => _time.GetLocalNow();
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var loaded = await jobStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        var loaded = await _jobStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        var now = Now;
+
         foreach (var job in loaded)
         {
-            // Older versions allowed one-time and weekly schedules. Keep their
-            // chosen hour/minute, but migrate every saved schedule to the app's
-            // daily HH:mm contract.
-            var local = job.ScheduledAt.LocalDateTime;
-            job.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(local.TimeOfDay, DateTimeOffset.Now.AddDays(-1));
+            // 舊版本允許單次與每週排程。保留使用者選的時分，
+            // 但一律遷移為本程式的每日 HH:mm 契約。
             job.Recurrence = ScheduleRecurrence.Daily;
+
+            var timeOfDay = job.ScheduledAt.LocalDateTime.TimeOfDay;
+            var lastOccurrence = ScheduleCalculator.GetPreviousDailyOccurrence(timeOfDay, now);
+
+            // 只有「今天這一次真的還沒跑過」才補做。
+            // 否則每次重開程式都會再喚醒一輪，白白多花一整輪的 Token。
+            var alreadyRan = job.FinishedAt is { } finished && finished >= lastOccurrence;
+            job.ScheduledAt = alreadyRan
+                ? ScheduleCalculator.GetNextDailyOccurrence(timeOfDay, now)
+                : lastOccurrence;
+
             if (job.Status == ScheduleStatus.Running)
             {
+                // 上次是被強制關閉的，不可能還在跑。
                 job.Status = ScheduleStatus.Pending;
                 job.StartedAt = null;
             }
@@ -43,7 +86,7 @@ public sealed class ScheduleManager(
         try
         {
             _jobs = loaded;
-            await jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+            await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -60,7 +103,13 @@ public sealed class ScheduleManager(
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return _jobs.Select(job => job.Clone()).OrderBy(job => job.ScheduledAt).ToList();
+            var snapshot = new List<ScheduledJob>(_jobs.Count);
+            for (var i = 0; i < _jobs.Count; i++)
+            {
+                snapshot.Add(_jobs[i].Clone());
+            }
+            snapshot.Sort(static (left, right) => left.ScheduledAt.CompareTo(right.ScheduledAt));
+            return snapshot;
         }
         finally
         {
@@ -79,11 +128,12 @@ public sealed class ScheduleManager(
             saved.Recurrence = ScheduleRecurrence.Daily;
             saved.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
                 saved.ScheduledAt.LocalDateTime.TimeOfDay,
-                DateTimeOffset.Now);
+                Now);
             saved.Status = saved.Enabled ? ScheduleStatus.Pending : ScheduleStatus.Disabled;
             saved.StartedAt = null;
             saved.FinishedAt = null;
             saved.LastResults = [];
+
             var index = _jobs.FindIndex(item => item.Id == saved.Id);
             if (index >= 0)
             {
@@ -97,13 +147,16 @@ public sealed class ScheduleManager(
             {
                 _jobs.Add(saved);
             }
-            await jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+
+            await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
         }
+
         RaiseJobsChanged();
+        SignalScheduler();
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken = default)
@@ -117,13 +170,15 @@ public sealed class ScheduleManager(
                 throw new InvalidOperationException("排程正在執行，暫時不能刪除。");
             }
             _jobs.RemoveAll(job => job.Id == id);
-            await jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+            await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
         }
+
         RaiseJobsChanged();
+        SignalScheduler();
     }
 
     public async Task RunNowAsync(Guid id, CancellationToken cancellationToken = default)
@@ -139,31 +194,36 @@ public sealed class ScheduleManager(
             {
                 throw new InvalidOperationException("排程已經在執行中。");
             }
+
             job.Enabled = true;
             job.Status = ScheduleStatus.Running;
-            job.StartedAt = DateTimeOffset.Now;
+            job.StartedAt = Now;
             job.FinishedAt = null;
             job.LastResults = [];
             execution = job.Clone();
-            await jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+            await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
         }
+
         RaiseJobsChanged();
         StartExecution(execution, cancellationToken);
     }
 
+    /// <summary>
+    /// 背景排程迴圈。每一輪掃描到期排程後，直接睡到下一個到期時間
+    /// （上限 <see cref="MaxIdleWait"/>），而不是固定每秒喚醒。
+    /// </summary>
     private async Task RunSchedulerLoopAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         try
         {
-            await ScanAndStartDueJobsAsync(cancellationToken).ConfigureAwait(false);
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await ScanAndStartDueJobsAsync(cancellationToken).ConfigureAwait(false);
+                var nextDelay = await ScanAndStartDueJobsAsync(cancellationToken).ConfigureAwait(false);
+                await WaitForNextRoundAsync(nextDelay, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -175,47 +235,119 @@ public sealed class ScheduleManager(
         }
     }
 
-    private async Task ScanAndStartDueJobsAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// 等待下一輪掃描，期間若有排程異動會被 <see cref="SignalScheduler"/> 立即喚醒。
+    /// </summary>
+    private async Task WaitForNextRoundAsync(TimeSpan delay, CancellationToken cancellationToken)
     {
-        List<ScheduledJob> dueJobs;
+        if (delay < MinWait)
+        {
+            delay = MinWait;
+        }
+        else if (delay > MaxIdleWait)
+        {
+            delay = MaxIdleWait;
+        }
+
+        // 逾時代表「睡到下一個到期時間」，取得號誌代表「排程被改動了，立刻重新評估」。
+        await _wakeSignal.WaitAsync(delay, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void SignalScheduler()
+    {
+        try
+        {
+            if (_wakeSignal.CurrentCount == 0)
+            {
+                _wakeSignal.Release();
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (SemaphoreFullException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// 掃描並啟動到期排程，回傳距離下一個到期時間還有多久。
+    /// </summary>
+    private async Task<TimeSpan> ScanAndStartDueJobsAsync(CancellationToken cancellationToken)
+    {
+        List<ScheduledJob>? dueJobs = null;
+        TimeSpan nextDelay;
+
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            dueJobs = _jobs
-                .Where(job => job.Enabled && job.Status == ScheduleStatus.Pending && job.ScheduledAt <= DateTimeOffset.Now)
-                .Select(job => job.Clone())
-                .ToList();
-            if (dueJobs.Count == 0)
+            var now = Now;
+            for (var i = 0; i < _jobs.Count; i++)
             {
-                return;
+                var job = _jobs[i];
+                if (job.Enabled && job.Status == ScheduleStatus.Pending && job.ScheduledAt <= now)
+                {
+                    // 只有真的有東西到期時才配置清單，閒置掃描是零配置的。
+                    (dueJobs ??= []).Add(job.Clone());
+                    job.Status = ScheduleStatus.Running;
+                    job.StartedAt = now;
+                }
             }
 
-            foreach (var due in dueJobs)
+            if (dueJobs is not null)
             {
-                var stored = _jobs.Single(job => job.Id == due.Id);
-                stored.Status = ScheduleStatus.Running;
-                stored.StartedAt = DateTimeOffset.Now;
+                await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
             }
-            await jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+
+            nextDelay = CalculateNextDelay(now);
         }
         finally
         {
             _gate.Release();
         }
-        RaiseJobsChanged();
 
-        foreach (var job in dueJobs)
+        if (dueJobs is null)
         {
-            StartExecution(job, cancellationToken);
+            return nextDelay;
         }
+
+        RaiseJobsChanged();
+        for (var i = 0; i < dueJobs.Count; i++)
+        {
+            StartExecution(dueJobs[i], cancellationToken);
+        }
+
+        return nextDelay;
+    }
+
+    /// <summary>計算距離最近一個待執行排程的等待時間。呼叫端必須已持有 <see cref="_gate"/>。</summary>
+    private TimeSpan CalculateNextDelay(DateTimeOffset now)
+    {
+        var shortest = MaxIdleWait;
+        for (var i = 0; i < _jobs.Count; i++)
+        {
+            var job = _jobs[i];
+            if (!job.Enabled || job.Status != ScheduleStatus.Pending)
+            {
+                continue;
+            }
+
+            var remaining = job.ScheduledAt - now;
+            if (remaining < shortest)
+            {
+                shortest = remaining;
+            }
+        }
+        return shortest;
     }
 
     private void StartExecution(ScheduledJob job, CancellationToken cancellationToken)
     {
+        var id = job.Id;
         var task = ExecuteJobAsync(job, cancellationToken);
-        _executions[job.Id] = task;
+        _executions[id] = task;
         _ = task.ContinueWith(
-            _ => _executions.TryRemove(job.Id, out Task? _),
+            _ => _executions.TryRemove(id, out Task? _),
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
@@ -225,89 +357,97 @@ public sealed class ScheduleManager(
     {
         try
         {
-            var settings = settingsProvider();
+            var settings = _settingsProvider();
             settings.EnsureDefaults();
             var timeout = TimeSpan.FromMinutes(settings.ExecutionTimeoutMinutes);
-            // Materialize every task first so all selected CLIs are launched independently.
-            // Task.WhenAll only waits for completion; it does not serialize the processes.
-            var runs = job.Targets.Select(target => cliRunner.RunAsync(
-                target,
-                settings.CliProfiles[target].Clone(),
-                job.Message,
-                job.WorkingDirectory,
-                timeout,
-                settings.TokenSaverMode,
-                cancellationToken)).ToArray();
-            var results = await Task.WhenAll(runs).ConfigureAwait(false);
 
-            await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-            try
+            // 先把所有 Task 具現化，確保每個選定的 CLI 都獨立啟動；
+            // Task.WhenAll 只負責等待完成，不會讓程序變成循序執行。
+            var runs = new Task<CliRunResult>[job.Targets.Count];
+            for (var i = 0; i < job.Targets.Count; i++)
             {
-                var stored = _jobs.SingleOrDefault(item => item.Id == job.Id);
-                if (stored is not null)
-                {
-                    stored.LastResults = [.. results];
-                    stored.FinishedAt = DateTimeOffset.Now;
-                    if (!stored.Enabled)
-                    {
-                        stored.Status = results.All(result => result.Succeeded)
-                            ? ScheduleStatus.Completed
-                            : ScheduleStatus.Failed;
-                    }
-                    else
-                    {
-                        if (stored.ScheduledAt <= DateTimeOffset.Now)
-                        {
-                            stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
-                                stored.ScheduledAt.LocalDateTime.TimeOfDay,
-                                DateTimeOffset.Now);
-                        }
-                        stored.Status = ScheduleStatus.Pending;
-                        stored.Enabled = true;
-                    }
-                    await jobStore.SaveAsync(_jobs, CancellationToken.None).ConfigureAwait(false);
-                }
+                var target = job.Targets[i];
+                runs[i] = _cliRunner.RunAsync(
+                    target,
+                    settings.CliProfiles[target].Clone(),
+                    job.Message,
+                    job.WorkingDirectory,
+                    timeout,
+                    settings.TokenSaverMode,
+                    cancellationToken);
             }
-            finally
-            {
-                _gate.Release();
-            }
-            RaiseJobsChanged();
+
+            var results = await Task.WhenAll(runs).ConfigureAwait(false);
+            await CompleteJobAsync(job.Id, results).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             try
             {
-                await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-                try
-                {
-                    var stored = _jobs.SingleOrDefault(item => item.Id == job.Id);
-                    if (stored is not null && stored.Status == ScheduleStatus.Running)
-                    {
-                        stored.FinishedAt = DateTimeOffset.Now;
-                        if (stored.ScheduledAt <= DateTimeOffset.Now)
-                        {
-                            stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
-                                stored.ScheduledAt.LocalDateTime.TimeOfDay,
-                                DateTimeOffset.Now);
-                        }
-                        stored.Status = stored.Enabled ? ScheduleStatus.Pending : ScheduleStatus.Failed;
-                        await jobStore.SaveAsync(_jobs, CancellationToken.None).ConfigureAwait(false);
-                    }
-                }
-                finally
-                {
-                    _gate.Release();
-                }
-                RaiseJobsChanged();
+                await CompleteJobAsync(job.Id, results: null).ConfigureAwait(false);
             }
             catch
             {
-                // Ignore secondary cleanup errors
+                // 忽略次要的清理錯誤
             }
 
             RaiseBackgroundError(ex);
         }
+    }
+
+    /// <summary>
+    /// 收尾一次執行：寫回結果並排到下一個每日時點。
+    /// <paramref name="results"/> 為 null 代表執行過程擲出例外。
+    /// </summary>
+    private async Task CompleteJobAsync(Guid jobId, CliRunResult[]? results)
+    {
+        await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            var stored = _jobs.SingleOrDefault(item => item.Id == jobId);
+            if (stored is null)
+            {
+                return;
+            }
+
+            if (results is null && stored.Status != ScheduleStatus.Running)
+            {
+                return;
+            }
+
+            var now = Now;
+            stored.FinishedAt = now;
+            if (results is not null)
+            {
+                stored.LastResults = [.. results];
+            }
+
+            if (stored.Enabled)
+            {
+                if (stored.ScheduledAt <= now)
+                {
+                    stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                        stored.ScheduledAt.LocalDateTime.TimeOfDay,
+                        now);
+                }
+                stored.Status = ScheduleStatus.Pending;
+            }
+            else
+            {
+                stored.Status = results is not null && Array.TrueForAll(results, result => result.Succeeded)
+                    ? ScheduleStatus.Completed
+                    : ScheduleStatus.Failed;
+            }
+
+            await _jobStore.SaveAsync(_jobs, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        RaiseJobsChanged();
+        SignalScheduler();
     }
 
     private static void ValidateJob(ScheduledJob job)
@@ -366,7 +506,8 @@ public sealed class ScheduleManager(
         }
         _disposed = true;
 
-        _stopSource.Cancel();
+        await _stopSource.CancelAsync().ConfigureAwait(false);
+
         if (_schedulerLoop is not null)
         {
             try
@@ -375,9 +516,10 @@ public sealed class ScheduleManager(
             }
             catch
             {
-                // Ignore background loop shutdown errors
+                // 忽略背景迴圈關閉時的錯誤
             }
         }
+
         if (!_executions.IsEmpty)
         {
             try
@@ -386,11 +528,12 @@ public sealed class ScheduleManager(
             }
             catch
             {
-                // Ignore background execution errors during dispose
+                // 忽略關閉期間仍在執行的背景工作錯誤
             }
         }
+
         _stopSource.Dispose();
+        _wakeSignal.Dispose();
         _gate.Dispose();
     }
 }
-
