@@ -147,3 +147,15 @@
      - 建置 0 警告、0 錯誤；單元測試 11/11 通過（新增 CliCatalog、自適應等待、重開不重跑、Antigravity 參數順序迴歸測試）。
      - 四個 CLI 皆以新參數實際執行成功（exit 0），Antigravity (Gemini) 與 Antigravity (Claude / GPT) 皆回覆單一「OK」。
      - GUI 以 UI Automation 驗證：僅一個視窗（無例外對話框）、排程列表 5 個儲存格正確填入；重開程式未再觸發喚醒。
+- 2026-08-11 版本升至 v1.1.0 並重新打包安裝檔：
+  - 因本次含實質行為修正（Antigravity Claude / GPT 額度池從未真正被喚醒），
+    `AiWakeScheduler.WinForms.csproj` 與 `installer/AI倒數喚醒.iss` 版本號由 1.0.0 升至 1.1.0。
+  - 產出 `dist\AI倒數喚醒_Setup_v1.1.0_x64.exe`
+    （47.84 MB / 50,162,478 位元組，
+    SHA256: `1394136AEDB04276A2C1FBE30667DE981ECC7F6C5E6DC7C0B2921A0AC8F7CD93`）。
+  - 已確認發布的 `AiWakeScheduler.Core.dll` 內含 `claude-sonnet-4-6`、`--safe-mode`、
+    `--ignore-user-config`，即安裝檔確實包含本次修正；`AI倒數喚醒.exe` 檔案版本為 1.1.0.0。
+  - 修正先前紀錄的檔案大小：本文件早先記載安裝檔為 16.77 MB，但打包一直是
+    `--self-contained true` 且未啟用 trimming，發布輸出實測 467 個檔案／約 160 MB，
+    以 LZMA2/Ultra64 solid 壓縮後為 47.84 MB。16.77 MB 應為誤植，並非本次變更造成
+    （本次 csproj 只新增 GC 與 TieredPGO 等 runtimeconfig 設定，不影響酬載大小）。
