@@ -1,5 +1,10 @@
 # AI HANDOFF
 
+## 2026-08-12 v1.2.0 publication and local install
+
+- Published GitHub Release `v1.2.0` from `7fad2ef64e57bad1cb073081ca201f351e654dad`; downloaded installer SHA-256 `48204008F77A280E2192A90C8997C8838E2868F884F6D0C2905BBE93B49D4ADB` matched GitHub and checksum.
+- Installed for the current user; registry reports `1.2.0`, installed EXE reports file `1.2.0.0` / product `1.2.0+7fad2ef64e57bad1cb073081ca201f351e654dad`, and the installed process remained responsive.
+
 ## 目前目標
 
 已完成 C# Windows 桌面程式、Inno Setup 安裝包打包，並成功完成 GitHub v1.0.0 官方版本（含 Setup 安裝檔 Asset）發布；後續維持維護狀態。
