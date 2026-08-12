@@ -16,6 +16,7 @@
 
 - ⏰ **極簡每日排程**：直接設定每天固定觸發時分（`HH:mm`），支援多組排程管理，主畫面即時顯示距離下一次執行的倒數計時。
 - 🚀 **四大多模型目標平行喚醒**：同時支援 **Google Antigravity (`agy`) Gemini 額度池**、**Antigravity Claude / GPT 額度池**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
+- 📊 **真實額度與重置倒數**：透過 Codex 官方 app-server 唯讀讀取剩餘百分比與重置時間；AGY／Claude CLI 未提供可機器解析介面時會明確標示「不支援」，不以推測值冒充帳戶資料。
 - 💡 **極致 Token 節省模式 (Token Saver)**：
   - 自動套用最低推理與簡短模式（`--effort low`、`model_reasoning_effort=low`）。
   - 禁用 Claude 所有 Tool 呼叫（`--tools ""`）。
@@ -34,10 +35,10 @@
 
 | AI 工具 / 額度池 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
 | :--- | :--- | :--- | :--- |
-| **Antigravity (Gemini)** | `agy` | `agy --print --effort low --disable-slash-commands <提示>` | 喚醒 AGY 的 Gemini 模型 5 小時額度池、非互動印出模式、低思考 effort、停用斜線指令 |
-| **Antigravity (Claude / GPT)** | `agy` | `agy --model "Claude Sonnet 4.6 (Thinking)" --print --effort low --disable-slash-commands <提示>` | 喚醒 AGY 的 Claude & GPT 模型 5 小時額度池、低思考 effort、停用斜線指令（亦可於額外參數自訂 `--model`） |
-| **OpenAI Codex** | `codex` | `codex exec --skip-git-repo-check --sandbox read-only -c model_reasoning_effort="low" -c model_verbosity="low" <提示>` | 非互動 exec、跳過 Git 檢查、唯讀沙箱、低推理與低詳細度 |
-| **Anthropic Claude** | `claude` | `claude --print --effort low --tools "" --no-session-persistence <提示>` | 非互動印出模式、低 effort、停用工具呼叫、不持久化對話 Session |
+| **Antigravity (Gemini)** | `agy` | `agy --effort low --disable-slash-commands --mode plan --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
+| **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-4-6 --disable-slash-commands --mode plan --print <提示>` | 明確選擇 Claude 額度池；該模型不支援 `--effort`，因此不傳入無效旗標 |
+| **OpenAI Codex** | `codex` | `codex exec --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
+| **Anthropic Claude** | `claude` | `claude --print --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
 
 > [!TIP]
 > Google Antigravity 內部將額度切分為 **Gemini Models** 與 **Claude and GPT models** 兩組獨立計數器。勾選本工具中的這兩項目標，可同時喚醒兩邊的 5 小時滾動重設窗口！
@@ -50,7 +51,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.0.0_x64.exe`**。
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.1.0_x64.exe`**。
 2. 執行安裝程式，依照精靈指示選擇安裝位置與是否建立桌面捷徑。
 3. 安裝完成後可勾選立即啟動，或於開始功能表 / 桌面捷徑啟動。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
@@ -72,10 +73,11 @@
    - **工作目錄**：選擇或保持預設隔離目錄。
    - **傳送至**：勾選欲啟動的 CLI 目標（Antigravity (Gemini) / Antigravity (Claude / GPT) / Codex CLI / Claude CLI）。
    - **訊息**：輸入觸發短語（預設為「早安」）。
-2. 點擊 **「儲存排程」**。
+2. 點擊 **「建立排程」**。選取既有排程後按鈕會切換為 **「儲存修改」**，可直接修改時間、訊息、目標與啟用狀態。
 
 ### 4. 測試與常駐
 - 可選取排程並點擊 **「立即執行」** 進行手動測試（不會跳過或影響原定的下一次每日排程時間）。
+- 主畫面「剩餘流量與重置倒數」會在開啟時讀取一次，也可按 **「重新讀取額度」** 手動更新；本地倒數不會重複呼叫模型。
 - 點擊視窗右上角關閉按鈕，程式會自動最小化並縮至 Windows 右下角系統匣持續監控。
 - 雙擊系統匣圖示或右鍵選擇「開啟主視窗」即可還原主畫面。
 

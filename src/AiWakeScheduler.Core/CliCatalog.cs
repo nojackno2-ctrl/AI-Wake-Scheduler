@@ -124,7 +124,7 @@ public static class CliCatalog
             PromptFlag = "--print",
             // --effort low 降低推理量；--disable-slash-commands 停用技能展開，
             // 兩者都直接減少送出的提示長度與回合數。
-            TokenSaverArguments = ["--effort", "low", "--disable-slash-commands"],
+            TokenSaverArguments = ["--effort", "low", "--disable-slash-commands", "--mode", "plan"],
             TimeoutArguments = timeout => ["--print-timeout", FormatGoDuration(timeout)],
             ExecutableCandidates = AntigravityCandidates
         },
@@ -138,7 +138,7 @@ public static class CliCatalog
             PromptFlag = "--print",
             // 注意：Claude 系列模型不接受 --effort，帶上去會直接被拒絕
             // （Error: --effort is not supported for model ...），所以這裡只停用技能展開。
-            TokenSaverArguments = ["--disable-slash-commands"],
+            TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
             // 這個項目的用途就是喚醒 Claude / GPT 額度池，模型必須明確指定。
             // 使用 `agy models` 列出的模型 ID，比顯示名稱少一層引號與空白的風險。
             DefaultModel = "claude-sonnet-4-6",
@@ -182,7 +182,8 @@ public static class CliCatalog
                 "--strict-mcp-config",
                 "--effort", "low",
                 "--tools", "",
-                "--no-session-persistence"
+                "--no-session-persistence",
+                "--prompt-suggestions", "false"
             ],
             ExecutableCandidates = ClaudeCandidates
         }

@@ -6,6 +6,18 @@
 
 ## 目前狀態（2026-08-11）
 
+- 2026-08-12 全工作區最佳化前基準複核：Release 建置成功（0 警告、0 錯誤）；沙箱內測試因隔離帳號沒有 Codex 認證而為 11/12，改在使用者主機登入狀態重跑後 12/12 全數通過。這批既有變更可作為後續最佳化前的基準提交。
+- 2026-08-12 新目標：分別最佳化 AGY、Codex、Claude 的喚醒呼叫，加入排程可修改、倒數時間與剩餘流量／額度的可驗證顯示，並最佳化主程式。第一次 AGY workspace-write 子代理因無頭模式無法取得 `command` 工具權限而未產出內容；下一次將依 delegation skill 在已明確授權的寫入模式使用 `-SkipPermissions` 重跑。不得把 CLI 未公開的額度資料推測成真實剩餘流量。
+- AGY 以 `-SkipPermissions` 重跑仍在 184 秒外層逾時前未產出程式碼。Codex 子代理第一次啟動則證實目前本機 CLI 拒絕 `--sandbox workspace-write` 與 `--approve-for-me` 並用；兩次失敗都未修改程式碼，Codex 將移除衝突旗標後重跑。
+- Codex 與 Claude 子代理重跑也分別在 184 秒、170 秒逾時，沒有交付產品程式碼；Codex 只留下 app-server JSON schema 暫存資料，已擷取 rate-limit 協定證據後安全刪除。主代理已依官方 Codex App Server 文件與本機 live probe 實作 `CliUsageReader`：使用 `initialize`／`initialized` 後呼叫 `account/rateLimits/read`，解析 `usedPercent`、`windowDurationMins`、`resetsAt`。本機實測曾取得 Codex `usedPercent=7`（剩餘 93%）及有效重置時間。AGY、Claude 的本機 `--help` 沒有同等非互動額度介面，UI 必須顯示不支援，不得推測。
+- 主視窗已新增四個 CLI 的「剩餘流量與重置倒數」區塊；只有 Codex 顯示真實伺服器資料，其餘明確顯示 CLI 未提供。額度只在顯示視窗或手動重新整理時查詢，之後每秒只在本地更新倒數。排程按鈕依新增／編輯狀態顯示「建立排程」或「儲存修改」。AGY 節省模式追加 `--mode plan`，Claude 追加 `--prompt-suggestions false`。已新增協定解析與不支援狀態測試，尚待建置與完整測試。
+- 第一次 Release 建置尚未進入編譯即失敗：workspace 沙箱無權讀取 `C:\Users\nojac\AppData\Roaming\NuGet\NuGet.Config`。這是環境權限阻擋，不是原始碼診斷；下一步以相同命令取得沙箱外讀取權限後重跑。
+- 取得權限後 Release 建置成功（0 警告、0 錯誤）。完整測試 11/12：新 `CliUsageReader` 與其餘測試皆通過；唯一失敗為既有 `ExecutableLocatorResolution`，設定值 `codex` 仍先從 PATH 選到 WindowsApps 不可執行別名，導致 `Access denied`，尚未使用 Desktop-managed `OpenAI\Codex\bin\<hash>\codex.exe`。下一步調整預設命令解析優先序後重跑。
+- Codex 路徑優先序修正後一度達到 12/12。加入產品 `CliUsageReader` 的真實 app-server 額度查詢後又為 11/12，抓到握手競態：連續送出 `initialize`／`initialized`／`account/rateLimits/read` 時，伺服器偶爾回覆 `Not initialized`。需等待 `id:0` 初始化成功後才送後兩者，再重跑。
+- 嚴格等待 `id:0` 後 live test 改為初始化逾時；相同 PowerShell JSONL 探針 1 秒內成功並讀得 `usedPercent=11`。根因為 C# `StandardInputEncoding = Encoding.UTF8` 在第一行送出 BOM，污染唯一的 `initialize`；已改為 `new UTF8Encoding(false)`，同時保留嚴格握手，待重跑。
+- UTF-8 無 BOM 修正後 Release 建置成功（0 警告、0 錯誤），完整測試連續兩次 12/12 通過；`ExecutableLocatorResolution` 現在除了四 CLI `--version`，也會以產品 `CliUsageReader` 真實呼叫 Codex app-server 並確認至少一個有效額度視窗。四個假 CLI 平行耗時分別約 1202 ms、1206 ms。
+- Release EXE 已以隱藏視窗 smoke test 真實啟動，等待 5 秒（足以執行啟動畫面額度讀取）後仍 `Responding=True`，視窗標題為「AI 倒數喚醒」且有有效 MainWindowHandle，之後已關閉該測試實例。Computer Use 依技能流程初始化與重置重試均被 `EPERM: lstat C:\Users\nojac\AppData\Local\OpenAI\Codex` 阻擋，因此本次沒有可信新版畫面截圖，不得宣稱已做視覺驗證。
+
 - 已補齊根目錄標準 MIT `LICENSE` 檔案。
 - 已透過 GitHub CLI 設定專案 Description 簡介。
 - 已完成 v1.0.0 正式版 Release 發布與 Asset 上傳。

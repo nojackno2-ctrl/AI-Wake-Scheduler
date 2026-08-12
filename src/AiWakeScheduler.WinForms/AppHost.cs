@@ -14,6 +14,7 @@ internal sealed class AppHost : IAsyncDisposable
         JsonFileStore<List<ScheduledJob>> jobStore,
         AppSettings settings,
         CliRunner runner,
+        CliUsageReader usageReader,
         ScheduleManager manager)
     {
         Paths = paths;
@@ -21,6 +22,7 @@ internal sealed class AppHost : IAsyncDisposable
         JobStore = jobStore;
         Settings = settings;
         Runner = runner;
+        UsageReader = usageReader;
         Manager = manager;
     }
 
@@ -29,6 +31,7 @@ internal sealed class AppHost : IAsyncDisposable
     public JsonFileStore<List<ScheduledJob>> JobStore { get; }
     public AppSettings Settings { get; }
     public CliRunner Runner { get; }
+    public CliUsageReader UsageReader { get; }
     public ScheduleManager Manager { get; }
 
     public static async Task<AppHost> CreateAsync(CancellationToken cancellationToken = default)
@@ -42,9 +45,10 @@ internal sealed class AppHost : IAsyncDisposable
 
         var jobStore = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, static () => []);
         var runner = new CliRunner(paths);
+        var usageReader = new CliUsageReader();
         var manager = new ScheduleManager(jobStore, runner, () => settings);
 
-        var host = new AppHost(paths, settingsStore, jobStore, settings, runner, manager);
+        var host = new AppHost(paths, settingsStore, jobStore, settings, runner, usageReader, manager);
         await manager.InitializeAsync(cancellationToken).ConfigureAwait(false);
         return host;
     }
