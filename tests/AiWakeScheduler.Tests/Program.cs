@@ -22,7 +22,7 @@ if (args.Contains("--fake-cli", StringComparer.Ordinal))
     return 0;
 }
 
-var tests = new (string Name, Func<Task> Run)[]
+var deterministicTests = new (string Name, Func<Task> Run)[]
 {
     ("ArgumentTokenizer", TestArgumentTokenizerAsync),
     ("CliCatalog", TestCliCatalogAsync),
@@ -34,9 +34,19 @@ var tests = new (string Name, Func<Task> Run)[]
     ("ScheduleManagerDueJob", TestScheduleManagerAsync),
     ("ScheduleManagerAdaptiveWait", TestScheduleManagerAdaptiveWaitAsync),
     ("ScheduleManagerRestartDoesNotRefire", TestScheduleManagerRestartDoesNotRefireAsync),
-    ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
+    ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync)
+};
+
+var integrationTests = new (string Name, Func<Task> Run)[]
+{
     ("ExecutableLocatorResolution", TestExecutableLocatorAsync)
 };
+
+var runIntegration = args.Contains("--integration", StringComparer.Ordinal);
+var tests = runIntegration ? integrationTests : deterministicTests;
+Console.WriteLine(runIntegration
+    ? "執行 opt-in 本機 CLI／登入整合測試。"
+    : "執行可重現的 deterministic 測試（不需要本機 CLI 或登入狀態）。");
 
 var failures = new List<string>();
 foreach (var test in tests)

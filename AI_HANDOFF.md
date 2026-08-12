@@ -6,6 +6,11 @@
 
 ## 目前狀態（2026-08-11）
 
+- 2026-08-12 最佳化里程碑：測試入口已拆成預設 11 項 deterministic 測試（不探測本機 CLI、不要求登入）與明確 opt-in 的 `--integration`（真實 AGY/Codex/Claude 版本探測及 Codex app-server 額度讀取）。`build-installer.ps1` 預設只執行可重現測試，另以 `-RunIntegrationTests` 選用 live integration。版本升至 1.2.0，建置腳本在執行前會嚴格比對 csproj／Inno Setup／預期版本；self-contained WinForms 明確維持 `PublishTrimmed=false`，衛星語言限制為 `zh-Hant;en`。尚待建置、兩層測試、publish 與 installer 完整驗證。
+- 初次驗證：Release `--no-restore` 建置成功（0 警告／0 錯誤），預設 deterministic 測試 11/11 通過。隔離帳號執行 opt-in integration 時，四 CLI 路徑／版本探測已通過，唯一失敗是 Codex app-server 回覆 `codex account authentication required to read rate limits`；這是隔離帳號沒有使用者登入狀態的預期環境邊界，需在使用者主機登入狀態重跑，不能當作產品測試失敗或整合成功。
+- 使用者主機登入狀態重跑 opt-in integration 為 1/1 通過。完整 `build-installer.ps1` 在主機環境成功：腳本內 deterministic 11/11、self-contained win-x64 publish、Inno Setup 均成功，產出 `dist\AI倒數喚醒_Setup_v1.2.0_x64.exe`（48,572,179 bytes；SHA256 `2E1DDED8A5BF833F54D3182FD1236791FD65318A3E2F6C25A8343148257080D1`）。尚待發布目錄語言／版本與靜默安裝卸載稽核。
+- 最終封裝稽核完成：publish 共 263 檔／152,654,324 bytes，只有 `zh-Hant` 衛星資源目錄（英語為 neutral 主資源，不另建 `en` 目錄）；`AI倒數喚醒.exe` FileVersion 為 1.2.0.0；專案明確 `PublishTrimmed=false`。在工作區專用目錄靜默安裝成功（exit 0，265 檔，安裝後 EXE 1.2.0.0），靜默卸載成功（exit 0，0 殘留）。`git diff --check` 通過。注意：尚未 commit/push/tag/release，也尚未覆蓋使用者目前正式安裝位置；這些由整合／發布階段另行執行。
+
 - 2026-08-12 全工作區最佳化前基準複核：Release 建置成功（0 警告、0 錯誤）；沙箱內測試因隔離帳號沒有 Codex 認證而為 11/12，改在使用者主機登入狀態重跑後 12/12 全數通過。這批既有變更可作為後續最佳化前的基準提交。
 - 2026-08-12 新目標：分別最佳化 AGY、Codex、Claude 的喚醒呼叫，加入排程可修改、倒數時間與剩餘流量／額度的可驗證顯示，並最佳化主程式。第一次 AGY workspace-write 子代理因無頭模式無法取得 `command` 工具權限而未產出內容；下一次將依 delegation skill 在已明確授權的寫入模式使用 `-SkipPermissions` 重跑。不得把 CLI 未公開的額度資料推測成真實剩餘流量。
 - AGY 以 `-SkipPermissions` 重跑仍在 184 秒外層逾時前未產出程式碼。Codex 子代理第一次啟動則證實目前本機 CLI 拒絕 `--sandbox workspace-write` 與 `--approve-for-me` 並用；兩次失敗都未修改程式碼，Codex 將移除衝突旗標後重跑。

@@ -51,7 +51,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.1.0_x64.exe`**。
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.2.0_x64.exe`**。
 2. 執行安裝程式，依照精靈指示選擇安裝位置與是否建立桌面捷徑。
 3. 安裝完成後可勾選立即啟動，或於開始功能表 / 桌面捷徑啟動。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
@@ -115,6 +115,12 @@ dotnet build '.\AI倒數喚醒.sln' --configuration Release
 **執行測試套件：**
 ```powershell
 dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release
+```
+
+預設測試完全不依賴本機 CLI 或登入狀態，可在 CI 與隔離環境重現。若要額外驗證本機已安裝的 AGY、Codex、Claude 以及 Codex 登入額度介面，請明確選用整合測試：
+
+```powershell
+dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release -- --integration
 ```
 
 **一鍵打包 Windows 安裝版 (Setup.exe)：**
