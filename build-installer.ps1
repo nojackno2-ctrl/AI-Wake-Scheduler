@@ -5,12 +5,27 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = "Release",
-    [switch]$SkipTests = $false
+    [switch]$SkipTests = $false,
+    [switch]$RunIntegrationTests = $false
 )
 
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
+
+$expectedVersion = "1.2.0"
+$projectFile = Join-Path $ScriptDir "src\AiWakeScheduler.WinForms\AiWakeScheduler.WinForms.csproj"
+$installerScript = Join-Path $ScriptDir "installer\AI倒數喚醒.iss"
+[xml]$projectXml = Get-Content -Raw -LiteralPath $projectFile
+$projectVersion = [string]$projectXml.Project.PropertyGroup.Version
+$installerVersionMatch = [regex]::Match(
+    (Get-Content -Raw -LiteralPath $installerScript),
+    '(?m)^#define MyAppVersion "([^"]+)"$')
+if ($projectVersion -ne $expectedVersion -or
+    -not $installerVersionMatch.Success -or
+    $installerVersionMatch.Groups[1].Value -ne $expectedVersion) {
+    throw "版本不一致：預期 $expectedVersion，csproj=$projectVersion，installer=$($installerVersionMatch.Groups[1].Value)。"
+}
 
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host "  AI 倒數喚醒 - 開始建置 Windows 安裝版 (Setup.exe)" -ForegroundColor Cyan
@@ -50,13 +65,21 @@ Write-Host "[1/5] Inno Setup 編譯器定位成功: $isccPath" -ForegroundColor 
 
 # 2. 執行單元測試 (確保品質)
 if (-not $SkipTests) {
-    Write-Host "[2/5] 執行單元測試與 CLI 探測驗證..." -ForegroundColor Yellow
+    Write-Host "[2/5] 執行可重現的 deterministic 測試..." -ForegroundColor Yellow
     & dotnet run --project tests/AiWakeScheduler.Tests/AiWakeScheduler.Tests.csproj -c $Configuration
     if ($LASTEXITCODE -ne 0) {
         Write-Error "單元測試執行失敗，建置中止。"
         exit $LASTEXITCODE
     }
-    Write-Host "      單元測試全數通過！" -ForegroundColor Green
+    Write-Host "      deterministic 測試全數通過！" -ForegroundColor Green
+    if ($RunIntegrationTests) {
+        Write-Host "      執行 opt-in 本機 CLI／登入整合測試..." -ForegroundColor Yellow
+        & dotnet run --project tests/AiWakeScheduler.Tests/AiWakeScheduler.Tests.csproj -c $Configuration -- --integration
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "本機 CLI／登入整合測試失敗，建置中止。"
+            exit $LASTEXITCODE
+        }
+    }
 } else {
     Write-Host "[2/5] 跳過單元測試 (SkipTests 已啟用)" -ForegroundColor DarkGray
 }
@@ -111,7 +134,7 @@ if (-not (Test-Path $distDir)) {
 }
 
 # 5. 調用 Inno Setup 編譯安裝檔
-$issScript = Join-Path $ScriptDir "installer\AI倒數喚醒.iss"
+$issScript = $installerScript
 Write-Host "[4/5] 正在使用 Inno Setup 編譯安裝程式..." -ForegroundColor Yellow
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo

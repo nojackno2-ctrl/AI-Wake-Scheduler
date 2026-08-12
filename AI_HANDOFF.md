@@ -4,8 +4,27 @@
 
 已完成 C# Windows 桌面程式、Inno Setup 安裝包打包，並成功完成 GitHub v1.0.0 官方版本（含 Setup 安裝檔 Asset）發布；後續維持維護狀態。
 
-## 目前狀態（2026-08-10）
+## 目前狀態（2026-08-11）
 
+- 2026-08-12 最佳化里程碑：測試入口已拆成預設 11 項 deterministic 測試（不探測本機 CLI、不要求登入）與明確 opt-in 的 `--integration`（真實 AGY/Codex/Claude 版本探測及 Codex app-server 額度讀取）。`build-installer.ps1` 預設只執行可重現測試，另以 `-RunIntegrationTests` 選用 live integration。版本升至 1.2.0，建置腳本在執行前會嚴格比對 csproj／Inno Setup／預期版本；self-contained WinForms 明確維持 `PublishTrimmed=false`，衛星語言限制為 `zh-Hant;en`。尚待建置、兩層測試、publish 與 installer 完整驗證。
+- 初次驗證：Release `--no-restore` 建置成功（0 警告／0 錯誤），預設 deterministic 測試 11/11 通過。隔離帳號執行 opt-in integration 時，四 CLI 路徑／版本探測已通過，唯一失敗是 Codex app-server 回覆 `codex account authentication required to read rate limits`；這是隔離帳號沒有使用者登入狀態的預期環境邊界，需在使用者主機登入狀態重跑，不能當作產品測試失敗或整合成功。
+- 使用者主機登入狀態重跑 opt-in integration 為 1/1 通過。完整 `build-installer.ps1` 在主機環境成功：腳本內 deterministic 11/11、self-contained win-x64 publish、Inno Setup 均成功，產出 `dist\AI倒數喚醒_Setup_v1.2.0_x64.exe`（48,572,179 bytes；SHA256 `2E1DDED8A5BF833F54D3182FD1236791FD65318A3E2F6C25A8343148257080D1`）。尚待發布目錄語言／版本與靜默安裝卸載稽核。
+- 最終封裝稽核完成：publish 共 263 檔／152,654,324 bytes，只有 `zh-Hant` 衛星資源目錄（英語為 neutral 主資源，不另建 `en` 目錄）；`AI倒數喚醒.exe` FileVersion 為 1.2.0.0；專案明確 `PublishTrimmed=false`。在工作區專用目錄靜默安裝成功（exit 0，265 檔，安裝後 EXE 1.2.0.0），靜默卸載成功（exit 0，0 殘留）。`git diff --check` 通過。注意：尚未 commit/push/tag/release，也尚未覆蓋使用者目前正式安裝位置；這些由整合／發布階段另行執行。
+
+- 2026-08-12 全工作區最佳化前基準複核：Release 建置成功（0 警告、0 錯誤）；沙箱內測試因隔離帳號沒有 Codex 認證而為 11/12，改在使用者主機登入狀態重跑後 12/12 全數通過。這批既有變更可作為後續最佳化前的基準提交。
+- 2026-08-12 新目標：分別最佳化 AGY、Codex、Claude 的喚醒呼叫，加入排程可修改、倒數時間與剩餘流量／額度的可驗證顯示，並最佳化主程式。第一次 AGY workspace-write 子代理因無頭模式無法取得 `command` 工具權限而未產出內容；下一次將依 delegation skill 在已明確授權的寫入模式使用 `-SkipPermissions` 重跑。不得把 CLI 未公開的額度資料推測成真實剩餘流量。
+- AGY 以 `-SkipPermissions` 重跑仍在 184 秒外層逾時前未產出程式碼。Codex 子代理第一次啟動則證實目前本機 CLI 拒絕 `--sandbox workspace-write` 與 `--approve-for-me` 並用；兩次失敗都未修改程式碼，Codex 將移除衝突旗標後重跑。
+- Codex 與 Claude 子代理重跑也分別在 184 秒、170 秒逾時，沒有交付產品程式碼；Codex 只留下 app-server JSON schema 暫存資料，已擷取 rate-limit 協定證據後安全刪除。主代理已依官方 Codex App Server 文件與本機 live probe 實作 `CliUsageReader`：使用 `initialize`／`initialized` 後呼叫 `account/rateLimits/read`，解析 `usedPercent`、`windowDurationMins`、`resetsAt`。本機實測曾取得 Codex `usedPercent=7`（剩餘 93%）及有效重置時間。AGY、Claude 的本機 `--help` 沒有同等非互動額度介面，UI 必須顯示不支援，不得推測。
+- 主視窗已新增四個 CLI 的「剩餘流量與重置倒數」區塊；只有 Codex 顯示真實伺服器資料，其餘明確顯示 CLI 未提供。額度只在顯示視窗或手動重新整理時查詢，之後每秒只在本地更新倒數。排程按鈕依新增／編輯狀態顯示「建立排程」或「儲存修改」。AGY 節省模式追加 `--mode plan`，Claude 追加 `--prompt-suggestions false`。已新增協定解析與不支援狀態測試，尚待建置與完整測試。
+- 第一次 Release 建置尚未進入編譯即失敗：workspace 沙箱無權讀取 `C:\Users\nojac\AppData\Roaming\NuGet\NuGet.Config`。這是環境權限阻擋，不是原始碼診斷；下一步以相同命令取得沙箱外讀取權限後重跑。
+- 取得權限後 Release 建置成功（0 警告、0 錯誤）。完整測試 11/12：新 `CliUsageReader` 與其餘測試皆通過；唯一失敗為既有 `ExecutableLocatorResolution`，設定值 `codex` 仍先從 PATH 選到 WindowsApps 不可執行別名，導致 `Access denied`，尚未使用 Desktop-managed `OpenAI\Codex\bin\<hash>\codex.exe`。下一步調整預設命令解析優先序後重跑。
+- Codex 路徑優先序修正後一度達到 12/12。加入產品 `CliUsageReader` 的真實 app-server 額度查詢後又為 11/12，抓到握手競態：連續送出 `initialize`／`initialized`／`account/rateLimits/read` 時，伺服器偶爾回覆 `Not initialized`。需等待 `id:0` 初始化成功後才送後兩者，再重跑。
+- 嚴格等待 `id:0` 後 live test 改為初始化逾時；相同 PowerShell JSONL 探針 1 秒內成功並讀得 `usedPercent=11`。根因為 C# `StandardInputEncoding = Encoding.UTF8` 在第一行送出 BOM，污染唯一的 `initialize`；已改為 `new UTF8Encoding(false)`，同時保留嚴格握手，待重跑。
+- UTF-8 無 BOM 修正後 Release 建置成功（0 警告、0 錯誤），完整測試連續兩次 12/12 通過；`ExecutableLocatorResolution` 現在除了四 CLI `--version`，也會以產品 `CliUsageReader` 真實呼叫 Codex app-server 並確認至少一個有效額度視窗。四個假 CLI 平行耗時分別約 1202 ms、1206 ms。
+- Release EXE 已以隱藏視窗 smoke test 真實啟動，等待 5 秒（足以執行啟動畫面額度讀取）後仍 `Responding=True`，視窗標題為「AI 倒數喚醒」且有有效 MainWindowHandle，之後已關閉該測試實例。Computer Use 依技能流程初始化與重置重試均被 `EPERM: lstat C:\Users\nojac\AppData\Local\OpenAI\Codex` 阻擋，因此本次沒有可信新版畫面截圖，不得宣稱已做視覺驗證。
+
+- 已補齊根目錄標準 MIT `LICENSE` 檔案。
+- 已透過 GitHub CLI 設定專案 Description 簡介。
 - 已完成 v1.0.0 正式版 Release 發布與 Asset 上傳。
 - 已初始化 Git `main`，提交 `75fa303`（`Initial AI wake scheduler`），並建立儲存庫 `https://github.com/nojackno2-ctrl/AI-Wake-Scheduler`。
 - 本機已安裝 .NET SDK 10.0.302；.NET 8 與 10 Windows Desktop Runtime 均存在。
@@ -155,7 +174,20 @@
     SHA256: `1394136AEDB04276A2C1FBE30667DE981ECC7F6C5E6DC7C0B2921A0AC8F7CD93`）。
   - 已確認發布的 `AiWakeScheduler.Core.dll` 內含 `claude-sonnet-4-6`、`--safe-mode`、
     `--ignore-user-config`，即安裝檔確實包含本次修正；`AI倒數喚醒.exe` 檔案版本為 1.1.0.0。
-  - 修正先前紀錄的檔案大小：本文件早先記載安裝檔為 16.77 MB，但打包一直是
-    `--self-contained true` 且未啟用 trimming，發布輸出實測 467 個檔案／約 160 MB，
-    以 LZMA2/Ultra64 solid 壓縮後為 47.84 MB。16.77 MB 應為誤植，並非本次變更造成
-    （本次 csproj 只新增 GC 與 TieredPGO 等 runtimeconfig 設定，不影響酬載大小）。
+  - 已在 GitHub 建立 v1.1.0 Release 並上傳安裝檔（標記為 Latest）。
+    注意：GitHub 會移除 Asset 檔名中的非 ASCII 字元，實際 Asset 名稱為
+    `AI._Setup_v1.1.0_x64.exe`（v1.0.0 的 Asset 同樣是 `AI._Setup_v1.0.0_x64.exe`，屬既有行為）。
+  - 安裝檔大小紀錄不一致，已查明並非本次變更造成：
+    - 本文件先前記載 16.77 MB，但 GitHub v1.0.0 Release 的實際 Asset 為 20.02 MB，
+      兩者皆與目前打包設定產出的 47.84 MB 不符。
+    - 以 `git worktree` 檢出 tag `v1.0.0`，用與 `build-installer.ps1` 完全相同的 publish
+      指令實測，輸出為 **467 個檔案／159.96 MB**；目前版本為 467 個檔案／159.98 MB。
+      酬載形狀相同，證實本次變更未增加任何檔案
+      （csproj 只新增 GC 與 TieredPGO 等 runtimeconfig 設定，不影響酬載大小）。
+    - 結論：以儲存庫現行打包設定（`--self-contained true`、未啟用 trimming）產出的安裝檔
+      就是約 47.84 MB。先前發布的 20.02 MB Asset 與文件中的 16.77 MB 是以不同設定產生的，
+      與現行 `build-installer.ps1` 不一致；此差異在本次之前就已存在。
+    - 若日後要縮小體積，最安全的選項是排除未使用的衛星語言資源：目前含 13 個語言資料夾
+      （cs, de, es, fr, it, ja, ko, pl, pt-BR, ru, tr, zh-Hans, zh-Hant）共 15.5 MB（未壓縮），
+      可用 `<SatelliteResourceLanguages>zh-Hant;en</SatelliteResourceLanguages>` 限定。
+      WinForms 專案不建議啟用 PublishTrimmed。
