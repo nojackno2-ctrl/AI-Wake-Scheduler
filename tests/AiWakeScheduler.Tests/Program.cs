@@ -27,6 +27,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("ArgumentTokenizer", TestArgumentTokenizerAsync),
     ("CliCatalog", TestCliCatalogAsync),
     ("CliCommandBuilder", TestCliCommandBuilderAsync),
+    ("CliUsageReader", TestCliUsageReaderAsync),
     ("ScheduleCalculator", TestScheduleCalculatorAsync),
     ("JsonFileStore", TestJsonFileStoreAsync),
     ("CliRunnerSafeArguments", TestCliRunnerAsync),
@@ -96,11 +97,13 @@ static Task TestCliCommandBuilderAsync()
     var saverAgy = CliCommandBuilder.Build(CliKind.Antigravity, "早安", timeout: TimeSpan.FromMinutes(3));
     Assert(saverAgy.Contains("--effort") && saverAgy.Contains("low"), "Antigravity 節省模式應包含 low effort。");
     Assert(saverAgy.Contains("--disable-slash-commands"), "Antigravity 節省模式應停用斜線指令。");
+    Assert(saverAgy.Contains("--mode") && saverAgy.Contains("plan"), "Antigravity 節省模式不可修改工作區。");
     Assert(saverAgy.Contains("--print-timeout") && saverAgy.Contains("180s"), "應把應用程式逾時轉為 CLI 自身的 --print-timeout。");
 
     var saverAgyClaude = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安");
     Assert(saverAgyClaude.Contains("--model") && saverAgyClaude.Contains("claude-sonnet-4-6"), "AntigravityClaude 預設應使用 Claude Sonnet 模型 ID。");
     Assert(saverAgyClaude.Contains("--disable-slash-commands"), "AntigravityClaude 節省模式應停用技能展開。");
+    Assert(saverAgyClaude.Contains("--mode") && saverAgyClaude.Contains("plan"), "AntigravityClaude 節省模式不可修改工作區。");
     // Claude 系列模型不接受 --effort，帶上去 agy 會直接拒絕整個呼叫
     Assert(!saverAgyClaude.Contains("--effort"), "AntigravityClaude 不可帶 --effort，Claude 模型不支援。");
     Assert(!saverAgyClaude.Contains("--print-timeout"), "未指定逾時時不應產生 --print-timeout。");
@@ -115,6 +118,9 @@ static Task TestCliCommandBuilderAsync()
     Assert(saverClaude.Contains("--tools") && saverClaude.Contains(string.Empty), "節省模式應停用 Claude 內建工具。");
     Assert(saverClaude.Contains("--safe-mode"), "節省模式應停用 CLAUDE.md、技能、外掛與 MCP 伺服器。");
     Assert(saverClaude.Contains("--strict-mcp-config"), "節省模式應確保不載入任何 MCP 工具結構描述。");
+    Assert(saverClaude.Contains("--no-session-persistence"), "節省模式不應保存一次性喚醒 session。");
+    var suggestionsIndex = saverClaude.ToList().IndexOf("--prompt-suggestions");
+    Assert(suggestionsIndex >= 0 && saverClaude[suggestionsIndex + 1] == "false", "節省模式應停用額外的提示建議生成。");
 
     // --tools 是可變長度參數，後面必須緊接旗標，否則會吃掉提示詞
     var toolsIndex = saverClaude.ToList().IndexOf("--tools");
@@ -122,6 +128,46 @@ static Task TestCliCommandBuilderAsync()
     Assert(saverClaude[toolsIndex + 2].StartsWith("--", StringComparison.Ordinal), "--tools 的值之後必須是旗標，避免吞掉位置參數。");
 
     return Task.CompletedTask;
+}
+
+static async Task TestCliUsageReaderAsync()
+{
+    var observedAt = new DateTimeOffset(2026, 8, 12, 8, 0, 0, TimeSpan.FromHours(8));
+    var primaryReset = observedAt.AddHours(2).ToUnixTimeSeconds();
+    var secondaryReset = observedAt.AddDays(6).ToUnixTimeSeconds();
+    var response = $$"""
+        {
+          "id": 1,
+          "result": {
+            "rateLimits": {},
+            "rateLimitsByLimitId": {
+              "codex": {
+                "limitId": "codex",
+                "primary": { "usedPercent": 7, "windowDurationMins": 300, "resetsAt": {{primaryReset}} },
+                "secondary": { "usedPercent": 35, "windowDurationMins": 10080, "resetsAt": {{secondaryReset}} }
+              }
+            }
+          }
+        }
+        """;
+
+    var snapshot = CliUsageReader.ParseCodexRateLimits(response, observedAt);
+    Assert(snapshot.Availability == CliUsageAvailability.Available, "Codex rate-limit 回應應可解析。");
+    Assert(snapshot.Windows.Count == 2, "主要與次要額度視窗都應保留。");
+    Assert(snapshot.Windows[0].RemainingPercent == 93, "剩餘百分比應為 100 減 usedPercent。");
+    Assert(snapshot.Windows[0].ResetsAt?.ToUnixTimeSeconds() == primaryReset, "應解析 Unix 重置時間。");
+    Assert(snapshot.Windows[1].Duration == TimeSpan.FromDays(7), "應解析額度視窗長度。");
+
+    var error = CliUsageReader.ParseCodexRateLimits(
+        "{\"id\":1,\"error\":{\"message\":\"not authenticated\"}}",
+        observedAt);
+    Assert(error.Availability == CliUsageAvailability.Unavailable, "伺服器錯誤不可標示為可用額度。");
+
+    var unsupported = await new CliUsageReader().ReadAsync(
+        CliKind.Claude,
+        new CliProfile { Executable = "claude" },
+        Environment.CurrentDirectory);
+    Assert(unsupported.Availability == CliUsageAvailability.Unsupported, "沒有公開額度介面的 CLI 應明確標示不支援。");
 }
 
 static async Task TestScheduleManagerRestartDoesNotRefireAsync()
@@ -720,6 +766,18 @@ static async Task TestExecutableLocatorAsync()
 
         var probeCodex = await runner.ProbeAsync(CliKind.Codex, new CliProfile { Executable = "codex" }, workingDir);
         Assert(probeCodex.Succeeded, $"Codex Probe 應成功：{probeCodex.Summary}");
+
+        // 直接走產品用的 app-server 整合，確認目前登入帳戶真的能回傳額度視窗。
+        // account/rateLimits/read 是唯讀查詢，不會建立模型回合或消耗 Token。
+        var codexUsage = await new CliUsageReader().ReadAsync(
+            CliKind.Codex,
+            new CliProfile { Executable = "codex" },
+            workingDir);
+        Assert(codexUsage.Availability == CliUsageAvailability.Available,
+            $"Codex 額度應可由 app-server 讀取：{codexUsage.Message}");
+        Assert(codexUsage.Windows.Count > 0, "Codex 額度回應應至少有一個視窗。");
+        Assert(codexUsage.Windows.All(window => window.RemainingPercent is >= 0 and <= 100),
+            "Codex 剩餘百分比應落在 0 到 100。");
 
         var probeClaude = await runner.ProbeAsync(CliKind.Claude, new CliProfile { Executable = "claude" }, workingDir);
         Assert(probeClaude.Succeeded, $"Claude Probe 應成功：{probeClaude.Summary}");

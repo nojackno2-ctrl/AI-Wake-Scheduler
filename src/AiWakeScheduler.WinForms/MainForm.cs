@@ -24,9 +24,14 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _clockLabel = new() { Spring = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 1000 };
     private readonly Dictionary<CliKind, CheckBox> _targetChecks = [];
+    private readonly Dictionary<CliKind, Label> _usageLabels = [];
+    private readonly Dictionary<CliKind, CliUsageSnapshot> _usageSnapshots = [];
     private readonly NotifyIcon _notifyIcon;
 
     private SplitContainer? _mainSplit;
+    private Button? _saveButton;
+    private Button? _refreshUsageButton;
+    private CancellationTokenSource? _usageRefreshCancellation;
     private Guid? _editingId;
     private bool _reallyExit;
     private bool _refreshingSelection;
@@ -76,6 +81,10 @@ internal sealed class MainForm : Form
 
             Manager.JobsChanged -= ManagerOnJobsChanged;
             Manager.BackgroundError -= ManagerOnBackgroundError;
+
+            _usageRefreshCancellation?.Cancel();
+            _usageRefreshCancellation?.Dispose();
+            _usageRefreshCancellation = null;
 
             if (_notifyIcon is not null)
             {
@@ -218,7 +227,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             AutoScroll = true,
             ColumnCount = 2,
-            RowCount = 9,
+            RowCount = 10,
             Padding = new Padding(14, 0, 0, 0)
         };
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -258,6 +267,10 @@ internal sealed class MainForm : Form
         AddEditorRow(editor, 5, "傳送至", targets);
         AddEditorRow(editor, 6, string.Empty, _enabledCheck);
 
+        var usagePanel = BuildUsagePanel();
+        editor.Controls.Add(usagePanel, 0, 7);
+        editor.SetColumnSpan(usagePanel, 2);
+
         var note = new Label
         {
             Text = "此排程每天在指定時分執行。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，"
@@ -267,19 +280,65 @@ internal sealed class MainForm : Form
             ForeColor = AppTheme.Muted,
             Margin = new Padding(0, 12, 0, 12)
         };
-        editor.Controls.Add(note, 0, 7);
+        editor.Controls.Add(note, 0, 8);
         editor.SetColumnSpan(note, 2);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        var save = ActionButton("儲存排程", SaveScheduleAsync);
-        save.BackColor = AppTheme.Accent;
-        save.ForeColor = Color.White;
-        save.FlatStyle = FlatStyle.Flat;
-        buttons.Controls.Add(save);
+        _saveButton = ActionButton("建立排程", SaveScheduleAsync);
+        _saveButton.BackColor = AppTheme.Accent;
+        _saveButton.ForeColor = Color.White;
+        _saveButton.FlatStyle = FlatStyle.Flat;
+        buttons.Controls.Add(_saveButton);
         buttons.Controls.Add(ActionButton("CLI 設定…", OpenSettingsAsync));
-        editor.Controls.Add(buttons, 0, 8);
+        editor.Controls.Add(buttons, 0, 9);
         editor.SetColumnSpan(buttons, 2);
         parent.Controls.Add(editor);
+    }
+
+    private Control BuildUsagePanel()
+    {
+        var group = new GroupBox
+        {
+            Text = "剩餘流量與重置倒數",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            Padding = new Padding(10, 8, 10, 10),
+            Margin = new Padding(0, 8, 0, 8)
+        };
+        var table = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var row = 0;
+        foreach (var descriptor in CliCatalog.All)
+        {
+            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            table.Controls.Add(new Label
+            {
+                Text = descriptor.ShortName,
+                AutoSize = true,
+                Font = AppTheme.TableHeader,
+                Margin = new Padding(0, 5, 10, 5)
+            }, 0, row);
+            var value = new Label
+            {
+                Text = "尚未讀取",
+                AutoSize = true,
+                MaximumSize = new Size(430, 0),
+                ForeColor = AppTheme.Muted,
+                Margin = new Padding(0, 5, 0, 5)
+            };
+            _usageLabels[descriptor.Kind] = value;
+            table.Controls.Add(value, 1, row);
+            row++;
+        }
+
+        _refreshUsageButton = ActionButton("重新讀取額度", RefreshUsageOnClick);
+        _refreshUsageButton.Margin = new Padding(0, 7, 0, 0);
+        table.Controls.Add(_refreshUsageButton, 0, row);
+        table.SetColumnSpan(_refreshUsageButton, 2);
+        group.Controls.Add(table);
+        return group;
     }
 
     private async void MainFormOnShown(object? sender, EventArgs e)
@@ -294,6 +353,7 @@ internal sealed class MainForm : Form
         else
         {
             StartClock();
+            await RefreshUsageAsync(showStatus: false).ConfigureAwait(true);
         }
     }
 
@@ -463,6 +523,138 @@ internal sealed class MainForm : Form
         }
     }
 
+    private async void RefreshUsageOnClick(object? sender, EventArgs e) =>
+        await RefreshUsageAsync(showStatus: true).ConfigureAwait(true);
+
+    /// <summary>
+    /// 額度只在開啟主視窗或使用者要求時查詢一次；之後每秒只用已取得的
+    /// resetsAt 更新本地倒數，不會持續啟動 CLI 或發出網路要求。
+    /// </summary>
+    private async Task RefreshUsageAsync(bool showStatus)
+    {
+        var cancellation = new CancellationTokenSource();
+        var previous = Interlocked.Exchange(ref _usageRefreshCancellation, cancellation);
+        previous?.Cancel();
+        previous?.Dispose();
+
+        if (_refreshUsageButton is not null)
+        {
+            _refreshUsageButton.Enabled = false;
+            _refreshUsageButton.Text = "讀取中…";
+        }
+
+        try
+        {
+            var descriptors = CliCatalog.All;
+            var tasks = new Task<CliUsageSnapshot>[descriptors.Count];
+            for (var i = 0; i < descriptors.Count; i++)
+            {
+                var kind = descriptors[i].Kind;
+                var profile = _host.Settings.CliProfiles[kind].Clone();
+                tasks[i] = _host.UsageReader.ReadAsync(
+                    kind,
+                    profile,
+                    _host.Paths.WakeupWorkspace,
+                    cancellation.Token);
+            }
+
+            var snapshots = await Task.WhenAll(tasks).ConfigureAwait(true);
+            if (IsDisposed || cancellation.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _usageSnapshots.Clear();
+            for (var i = 0; i < snapshots.Length; i++)
+            {
+                _usageSnapshots[snapshots[i].Cli] = snapshots[i];
+            }
+            UpdateUsageLabels(DateTimeOffset.Now);
+
+            if (showStatus)
+            {
+                var codex = snapshots.First(snapshot => snapshot.Cli == CliKind.Codex);
+                SetStatus(
+                    codex.Availability == CliUsageAvailability.Available
+                        ? "Codex 剩餘流量已更新"
+                        : $"額度讀取：{codex.Message}",
+                    codex.Availability == CliUsageAvailability.Unavailable ? AppTheme.Danger : SystemColors.ControlText);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                SetStatus($"額度讀取失敗：{ex.Message}", AppTheme.Danger);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _usageRefreshCancellation, null, cancellation), cancellation))
+            {
+                cancellation.Dispose();
+                if (!IsDisposed && _refreshUsageButton is not null)
+                {
+                    _refreshUsageButton.Enabled = true;
+                    _refreshUsageButton.Text = "重新讀取額度";
+                }
+            }
+        }
+    }
+
+    private void UpdateUsageLabels(DateTimeOffset now)
+    {
+        foreach (var descriptor in CliCatalog.All)
+        {
+            if (!_usageLabels.TryGetValue(descriptor.Kind, out var label) ||
+                !_usageSnapshots.TryGetValue(descriptor.Kind, out var snapshot))
+            {
+                continue;
+            }
+
+            label.Text = FormatUsage(snapshot, now);
+            label.ForeColor = snapshot.Availability switch
+            {
+                CliUsageAvailability.Available => AppTheme.Success,
+                CliUsageAvailability.Unavailable => AppTheme.Danger,
+                _ => AppTheme.Muted
+            };
+        }
+    }
+
+    private static string FormatUsage(CliUsageSnapshot snapshot, DateTimeOffset now)
+    {
+        if (snapshot.Availability != CliUsageAvailability.Available)
+        {
+            return snapshot.Message;
+        }
+
+        return string.Join("；", snapshot.Windows.Select(window =>
+        {
+            var resetText = window.ResetsAt is { } resetsAt
+                ? FormatResetCountdown(resetsAt, now)
+                : "重置時間未提供";
+            return $"{window.Name}：剩餘 {window.RemainingPercent}%（{resetText}）";
+        }));
+    }
+
+    private static string FormatResetCountdown(DateTimeOffset resetsAt, DateTimeOffset now)
+    {
+        var remaining = resetsAt - now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "等待伺服器更新";
+        }
+
+        var countdown = remaining.Days > 0
+            ? $"{remaining.Days}天 {remaining.Hours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}"
+            : $"{(int)remaining.TotalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}";
+        return $"{countdown} 後重置，{resetsAt.LocalDateTime:MM/dd HH:mm}";
+    }
+
     // ── 使用者操作 ────────────────────────────────────────────────
 
     private async void SaveScheduleAsync(object? sender, EventArgs e)
@@ -482,6 +674,10 @@ internal sealed class MainForm : Form
             };
             await Manager.UpsertAsync(job).ConfigureAwait(true);
             _editingId = job.Id;
+            if (_saveButton is not null)
+            {
+                _saveButton.Text = "儲存修改";
+            }
             SetStatus("排程已儲存", AppTheme.Success);
         }
         catch (Exception ex)
@@ -558,6 +754,7 @@ internal sealed class MainForm : Form
             // 使用者可能改了可執行檔路徑，讓下一次執行重新解析。
             ExecutableLocator.ClearCache();
             await _host.SaveSettingsAsync().ConfigureAwait(true);
+            await RefreshUsageAsync(showStatus: false).ConfigureAwait(true);
             SetStatus("設定已儲存", AppTheme.Success);
         }
         catch (Exception ex)
@@ -580,6 +777,10 @@ internal sealed class MainForm : Form
         }
 
         _editingId = job.Id;
+        if (_saveButton is not null)
+        {
+            _saveButton.Text = "儲存修改";
+        }
         _nameInput.Text = job.Name;
         _timeInput.Value = ClampPickerValue(_timeInput, DateTime.Today + job.ScheduledAt.LocalDateTime.TimeOfDay);
         _messageInput.Text = job.Message;
@@ -594,6 +795,10 @@ internal sealed class MainForm : Form
     private void ResetEditor()
     {
         _editingId = null;
+        if (_saveButton is not null)
+        {
+            _saveButton.Text = "建立排程";
+        }
         _grid.ClearSelection();
         var proposed = DateTime.Now.AddMinutes(5);
         _nameInput.Text = "AI 倒數喚醒";
@@ -652,6 +857,7 @@ internal sealed class MainForm : Form
                 SetCell(row, ColumnCountdown, JobPresenter.Countdown(job, now));
             }
         }
+        UpdateUsageLabels(now);
     }
 
     private void MainFormOnFormClosing(object? sender, FormClosingEventArgs e)

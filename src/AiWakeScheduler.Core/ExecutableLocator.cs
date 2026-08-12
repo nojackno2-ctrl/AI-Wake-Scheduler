@@ -46,6 +46,7 @@ public static class ExecutableLocator
     private static string? ResolveCore(CliKind kind, string configured, string workingDirectory)
     {
         var descriptor = CliCatalog.Get(kind);
+        var configuredIsDefaultCommand = IsDefaultCommand(configured, descriptor.DefaultCommand);
 
         if (!string.IsNullOrWhiteSpace(configured))
         {
@@ -58,7 +59,8 @@ public static class ExecutableLocator
             }
 
             if (!expanded.Contains(Path.DirectorySeparatorChar) &&
-                !expanded.Contains(Path.AltDirectorySeparatorChar))
+                !expanded.Contains(Path.AltDirectorySeparatorChar) &&
+                !configuredIsDefaultCommand)
             {
                 var fromPath = FindOnPath(expanded);
                 if (fromPath is not null)
@@ -83,7 +85,31 @@ public static class ExecutableLocator
             }
         }
 
+        // WindowsApps 中的 Codex app execution alias 可能看似存在但無法由一般程序啟動。
+        // 使用預設命令名稱時，必須先檢查 Desktop-managed 安裝位置；只有找不到才回退 PATH。
+        if (!string.IsNullOrWhiteSpace(configured) &&
+            !configured.Contains(Path.DirectorySeparatorChar) &&
+            !configured.Contains(Path.AltDirectorySeparatorChar))
+        {
+            var configuredFromPath = FindOnPath(configured);
+            if (configuredFromPath is not null)
+            {
+                return configuredFromPath;
+            }
+        }
+
         return FindOnPath(descriptor.DefaultCommand);
+    }
+
+    private static bool IsDefaultCommand(string configured, string defaultCommand)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileNameWithoutExtension(configured);
+        return string.Equals(fileName, defaultCommand, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? ResolveExplicitPath(string value, string workingDirectory)
