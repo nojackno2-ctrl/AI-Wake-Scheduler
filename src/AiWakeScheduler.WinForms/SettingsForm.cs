@@ -19,7 +19,7 @@ internal sealed class SettingsForm : Form
     private readonly Label _probeStatus = new()
     {
         AutoSize = true,
-        ForeColor = AppTheme.Muted,
+        ForeColor = AppTheme.SecondaryText,
         Margin = new Padding(0, 6, 0, 0)
     };
 
@@ -35,6 +35,7 @@ internal sealed class SettingsForm : Form
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         Font = AppTheme.Body;
+        AppTheme.ApplyForm(this);
         ApplyPreferredSize();
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
 
@@ -58,15 +59,15 @@ internal sealed class SettingsForm : Form
     private void ApplyPreferredSize()
     {
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 700);
-        MinimumSize = new Size(Math.Min(780, workingArea.Width), Math.Min(520, workingArea.Height));
-        Size = new Size(Math.Min(880, workingArea.Width), Math.Min(570, workingArea.Height));
+        MinimumSize = new Size(Math.Min(800, workingArea.Width), Math.Min(600, workingArea.Height));
+        Size = new Size(Math.Min(960, workingArea.Width), Math.Min(700, workingArea.Height));
     }
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
         // 讓探測結果隨視窗寬度換行，取代原本寫死的 790px 上限。
-        _probeStatus.MaximumSize = new Size(Math.Max(200, ClientSize.Width - 48), 0);
+        _probeStatus.MaximumSize = new Size(Math.Max(200, ClientSize.Width - 80), 0);
     }
 
     private void BuildLayout()
@@ -76,10 +77,13 @@ internal sealed class SettingsForm : Form
         var root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(16),
+            Padding = new Padding(24, 20, 24, 20),
             ColumnCount = 1,
-            RowCount = 5
+            RowCount = 6,
+            AutoScroll = true,
+            BackColor = AppTheme.Canvas
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -88,17 +92,27 @@ internal sealed class SettingsForm : Form
 
         root.Controls.Add(new Label
         {
+            Text = "CLI 與程式設定",
+            Font = AppTheme.HeaderTitle,
+            ForeColor = AppTheme.PrimaryText,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 4)
+        }, 0, 0);
+
+        root.Controls.Add(new Label
+        {
             Text = "可執行檔可填命令名稱（agy / codex / claude）或完整 .exe 路徑。"
                  + "額外參數可留空（Antigravity Claude / GPT 預設使用 Claude Sonnet，亦可於額外參數填寫 --model 自訂）。",
             AutoSize = true,
-            ForeColor = AppTheme.Muted,
-            Margin = new Padding(0, 0, 0, 12)
-        }, 0, 0);
+            ForeColor = AppTheme.SecondaryText,
+            MaximumSize = new Size(850, 0),
+            Margin = new Padding(0, 0, 0, 18)
+        }, 0, 1);
 
-        root.Controls.Add(BuildCliTable(), 0, 1);
-        root.Controls.Add(BuildOptions(), 0, 2);
-        root.Controls.Add(BuildProbeRow(), 0, 3);
-        root.Controls.Add(BuildButtons(), 0, 4);
+        root.Controls.Add(BuildCliTable(), 0, 2);
+        root.Controls.Add(BuildOptions(), 0, 3);
+        root.Controls.Add(BuildProbeRow(), 0, 4);
+        root.Controls.Add(BuildButtons(), 0, 5);
 
         Controls.Add(root);
         ResumeLayout(performLayout: true);
@@ -109,36 +123,53 @@ internal sealed class SettingsForm : Form
         var descriptors = CliCatalog.All;
         var table = new TableLayoutPanel
         {
-            Dock = DockStyle.Top,
+            Dock = DockStyle.Fill,
             AutoSize = true,
             ColumnCount = 4,
-            RowCount = descriptors.Count + 1
+            RowCount = descriptors.Count + 2,
+            BackColor = AppTheme.Panel,
+            Padding = new Padding(16),
+            Margin = new Padding(0, 0, 0, 16)
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        table.Controls.Add(Header("CLI"), 0, 0);
-        table.Controls.Add(Header("可執行檔或命令"), 1, 0);
-        table.Controls.Add(Header("額外參數（選填）"), 2, 0);
+        var sectionTitle = new Label
+        {
+            Text = "CLI 連線",
+            Font = AppTheme.SectionTitle,
+            ForeColor = AppTheme.PrimaryText,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 14)
+        };
+        table.Controls.Add(sectionTitle, 0, 0);
+        table.SetColumnSpan(sectionTitle, 4);
+        table.Controls.Add(Header("CLI"), 0, 1);
+        table.Controls.Add(Header("可執行檔或命令"), 1, 1);
+        table.Controls.Add(Header("額外參數（選填）"), 2, 1);
 
         for (var i = 0; i < descriptors.Count; i++)
         {
             var kind = descriptors[i].Kind;
-            var row = i + 1;
+            var row = i + 2;
             table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var pathInput = new TextBox { Dock = DockStyle.Fill };
             var argumentInput = new TextBox { Dock = DockStyle.Fill };
             var browse = new Button { Text = "瀏覽…", AutoSize = true, Dock = DockStyle.Fill, Tag = kind };
+            AppTheme.StyleInput(pathInput);
+            AppTheme.StyleInput(argumentInput);
+            AppTheme.StyleButton(browse);
             browse.Click += BrowseExecutable;
 
             _pathInputs[kind] = pathInput;
             _argumentInputs[kind] = argumentInput;
 
-            table.Controls.Add(new Label { Text = descriptors[i].DisplayName, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 8, 12, 6) }, 0, row);
+            table.Controls.Add(new Label { Text = descriptors[i].DisplayName, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 10, 14, 10) }, 0, row);
             table.Controls.Add(pathInput, 1, row);
             table.Controls.Add(argumentInput, 2, row);
             table.Controls.Add(browse, 3, row);
@@ -149,13 +180,27 @@ internal sealed class SettingsForm : Form
 
     private Control BuildOptions()
     {
-        var options = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown };
+        var options = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            BackColor = AppTheme.Panel,
+            Padding = new Padding(16),
+            Margin = new Padding(0, 0, 0, 16)
+        };
+        options.Controls.Add(new Label { Text = "啟動與資源", Font = AppTheme.SectionTitle, AutoSize = true, Margin = new Padding(0, 0, 0, 12) });
+        _startupCheck.Margin = new Padding(0, 3, 0, 6);
+        _trayCheck.Margin = new Padding(0, 3, 0, 6);
+        _tokenSaverCheck.Margin = new Padding(0, 3, 0, 10);
         options.Controls.Add(_startupCheck);
         options.Controls.Add(_trayCheck);
         options.Controls.Add(_tokenSaverCheck);
 
-        var timeoutRow = new FlowLayoutPanel { AutoSize = true };
+        var timeoutRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
         timeoutRow.Controls.Add(new Label { Text = "單一 CLI 最長執行時間（分鐘）：", AutoSize = true, Margin = new Padding(0, 7, 5, 0) });
+        AppTheme.StyleInput(_timeoutInput);
         timeoutRow.Controls.Add(_timeoutInput);
         options.Controls.Add(timeoutRow);
         return options;
@@ -168,9 +213,14 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             AutoSize = true,
             FlowDirection = FlowDirection.TopDown,
-            WrapContents = false
+            WrapContents = false,
+            BackColor = AppTheme.Panel,
+            Padding = new Padding(16),
+            Margin = new Padding(0, 0, 0, 16)
         };
+        probeRow.Controls.Add(new Label { Text = "連線檢查", Font = AppTheme.SectionTitle, AutoSize = true, Margin = new Padding(0, 0, 0, 10) });
         var probeButton = new Button { Text = "檢查全部 CLI（只執行 --version，不消耗 Token）", AutoSize = true };
+        AppTheme.StyleButton(probeButton);
         probeButton.Click += ProbeAllAsync;
         probeRow.Controls.Add(probeButton);
         probeRow.Controls.Add(_probeStatus);
@@ -179,10 +229,12 @@ internal sealed class SettingsForm : Form
 
     private Control BuildButtons()
     {
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true };
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Margin = new Padding(0) };
         var ok = new Button { Text = "儲存", DialogResult = DialogResult.OK, AutoSize = true };
+        AppTheme.StyleButton(ok, AppTheme.ButtonVariant.Primary);
         ok.Click += SaveValues;
         var cancel = new Button { Text = "取消", DialogResult = DialogResult.Cancel, AutoSize = true };
+        AppTheme.StyleButton(cancel);
         buttons.Controls.Add(ok);
         buttons.Controls.Add(cancel);
         AcceptButton = ok;
@@ -254,7 +306,7 @@ internal sealed class SettingsForm : Form
 
         button.Enabled = false;
         _probeStatus.Text = "檢查中…";
-        _probeStatus.ForeColor = AppTheme.Muted;
+        _probeStatus.ForeColor = AppTheme.SecondaryText;
 
         _probeCancellation?.Cancel();
         _probeCancellation?.Dispose();
@@ -344,7 +396,8 @@ internal sealed class SettingsForm : Form
         Text = text,
         AutoSize = true,
         Font = AppTheme.TableHeader,
+        ForeColor = AppTheme.SecondaryText,
         Anchor = AnchorStyles.Left,
-        Margin = new Padding(0, 0, 12, 6)
+        Margin = new Padding(0, 0, 12, 8)
     };
 }

@@ -31,6 +31,7 @@ internal sealed class MainForm : Form
     private SplitContainer? _mainSplit;
     private Button? _saveButton;
     private Button? _refreshUsageButton;
+    private Label? _emptyStateLabel;
     private CancellationTokenSource? _usageRefreshCancellation;
     private Guid? _editingId;
     private bool _reallyExit;
@@ -49,6 +50,7 @@ internal sealed class MainForm : Form
         AutoScaleDimensions = new SizeF(7F, 15F);
         AutoScaleMode = AutoScaleMode.Font;
         Font = AppTheme.Body;
+        AppTheme.ApplyForm(this);
         ApplyPreferredSize();
 
         // 主視窗自身也開雙緩衝，避免調整大小時整片重繪造成閃爍。
@@ -113,7 +115,18 @@ internal sealed class MainForm : Form
     {
         SuspendLayout();
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        AppTheme.StyleInput(_nameInput);
+        AppTheme.StyleInput(_timeInput);
+        AppTheme.StyleInput(_messageInput);
+        AppTheme.StyleInput(_workingDirectoryInput);
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 3,
+            ColumnCount = 1,
+            BackColor = AppTheme.Canvas
+        };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -130,7 +143,13 @@ internal sealed class MainForm : Form
         BuildEditor(split.Panel2);
         root.Controls.Add(split, 0, 1);
 
-        var status = new StatusStrip();
+        var status = new StatusStrip
+        {
+            BackColor = AppTheme.Panel,
+            ForeColor = AppTheme.SecondaryText,
+            SizingGrip = false,
+            Padding = new Padding(14, 5, 14, 5)
+        };
         status.Items.Add(_statusLabel);
         status.Items.Add(_clockLabel);
         root.Controls.Add(status, 0, 2);
@@ -152,8 +171,8 @@ internal sealed class MainForm : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 1,
             RowCount = 2,
-            BackColor = AppTheme.HeaderBackground,
-            Padding = new Padding(18, 10, 18, 12)
+            BackColor = AppTheme.Banner,
+            Padding = new Padding(24, 16, 24, 18)
         };
         header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         header.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -161,23 +180,30 @@ internal sealed class MainForm : Form
         {
             Text = "AI 倒數喚醒",
             Font = AppTheme.HeaderTitle,
-            ForeColor = Color.White,
+            ForeColor = AppTheme.BannerText,
             AutoSize = true,
             Margin = new Padding(0)
         }, 0, 0);
         header.Controls.Add(new Label
         {
             Text = "每天在指定的幾點幾分，向勾選的 CLI 傳送一則簡短訊息（預設：早安）",
-            ForeColor = AppTheme.HeaderSubtitle,
+            ForeColor = AppTheme.BannerSubtitle,
             AutoSize = true,
-            Margin = new Padding(2, 4, 0, 0)
+            Margin = new Padding(1, 5, 0, 0)
         }, 0, 1);
         return header;
     }
 
     private void BuildScheduleList(Control parent)
     {
-        var panel = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        var panel = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            RowCount = 3,
+            ColumnCount = 1,
+            BackColor = AppTheme.Panel,
+            Padding = new Padding(16)
+        };
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -186,7 +212,7 @@ internal sealed class MainForm : Form
             Text = "已儲存排程",
             Font = AppTheme.SectionTitle,
             AutoSize = true,
-            Margin = new Padding(0, 0, 0, 8)
+            Margin = new Padding(0, 0, 0, 12)
         }, 0, 0);
 
         _grid.Dock = DockStyle.Fill;
@@ -194,12 +220,29 @@ internal sealed class MainForm : Form
         _grid.AllowUserToDeleteRows = false;
         _grid.AllowUserToResizeRows = false;
         _grid.AutoGenerateColumns = false;
-        _grid.BackgroundColor = Color.White;
-        _grid.BorderStyle = BorderStyle.Fixed3D;
+        _grid.BackgroundColor = AppTheme.Panel;
+        _grid.BorderStyle = BorderStyle.FixedSingle;
+        _grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;
+        _grid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+        _grid.ColumnHeadersHeight = 40;
+        _grid.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+        _grid.EnableHeadersVisualStyles = false;
+        _grid.GridColor = AppTheme.Divider;
         _grid.MultiSelect = false;
         _grid.ReadOnly = true;
+        _grid.RowTemplate.Height = 42;
         _grid.RowHeadersVisible = false;
         _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+        _grid.DefaultCellStyle.BackColor = AppTheme.Panel;
+        _grid.DefaultCellStyle.ForeColor = AppTheme.PrimaryText;
+        _grid.DefaultCellStyle.SelectionBackColor = AppTheme.Selected;
+        _grid.DefaultCellStyle.SelectionForeColor = AppTheme.SelectedText;
+        _grid.DefaultCellStyle.Padding = new Padding(6, 2, 6, 2);
+        _grid.AlternatingRowsDefaultCellStyle.BackColor = AppTheme.Canvas;
+        _grid.ColumnHeadersDefaultCellStyle.BackColor = AppTheme.PanelSubtle;
+        _grid.ColumnHeadersDefaultCellStyle.ForeColor = AppTheme.PrimaryText;
+        _grid.ColumnHeadersDefaultCellStyle.Font = AppTheme.TableHeader;
+        _grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "名稱", Width = 135 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ScheduledAt", HeaderText = "每天時間", Width = 90 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Countdown", HeaderText = "倒數", Width = 100 });
@@ -208,13 +251,27 @@ internal sealed class MainForm : Form
         _grid.SelectionChanged += GridOnSelectionChanged;
         _grid.CellDoubleClick += (_, _) => ShowSelectedResult();
         NativeMethods.EnableDoubleBuffering(_grid);
-        panel.Controls.Add(_grid, 0, 1);
+        var gridHost = new Panel { Dock = DockStyle.Fill, BackColor = AppTheme.Panel };
+        gridHost.Controls.Add(_grid);
+        _emptyStateLabel = new Label
+        {
+            Text = "目前沒有排程\r\n選擇下方的「新增」，建立每天自動喚醒。",
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = AppTheme.SecondaryText,
+            BackColor = AppTheme.Panel,
+            Font = AppTheme.Body,
+            Visible = false
+        };
+        gridHost.Controls.Add(_emptyStateLabel);
+        panel.Controls.Add(gridHost, 0, 1);
 
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
-        buttons.Controls.Add(ActionButton("新增", (_, _) => ResetEditor()));
+        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 12, 0, 0) };
+        buttons.Controls.Add(ActionButton("新增", (_, _) => ResetEditor(), AppTheme.ButtonVariant.Primary));
         buttons.Controls.Add(ActionButton("立即執行", RunSelectedNowAsync));
         buttons.Controls.Add(ActionButton("查看結果", (_, _) => ShowSelectedResult()));
-        buttons.Controls.Add(ActionButton("刪除", DeleteSelectedAsync));
+        buttons.Controls.Add(ActionButton("刪除", DeleteSelectedAsync, AppTheme.ButtonVariant.Danger));
         buttons.Controls.Add(ActionButton("開啟日誌資料夾", (_, _) => OpenFolder(_host.Paths.LogsDirectory)));
         panel.Controls.Add(buttons, 0, 2);
         parent.Controls.Add(panel);
@@ -228,7 +285,8 @@ internal sealed class MainForm : Form
             AutoScroll = true,
             ColumnCount = 2,
             RowCount = 10,
-            Padding = new Padding(14, 0, 0, 0)
+            Padding = new Padding(18, 16, 14, 16),
+            BackColor = AppTheme.Canvas
         };
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         editor.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -238,7 +296,7 @@ internal sealed class MainForm : Form
             Text = "排程內容",
             Font = AppTheme.SectionTitle,
             AutoSize = true,
-            Margin = new Padding(0, 0, 0, 12)
+            Margin = new Padding(0, 0, 0, 16)
         };
         editor.Controls.Add(title, 0, 0);
         editor.SetColumnSpan(title, 2);
@@ -252,6 +310,7 @@ internal sealed class MainForm : Form
         directoryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         directoryPanel.Controls.Add(_workingDirectoryInput, 0, 0);
         var browse = new Button { Text = "瀏覽…", AutoSize = true, Dock = DockStyle.Fill };
+        AppTheme.StyleButton(browse);
         browse.Click += BrowseWorkingDirectory;
         directoryPanel.Controls.Add(browse, 1, 0);
         AddEditorRow(editor, 4, "工作目錄", directoryPanel);
@@ -260,7 +319,7 @@ internal sealed class MainForm : Form
         var targets = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         foreach (var descriptor in CliCatalog.All)
         {
-            var check = new CheckBox { Text = descriptor.DisplayName, Checked = true, AutoSize = true };
+            var check = new CheckBox { Text = descriptor.DisplayName, Checked = true, AutoSize = true, Margin = new Padding(0, 2, 0, 5) };
             _targetChecks[descriptor.Kind] = check;
             targets.Controls.Add(check);
         }
@@ -276,18 +335,16 @@ internal sealed class MainForm : Form
             Text = "此排程每天在指定時分執行。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，"
                  + "並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。",
             AutoSize = true,
-            MaximumSize = new Size(350, 0),
-            ForeColor = AppTheme.Muted,
-            Margin = new Padding(0, 12, 0, 12)
+            MaximumSize = new Size(420, 0),
+            ForeColor = AppTheme.SecondaryText,
+            Font = AppTheme.Caption,
+            Margin = new Padding(0, 14, 0, 14)
         };
         editor.Controls.Add(note, 0, 8);
         editor.SetColumnSpan(note, 2);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        _saveButton = ActionButton("建立排程", SaveScheduleAsync);
-        _saveButton.BackColor = AppTheme.Accent;
-        _saveButton.ForeColor = Color.White;
-        _saveButton.FlatStyle = FlatStyle.Flat;
+        _saveButton = ActionButton("建立排程", SaveScheduleAsync, AppTheme.ButtonVariant.Primary);
         buttons.Controls.Add(_saveButton);
         buttons.Controls.Add(ActionButton("CLI 設定…", OpenSettingsAsync));
         editor.Controls.Add(buttons, 0, 9);
@@ -302,9 +359,9 @@ internal sealed class MainForm : Form
             Text = "剩餘流量與重置倒數",
             Dock = DockStyle.Fill,
             AutoSize = true,
-            Padding = new Padding(10, 8, 10, 10),
             Margin = new Padding(0, 8, 0, 8)
         };
+        AppTheme.StyleGroup(group);
         var table = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -318,15 +375,15 @@ internal sealed class MainForm : Form
                 Text = descriptor.ShortName,
                 AutoSize = true,
                 Font = AppTheme.TableHeader,
-                Margin = new Padding(0, 5, 10, 5)
+                Margin = new Padding(0, 7, 14, 7)
             }, 0, row);
             var value = new Label
             {
                 Text = "尚未讀取",
                 AutoSize = true,
                 MaximumSize = new Size(430, 0),
-                ForeColor = AppTheme.Muted,
-                Margin = new Padding(0, 5, 0, 5)
+                ForeColor = AppTheme.SecondaryText,
+                Margin = new Padding(0, 7, 0, 7)
             };
             _usageLabels[descriptor.Kind] = value;
             table.Controls.Add(value, 1, row);
@@ -482,6 +539,13 @@ internal sealed class MainForm : Form
                 _grid.Rows.Add();
             }
 
+            _grid.Visible = jobs.Count > 0;
+            if (_emptyStateLabel is not null)
+            {
+                _emptyStateLabel.Visible = jobs.Count == 0;
+                _emptyStateLabel.BringToFront();
+            }
+
             for (var i = 0; i < jobs.Count; i++)
             {
                 var job = jobs[i];
@@ -620,7 +684,7 @@ internal sealed class MainForm : Form
             {
                 CliUsageAvailability.Available => AppTheme.Success,
                 CliUsageAvailability.Unavailable => AppTheme.Danger,
-                _ => AppTheme.Muted
+                _ => AppTheme.SecondaryText
             };
         }
     }
@@ -1029,15 +1093,26 @@ internal sealed class MainForm : Form
             Text = label,
             AutoSize = true,
             Anchor = AnchorStyles.Left,
-            Margin = new Padding(0, 7, 8, 10)
+            ForeColor = AppTheme.PrimaryText,
+            Font = AppTheme.TableHeader,
+            Margin = new Padding(0, 9, 14, 12)
         }, 0, row);
-        control.Margin = new Padding(0, 3, 0, 10);
+        if (!string.IsNullOrWhiteSpace(label))
+        {
+            control.AccessibleName = label;
+        }
+        AppTheme.StyleInput(control);
+        control.Margin = new Padding(0, 4, 0, 12);
         panel.Controls.Add(control, 1, row);
     }
 
-    private static Button ActionButton(string text, EventHandler handler)
+    private static Button ActionButton(
+        string text,
+        EventHandler handler,
+        AppTheme.ButtonVariant variant = AppTheme.ButtonVariant.Secondary)
     {
-        var button = new Button { Text = text, AutoSize = true, Padding = new Padding(4, 1, 4, 1) };
+        var button = new Button { Text = text };
+        AppTheme.StyleButton(button, variant);
         button.Click += handler;
         return button;
     }
