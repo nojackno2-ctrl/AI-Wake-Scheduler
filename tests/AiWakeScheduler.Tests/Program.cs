@@ -34,7 +34,8 @@ var deterministicTests = new (string Name, Func<Task> Run)[]
     ("ScheduleManagerDueJob", TestScheduleManagerAsync),
     ("ScheduleManagerAdaptiveWait", TestScheduleManagerAdaptiveWaitAsync),
     ("ScheduleManagerRestartDoesNotRefire", TestScheduleManagerRestartDoesNotRefireAsync),
-    ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync)
+    ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
+    ("InstallerContract", TestInstallerContractAsync)
 };
 
 var integrationTests = new (string Name, Func<Task> Run)[]
@@ -136,6 +137,54 @@ static Task TestCliCommandBuilderAsync()
     var toolsIndex = saverClaude.ToList().IndexOf("--tools");
     Assert(toolsIndex >= 0 && saverClaude[toolsIndex + 1].Length == 0, "--tools 之後應緊接空字串。");
     Assert(saverClaude[toolsIndex + 2].StartsWith("--", StringComparison.Ordinal), "--tools 的值之後必須是旗標，避免吞掉位置參數。");
+
+    return Task.CompletedTask;
+}
+
+static Task TestInstallerContractAsync()
+{
+    var directory = new DirectoryInfo(AppContext.BaseDirectory);
+    while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "build-installer.ps1")))
+    {
+        directory = directory.Parent;
+    }
+
+    Assert(directory is not null, "找不到 AI Wake Scheduler repository root。");
+    var installerDirectory = Path.Combine(directory!.FullName, "installer");
+    var installerPath = Directory.GetFiles(installerDirectory, "*.iss").Single();
+    var script = File.ReadAllText(installerPath);
+    var lines = script.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries);
+
+    foreach (var directive in new[]
+    {
+        "AllowNoIcons=no",
+        "DisableProgramGroupPage=yes",
+        "UsePreviousAppDir=yes",
+        "UsePreviousGroup=yes",
+        "UsePreviousTasks=yes",
+        "CreateUninstallRegKey=yes",
+        "SetupLogging=yes",
+        "UninstallLogging=yes",
+        "RestartApplications=no"
+    })
+    {
+        Assert(lines.Contains(directive, StringComparer.Ordinal), $"Installer 缺少必要設定：{directive}");
+    }
+
+    var startMenuShortcut = lines.Single(line =>
+        line.StartsWith("Name: \"{group}\\{#MyAppName}\";", StringComparison.Ordinal));
+    Assert(!startMenuShortcut.Contains("Tasks:", StringComparison.Ordinal), "開始功能表捷徑必須固定建立。");
+    Assert(startMenuShortcut.Contains("WorkingDir: \"{app}\"", StringComparison.Ordinal), "開始功能表捷徑缺少工作目錄。");
+    Assert(startMenuShortcut.Contains("AppUserModelID:", StringComparison.Ordinal), "開始功能表捷徑缺少 AppUserModelID。");
+
+    var uninstallShortcut = lines.Single(line =>
+        line.Contains("{cm:UninstallProgram,{#MyAppName}}", StringComparison.Ordinal));
+    Assert(!uninstallShortcut.Contains("Tasks:", StringComparison.Ordinal), "解除安裝捷徑必須固定建立。");
+
+    var desktopTask = lines.Single(line => line.StartsWith("Name: \"desktopicon\";", StringComparison.Ordinal));
+    var startupTask = lines.Single(line => line.StartsWith("Name: \"startupicon\";", StringComparison.Ordinal));
+    Assert(desktopTask.Contains("Flags: unchecked", StringComparison.Ordinal), "桌面捷徑必須預設不勾選。");
+    Assert(startupTask.Contains("Flags: unchecked", StringComparison.Ordinal), "開機啟動必須預設不勾選。");
 
     return Task.CompletedTask;
 }

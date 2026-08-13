@@ -1,5 +1,19 @@
 # AI HANDOFF
 
+## 2026-08-13 GitHub upload (in progress)
+
+- User authorized uploading the complete current verified worktree, including the WinForms redesign and installer-experience hardening. Scope is this repository only.
+- Remote audit after `fetch --prune --tags`: local `main` and `origin/main` are identical with no other local/remote branches. Publish through `agent/ui-installer-experience`, one intentional commit, and a Draft PR targeting `main`.
+- This authorization does not include a GitHub Release, tag, installer execution, or installed-application update.
+
+## 2026-08-13 installer experience hardening (complete, uncommitted)
+
+- Scope is limited to the existing Inno Setup installer and its deterministic contract test; the concurrent uncommitted WinForms redesign remains preserved and untouched.
+- The Start Menu application and uninstall shortcuts are now mandatory and carry a stable AppUserModelID plus `{app}` working directory. Desktop and Windows-startup shortcuts remain optional and default unchecked.
+- Added previous-install preference reuse, explicit uninstall registration, setup/uninstall logging, no automatic application restart, Add/Remove Programs metadata, installed README/LICENSE files, and matching README guidance for manual Start/Taskbar pinning.
+- Verification: deterministic tests passed 12/12, `dotnet format --verify-no-changes --no-restore` and `git diff --check` passed, self-contained publish succeeded, and Inno Setup 6.7.3 compiled `dist/AI倒數喚醒_Setup_v1.2.0_x64.exe` (48,591,174 bytes, SHA-256 `BD28FA5F9C327A6A7DBEA407C7480B4127B77CA227FB36807D334BA86BA0F68F`, file version 1.2.0). The first sandboxed canonical build was blocked only by denied access to the user NuGet.Config; the approved host rerun passed. The older self-maintained Traditional Chinese `.isl` still falls back to English for newer uncommon Inno messages, as reported by compiler warnings.
+- No installer was executed, no installed application was updated, and no commit/push/release was performed.
+
 ## 2026-08-12 v1.2.0 publication and local install
 
 - Published GitHub Release `v1.2.0` from `7fad2ef64e57bad1cb073081ca201f351e654dad`; downloaded installer SHA-256 `48204008F77A280E2192A90C8997C8838E2868F884F6D0C2905BBE93B49D4ADB` matched GitHub and checksum.
@@ -196,3 +210,32 @@
       （cs, de, es, fr, it, ja, ko, pl, pt-BR, ru, tr, zh-Hans, zh-Hant）共 15.5 MB（未壓縮），
       可用 `<SatelliteResourceLanguages>zh-Hant;en</SatelliteResourceLanguages>` 限定。
       WinForms 專案不建議啟用 PublishTrimmed。
+
+## 2026-08-13 重複安裝唯讀檢查
+
+- Windows 標準安裝位置只找到一份正式安裝：目前使用者的 `AI 倒數喚醒 v1.2.0`，
+  位於 `%LOCALAPPDATA%\Programs\AI 倒數喚醒`；未找到全機或 x86 的第二份正式安裝。
+- 登錄檔的 32/64 位元檢視顯示同一個 Inno Setup AppId 與同一路徑，並非兩套安裝。
+- 專案輸出目錄另有 Debug、Release 與 publish 建置副本；這些不是 Windows 已安裝程式。
+- 發現開機啟動來源重複且目標不同：Startup 捷徑指向正式安裝版 `1.2.0`，但 HKCU Run
+  仍指向專案 Debug 版 `1.1.0`。檢查當下唯一執行中的程序也是 Debug 版（PID 22372）。
+- 本次僅檢查，未停止程序、移除啟動項、刪除建置輸出或解除安裝。
+
+## 2026-08-13 切換為正式版
+
+- 依使用者授權移除 HKCU Run 中指向專案 Debug `1.1.0` 的舊自動啟動值；保留安裝程式建立、
+  指向 `%LOCALAPPDATA%\Programs\AI 倒數喚醒\AI倒數喚醒.exe --minimized` 的 Startup 捷徑。
+- 已停止 Debug 程序並啟動正式版。獨立複核只有一個 `AI倒數喚醒.exe` 程序（PID 18268），
+  路徑為正式安裝目錄、FileVersion `1.2.0.0`、ProductVersion
+  `1.2.0+7fad2ef64e57bad1cb073081ca201f351e654dad`，且 `Responding=True`。
+- 未解除安裝、刪除專案建置副本或修改產品程式碼。
+
+## 2026-08-13 WinForms UI 全面重構
+
+- 新目標：在不變更功能、資料流、資訊架構與對外行為的前提下，重構主視窗與 CLI 設定視窗的完整視覺系統；不得增加 NuGet 相依。
+- 設計審計完成：現況是深藍標題列、系統預設控制項與高密度雙欄工作區；排程清單、編輯器、額度、狀態列與設定流程均有功能價值，全部保留。待改善項目是控制項視覺不一致、表格層級偏弱、缺少空清單狀態、設定頁區塊界線不足，以及按鈕主要／次要／危險操作不易辨識。
+- Design Read：Windows 開發者使用的排程工具，採冷靜、可信、偏 Fluent 的原生 WinForms 桌面語言。`DESIGN_VARIANCE=4`、`MOTION_INTENSITY=2`、`VISUAL_DENSITY=6`，模式為 `Redesign - Preserve`；設計技能不直接涵蓋原生產品 UI，因此僅吸收配色、字體、間距、形狀一致、完整狀態與可及性原則，以現有 WinForms 實作。
+- UI 程式變更里程碑：`AppTheme` 已集中冷色中性色盤、單一藍色互動重點、字級、主要／次要／危險按鈕、輸入框、群組框與高對比模式退化策略。主視窗已重整標題、工作區間距、資料表表頭／列高／選取狀態、按鈕層級、空排程狀態、額度區塊與欄位可及名稱；設定視窗已分為 CLI 連線、啟動與資源、連線檢查三個清楚區塊。未變更事件、資料模型、排程流程或外部行為，也未增加相依。
+- 第一輪 Release 建置已實際成功：0 警告、0 錯誤。尚待 deterministic tests、視覺 QA、格式與差異檢查。
+- 最終驗證完成：Release build 成功（0 警告、0 錯誤）；deterministic tests 11/11 通過（四 CLI 平行測試 1213 ms）；`dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 均通過。主要文字／按鈕配色的計算對比值分別為 5.38:1、6.91:1、9.74:1、6.44:1，均達 WCAG AA；另提供 Windows 高對比模式系統色退化。
+- 視覺 QA 未完成：依 `computer-use` 技能初始化時仍被 `EPERM: lstat C:\Users\nojac\AppData\Local\OpenAI\Codex` 阻擋，沒有取得畫面；而目前正式安裝版仍在系統匣正常執行，為避免中斷排程，未停止正式版或啟動會撞單一執行個體鎖的工作區版本。不得宣稱已做實際畫面驗證。
