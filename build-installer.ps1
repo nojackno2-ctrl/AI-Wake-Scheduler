@@ -154,7 +154,7 @@ if ($exitCode -ne 0) {
 }
 
 # 6. Complete and generate checksums
-$installer = Get-ChildItem -Path $distDir -Filter "AI倒數喚醒_Setup_*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$installer = Get-ChildItem -Path $distDir -Filter "*_Setup_*.exe" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 if ($installer) {
     $hash = Get-FileHash -Path $installer.FullName -Algorithm SHA256
