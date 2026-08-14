@@ -47,7 +47,7 @@ public sealed class CliRunner(AppDataPaths paths) : ICliRunner
             var arguments = CliCommandBuilder.Build(
                 kind,
                 message,
-                profile.AdditionalArguments,
+                profile,
                 tokenSaverMode,
                 timeout);
 

@@ -1,5 +1,36 @@
 # AI HANDOFF
 
+## 2026-08-14 Codex CLI 模型清單更新（完成，未提交）
+
+- 使用者指出目前 Codex 下拉模型過舊。官方 OpenAI 模型目錄已將 `gpt-5.2-codex` 與 `gpt-5.1-codex*` 標為 deprecated；GPT-5.6 現行家族為 Sol／Terra／Luna。
+- 本機 Codex CLI 0.148.0-alpha.9 以已登入主機身份呼叫只讀 App Server `model/list`（未建立模型回合、未消耗 Token），實際可選：`gpt-5.6-sol`（預設）、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`。
+- App Server 同時回報模型 Effort 上限：Sol/Terra 支援 low～ultra；Luna 支援 low～max；5.5/5.4/5.4-mini 支援 low～xhigh。下一步更新靜態推薦清單、UI Effort 選項與參數正規化測試，確保不送出模型不接受的 Max/Ultra 組合。
+- 已完成程式變更：Codex 下拉改為上述 6 款現行模型並保留空白的 CLI 自動預設；新增 Ultra；設定視窗會隨模型切換合法 Effort，核心執行路徑也會把舊設定或過高 Effort 降到該模型可接受的最高值。另順手套用同一機制修正 Gemini 3.1 Pro 不接受 Medium 的既知組合。尚待建置與測試，不得先宣稱完成。
+- 最終補強額外參數 `--model`／`-m` 覆寫的解析，讓 Effort 依真正生效的模型正規化；Release 重新建置成功（0 警告、0 錯誤），deterministic 測試 12/12 通過，四個假 CLI 平行完成 1212 ms。
+
+## 2026-08-14 本輪驗證完成（CLI 模型與思考程度）
+
+- 目前工作樹的 Release `dotnet build --no-restore` 成功，0 警告、0 錯誤。
+- 第一次 sandbox 內 deterministic 測試外層 120 秒逾時：前 6 組通過，停在 `CliRunnerSafeArguments` 的刻意損毀 EXE 啟動案例；直接執行測試 AppHost 也在相同位置阻塞。
+- 依環境邊界改在使用者主機重跑同一份已建置測試 AppHost，12/12 全數通過；四個各延遲 1 秒的假 CLI 平行完成耗時 1256 ms。此結果確認功能與程序測試通過，sandbox 逾時屬損毀 EXE 測試的隔離環境限制。
+- 本機安全核對：Codex CLI 0.148.0-alpha.9 的 `exec --help` 明列 `--model`，Claude CLI 2.1.220 的 `--help` 明列 `--model`／`--effort`；主機登入狀態執行只讀 `agy models` 仍列出全部下拉 ID（Gemini 3.7/3.6 Flash、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6、GPT-OSS 120B Medium），未送出模型請求或消耗 Token。
+
+## 2026-08-14 CLI 模型與思考程度（Reasoning Effort）自訂功能（完成，未提交，含使用者回報後的修正）
+
+- 第一版實作依網路搜尋與臆測填入模型 ID，**未實際對照已安裝 CLI 驗證**。使用者實測 Settings 視窗後回報兩個問題：
+  1. 視窗只看得到前兩個 CLI（Codex CLI、Claude CLI 兩列被裁掉，看不到也捲不到）。
+  2. 「他提供的模型要真的可以呼叫」——質疑下拉清單裡的模型 ID 是否真實存在。
+- 根因與修正：
+  - **UI 裁切臭蟲**：`SettingsForm.BuildLayout()` 的 root `TableLayoutPanel` 把放 CLI 表格的那一列設為 `RowStyle(Percent, 100)`，同時 root 又設了 `AutoScroll = true`。這個組合會讓 TableLayoutPanel 把該列硬壓縮進「目前可見高度」，超出視窗的列直接被裁掉，而不是觸發捲動。已改為 `RowStyle(AutoSize)`，讓表格長到完整自然高度，交由外層 `AutoScroll` 捲動顯示；同時把預設視窗高度從 740 調到 820 減少捲動機會。
+  - **模型 ID 不實**：改為實測核對而非猜測：
+    - 用已安裝的 `agy.exe`（`C:\Users\nojac\AppData\Local\agy\bin\agy.exe`）跑 `agy models` 取得真實可用清單，並用一個明顯不存在的模型名稱丟給 `agy --print "hi" --model <fake>` 確認 agy 在打 API 之前就會本地驗證並立即報錯（不消耗任何 Token/額度），藉此安全地驗證多組 model/effort 組合是否合法。
+    - 確認結果：`claude-sonnet-5`／`claude-opus-5`／`claude-fable-5`／`gemini-2.5-flash` 這些 ID **agy 完全不認識**；真正存在的是 `gemini-3.7/3.6/3.5-flash`（各自可搭配獨立的 `--effort low/medium/high`，其中 `gemini-3.1-pro` 只支援 low/high，沒有 medium）、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`（這三個模型 agy 會直接拒絕額外的 `--effort`，因為思考程度已內建在模型裡）。
+    - `claude` CLI（`~/.local/bin/claude.exe`）的 `--help` 明確記載 `--model` 接受別名 `sonnet`/`opus`/`fable`（代表「最新版」）或完整 ID（如 `claude-fable-5`）；為避免未來新一代模型上市後清單直接失效，Settings 改用別名而非寫死版本號。同時 `--help` 記載 `--effort` 合法值為 `low|medium|high|xhigh|max`（原本用到不存在的組合）。
+    - （歷史紀錄，已由本檔最上方 2026-08-14 App Server 實測結果取代）第一版當時誤判 Codex CLI 本機未安裝，並採用 `gpt-5.2-codex`／`gpt-5.1-codex-*`；這些模型現已確認 deprecated，不得再作為現行清單依據。
+  - `ThinkingEffort` enum 的 `None` 改名為 `Minimal`（語意修正：真正的旗標值是「最低」而非「關閉」）並新增 `XHigh`。`CliCommandBuilder.AppendEffortArguments` 依上述實測結果重寫四個 CLI 各自的合法對應表；`AntigravityClaude` 設定檔的思考程度選項精簡為只有「預設」，因為它的三個模型沒有一個支援獨立的 `--effort`。
+  - `AI 倒數喚醒.exe`（`AiWakeScheduler.WinForms`）本機同名程式已在系統匣安裝，且 computer-use 存取請求被使用者拒絕，因此**這次修正未經實際畫面截圖驗證**，僅以程式碼層級的 WinForms 版面配置原理與建置/測試結果佐證，不得宣稱已做視覺 QA。
+- 驗證：Release 建置 0 警告 0 錯誤；重寫後 deterministic 測試 12/12 通過。尚待使用者實際開啟 Settings 視窗確認捲動與模型清單顯示正確。
+
 ## 2026-08-13 GitHub upload (complete)
 
 - User authorized uploading the complete current verified worktree, including the WinForms redesign and installer-experience hardening. Scope is this repository only.
@@ -240,3 +271,11 @@
 - 第一輪 Release 建置已實際成功：0 警告、0 錯誤。尚待 deterministic tests、視覺 QA、格式與差異檢查。
 - 最終驗證完成：Release build 成功（0 警告、0 錯誤）；deterministic tests 11/11 通過（四 CLI 平行測試 1213 ms）；`dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 均通過。主要文字／按鈕配色的計算對比值分別為 5.38:1、6.91:1、9.74:1、6.44:1，均達 WCAG AA；另提供 Windows 高對比模式系統色退化。
 - 視覺 QA 未完成：依 `computer-use` 技能初始化時仍被 `EPERM: lstat C:\Users\nojac\AppData\Local\OpenAI\Codex` 阻擋，沒有取得畫面；而目前正式安裝版仍在系統匣正常執行，為避免中斷排程，未停止正式版或啟動會撞單一執行個體鎖的工作區版本。不得宣稱已做實際畫面驗證。
+
+## 2026-08-13 已安裝軟體更新驗證
+
+- 以 `dist\AI倒數喚醒_Setup_v1.2.0_x64.exe` 靜默覆蓋更新目前使用者安裝；安裝程序結束碼為 `0`，未要求重新開機。
+- 已安裝執行檔為 `%LOCALAPPDATA%\Programs\AI 倒數喚醒\AI倒數喚醒.exe`，FileVersion `1.2.0.0`、ProductVersion `1.2.0+f6d7415c7615e6d709e75b301e01921a8f8db56d`、SHA-256 `33FC819E4278B41C2D0B381E7447F456C95AFFFDA5F0D0AE49D1A35EFEDFF4F2`；與本次 `bin\publish-selfcontained` 產物逐位元相同。
+- 已確認登錄的版本、安裝位置、解除安裝命令、專案／問題回報／更新網址正確；開始功能表的啟動與解除安裝捷徑均存在且指向目前安裝位置，既有開機啟動選項亦由安裝器保留。
+- 從已安裝路徑以 `--minimized` 啟動後，PID `23496` 且 `Responding=True`。這是程序啟動與回應證據，不等同完整視覺或排程行為驗證。
+- 本次使用者授權範圍是更新已安裝軟體；此交接紀錄尚未提交或推送。

@@ -4,15 +4,22 @@ namespace AiWakeScheduler.WinForms;
 
 internal sealed class SettingsForm : Form
 {
+    private sealed record EffortItem(ThinkingEffort Effort, string Text)
+    {
+        public override string ToString() => Text;
+    }
+
     private readonly ICliRunner _runner;
     private readonly Dictionary<CliKind, TextBox> _pathInputs = [];
+    private readonly Dictionary<CliKind, ComboBox> _modelInputs = [];
+    private readonly Dictionary<CliKind, ComboBox> _effortInputs = [];
     private readonly Dictionary<CliKind, TextBox> _argumentInputs = [];
 
     private readonly CheckBox _startupCheck = new() { Text = "登入 Windows 後自動啟動（最小化到系統匣）", AutoSize = true };
     private readonly CheckBox _trayCheck = new() { Text = "關閉主視窗時縮到系統匣，讓排程繼續執行", AutoSize = true };
     private readonly CheckBox _tokenSaverCheck = new()
     {
-        Text = "節省 Token 模式（停用工具與 MCP、低推理、短回覆；建議保持開啟）",
+        Text = "節省 Token 模式（停用工具與 MCP、預設低推理、短回覆；建議保持開啟）",
         AutoSize = true
     };
     private readonly NumericUpDown _timeoutInput = new() { Minimum = 1, Maximum = 120, Width = 70 };
@@ -58,15 +65,14 @@ internal sealed class SettingsForm : Form
 
     private void ApplyPreferredSize()
     {
-        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1024, 700);
-        MinimumSize = new Size(Math.Min(800, workingArea.Width), Math.Min(600, workingArea.Height));
-        Size = new Size(Math.Min(960, workingArea.Width), Math.Min(700, workingArea.Height));
+        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
+        MinimumSize = new Size(Math.Min(980, workingArea.Width), Math.Min(640, workingArea.Height));
+        Size = new Size(Math.Min(1120, workingArea.Width), Math.Min(820, workingArea.Height));
     }
 
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        // 讓探測結果隨視窗寬度換行，取代原本寫死的 790px 上限。
         _probeStatus.MaximumSize = new Size(Math.Max(200, ClientSize.Width - 80), 0);
     }
 
@@ -85,7 +91,11 @@ internal sealed class SettingsForm : Form
         };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        // 這一列（CLI 表格）之前用 Percent(100) 撐滿剩餘空間，
+        // 但那會讓 TableLayoutPanel 把表格硬壓縮進目前可見高度，
+        // 使超出視窗範圍的 CLI 列直接被裁掉，而不是讓外層 AutoScroll 捲動顯示。
+        // 改成 AutoSize，讓表格長到完整自然高度，交由 root 的 AutoScroll 處理捲動。
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -101,11 +111,11 @@ internal sealed class SettingsForm : Form
 
         root.Controls.Add(new Label
         {
-            Text = "可執行檔可填命令名稱（agy / codex / claude）或完整 .exe 路徑。"
-                 + "額外參數可留空（Antigravity Claude / GPT 預設使用 Claude Sonnet，亦可於額外參數填寫 --model 自訂）。",
+            Text = "可為各 CLI 指定最新模型（支援下拉選取或直接輸入任意自訂模型 ID）與思考程度（Reasoning Effort）。"
+                 + "可執行檔可填命令名稱（agy / codex / claude）或完整 .exe 路徑。",
             AutoSize = true,
             ForeColor = AppTheme.SecondaryText,
-            MaximumSize = new Size(850, 0),
+            MaximumSize = new Size(950, 0),
             Margin = new Padding(0, 0, 0, 18)
         }, 0, 1);
 
@@ -125,54 +135,97 @@ internal sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             AutoSize = true,
-            ColumnCount = 4,
+            ColumnCount = 6,
             RowCount = descriptors.Count + 2,
             BackColor = AppTheme.Panel,
             Padding = new Padding(16),
             Margin = new Padding(0, 0, 0, 16)
         };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 26));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 32));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         var sectionTitle = new Label
         {
-            Text = "CLI 連線",
+            Text = "CLI 模型與連線設定",
             Font = AppTheme.SectionTitle,
             ForeColor = AppTheme.PrimaryText,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 14)
         };
         table.Controls.Add(sectionTitle, 0, 0);
-        table.SetColumnSpan(sectionTitle, 4);
+        table.SetColumnSpan(sectionTitle, 6);
         table.Controls.Add(Header("CLI"), 0, 1);
-        table.Controls.Add(Header("可執行檔或命令"), 1, 1);
-        table.Controls.Add(Header("額外參數（選填）"), 2, 1);
+        table.Controls.Add(Header("模型 (Model)"), 1, 1);
+        table.Controls.Add(Header("思考程度 (Effort)"), 2, 1);
+        table.Controls.Add(Header("可執行檔或命令"), 3, 1);
+        table.Controls.Add(Header("額外參數（選填）"), 4, 1);
+        table.Controls.Add(Header(string.Empty), 5, 1);
 
         for (var i = 0; i < descriptors.Count; i++)
         {
-            var kind = descriptors[i].Kind;
+            var descriptor = descriptors[i];
+            var kind = descriptor.Kind;
             var row = i + 2;
             table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            var pathInput = new TextBox { Dock = DockStyle.Fill };
-            var argumentInput = new TextBox { Dock = DockStyle.Fill };
+            var modelCombo = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDown,
+                Margin = new Padding(0, 3, 8, 3)
+            };
+            foreach (var preset in descriptor.PresetModels)
+            {
+                if (!string.IsNullOrEmpty(preset))
+                {
+                    modelCombo.Items.Add(preset);
+                }
+            }
+
+            var effortCombo = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Margin = new Padding(0, 3, 8, 3),
+                MinimumSize = new Size(130, 0)
+            };
+
+            var pathInput = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 8, 3) };
+            var argumentInput = new TextBox { Dock = DockStyle.Fill, Margin = new Padding(0, 3, 8, 3) };
             var browse = new Button { Text = "瀏覽…", AutoSize = true, Dock = DockStyle.Fill, Tag = kind };
+
+            AppTheme.StyleInput(modelCombo);
+            AppTheme.StyleInput(effortCombo);
             AppTheme.StyleInput(pathInput);
             AppTheme.StyleInput(argumentInput);
             AppTheme.StyleButton(browse);
             browse.Click += BrowseExecutable;
 
+            _modelInputs[kind] = modelCombo;
+            _effortInputs[kind] = effortCombo;
             _pathInputs[kind] = pathInput;
             _argumentInputs[kind] = argumentInput;
+            RefreshEffortOptions(kind, ThinkingEffort.Default);
+            modelCombo.TextChanged += (_, _) => RefreshEffortOptions(kind);
 
-            table.Controls.Add(new Label { Text = descriptors[i].DisplayName, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 10, 14, 10) }, 0, row);
-            table.Controls.Add(pathInput, 1, row);
-            table.Controls.Add(argumentInput, 2, row);
-            table.Controls.Add(browse, 3, row);
+            table.Controls.Add(new Label
+            {
+                Text = descriptor.DisplayName,
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 8, 14, 8)
+            }, 0, row);
+            table.Controls.Add(modelCombo, 1, row);
+            table.Controls.Add(effortCombo, 2, row);
+            table.Controls.Add(pathInput, 3, row);
+            table.Controls.Add(argumentInput, 4, row);
+            table.Controls.Add(browse, 5, row);
         }
 
         return table;
@@ -249,12 +302,46 @@ internal sealed class SettingsForm : Form
         {
             var profile = ResultSettings.CliProfiles[descriptor.Kind];
             _pathInputs[descriptor.Kind].Text = profile.Executable;
+            _modelInputs[descriptor.Kind].Text = profile.Model;
             _argumentInputs[descriptor.Kind].Text = profile.AdditionalArguments;
+            RefreshEffortOptions(descriptor.Kind, profile.ThinkingEffort);
         }
         _startupCheck.Checked = ResultSettings.StartWithWindows;
         _trayCheck.Checked = ResultSettings.MinimizeToTray;
         _tokenSaverCheck.Checked = ResultSettings.TokenSaverMode;
         _timeoutInput.Value = Math.Clamp(ResultSettings.ExecutionTimeoutMinutes, _timeoutInput.Minimum, _timeoutInput.Maximum);
+    }
+
+    private void RefreshEffortOptions(CliKind kind, ThinkingEffort? preferredEffort = null)
+    {
+        var descriptor = CliCatalog.Get(kind);
+        var model = _modelInputs[kind].Text;
+        var effortCombo = _effortInputs[kind];
+        var currentEffort = preferredEffort ??
+            (effortCombo.SelectedItem is EffortItem current ? current.Effort : ThinkingEffort.Default);
+        var normalizedEffort = descriptor.NormalizeEffort(model, currentEffort);
+
+        effortCombo.BeginUpdate();
+        try
+        {
+            effortCombo.Items.Clear();
+            var supported = descriptor.GetSupportedEfforts(model);
+            var selectedIndex = 0;
+            for (var i = 0; i < supported.Count; i++)
+            {
+                var effort = supported[i];
+                effortCombo.Items.Add(new EffortItem(effort, ThinkingEffortDisplayNames.Get(effort)));
+                if (effort == normalizedEffort)
+                {
+                    selectedIndex = i;
+                }
+            }
+            effortCombo.SelectedIndex = effortCombo.Items.Count == 0 ? -1 : selectedIndex;
+        }
+        finally
+        {
+            effortCombo.EndUpdate();
+        }
     }
 
     private void SaveValues(object? sender, EventArgs e)
@@ -263,6 +350,8 @@ internal sealed class SettingsForm : Form
         {
             var kind = descriptor.Kind;
             var path = _pathInputs[kind].Text.Trim();
+            var model = _modelInputs[kind].Text.Trim();
+            var effort = _effortInputs[kind].SelectedItem is EffortItem item ? item.Effort : ThinkingEffort.Default;
             var arguments = _argumentInputs[kind].Text.Trim();
 
             if (string.IsNullOrWhiteSpace(path))
@@ -282,6 +371,8 @@ internal sealed class SettingsForm : Form
             }
 
             ResultSettings.CliProfiles[kind].Executable = path;
+            ResultSettings.CliProfiles[kind].Model = model;
+            ResultSettings.CliProfiles[kind].ThinkingEffort = effort;
             ResultSettings.CliProfiles[kind].AdditionalArguments = arguments;
         }
 
@@ -329,6 +420,8 @@ internal sealed class SettingsForm : Form
                     new CliProfile
                     {
                         Executable = _pathInputs[kind].Text.Trim(),
+                        Model = _modelInputs[kind].Text.Trim(),
+                        ThinkingEffort = _effortInputs[kind].SelectedItem is EffortItem item ? item.Effort : ThinkingEffort.Default,
                         AdditionalArguments = _argumentInputs[kind].Text.Trim()
                     },
                     workingDirectory,
