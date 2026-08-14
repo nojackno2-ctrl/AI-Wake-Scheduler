@@ -36,16 +36,35 @@ public enum ScheduleRecurrence
 }
 
 /// <summary>
+/// 思考程度 / 推理強度。
+/// </summary>
+public enum ThinkingEffort
+{
+    Default,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+    Ultra
+}
+
+/// <summary>
 /// 個別 CLI 工具的設定檔。
 /// </summary>
 public sealed class CliProfile
 {
     public string Executable { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public ThinkingEffort ThinkingEffort { get; set; } = ThinkingEffort.Default;
     public string AdditionalArguments { get; set; } = string.Empty;
 
     public CliProfile Clone() => new()
     {
         Executable = Executable ?? string.Empty,
+        Model = Model ?? string.Empty,
+        ThinkingEffort = ThinkingEffort,
         AdditionalArguments = AdditionalArguments ?? string.Empty
     };
 }
@@ -238,6 +257,25 @@ public static class ScheduleRecurrenceNames
         ScheduleRecurrence.Daily => "每天",
         ScheduleRecurrence.Weekly => "每週",
         _ => recurrence.ToString()
+    };
+}
+
+/// <summary>
+/// 思考程度顯示名稱對照。
+/// </summary>
+public static class ThinkingEffortDisplayNames
+{
+    public static string Get(ThinkingEffort effort) => effort switch
+    {
+        ThinkingEffort.Default => "預設",
+        ThinkingEffort.Minimal => "最低 (Minimal)",
+        ThinkingEffort.Low => "低 (Low)",
+        ThinkingEffort.Medium => "中 (Medium)",
+        ThinkingEffort.High => "高 (High)",
+        ThinkingEffort.XHigh => "極高 (XHigh)",
+        ThinkingEffort.Max => "最高 (Max)",
+        ThinkingEffort.Ultra => "超高 (Ultra)",
+        _ => effort.ToString()
     };
 }
 

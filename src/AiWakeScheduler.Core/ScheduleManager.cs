@@ -282,20 +282,49 @@ public sealed class ScheduleManager : IAsyncDisposable
         try
         {
             var now = Now;
+            List<ScheduledJob>? overdue = null;
             for (var i = 0; i < _jobs.Count; i++)
             {
                 var job = _jobs[i];
                 if (job.Enabled && job.Status == ScheduleStatus.Pending && job.ScheduledAt <= now)
                 {
                     // 只有真的有東西到期時才配置清單，閒置掃描是零配置的。
-                    (dueJobs ??= []).Add(job.Clone());
-                    job.Status = ScheduleStatus.Running;
-                    job.StartedAt = now;
+                    (overdue ??= []).Add(job);
                 }
             }
 
-            if (dueJobs is not null)
+            if (overdue is not null)
             {
+                // 電腦睡眠或程式關閉一段時間後，可能同時有多個排程逾時。
+                // 只補做時間離現在最近的那一個，其餘直接推到下一次每日時點，
+                // 避免同一輪一次觸發多個 CLI 呼叫。
+                var primary = overdue[0];
+                for (var i = 1; i < overdue.Count; i++)
+                {
+                    if (overdue[i].ScheduledAt > primary.ScheduledAt)
+                    {
+                        primary = overdue[i];
+                    }
+                }
+
+                for (var i = 0; i < overdue.Count; i++)
+                {
+                    var job = overdue[i];
+                    if (ReferenceEquals(job, primary))
+                    {
+                        (dueJobs ??= []).Add(job.Clone());
+                        job.Status = ScheduleStatus.Running;
+                        job.StartedAt = now;
+                    }
+                    else
+                    {
+                        job.FinishedAt = now;
+                        job.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                            job.ScheduledAt.LocalDateTime.TimeOfDay,
+                            now);
+                    }
+                }
+
                 await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
             }
 

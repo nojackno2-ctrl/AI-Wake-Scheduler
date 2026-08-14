@@ -100,6 +100,73 @@ public sealed record CliDescriptor
     /// <summary>使用者未自訂 --model 時採用的預設模型（null 表示交給 CLI 自行決定）。</summary>
     public string? DefaultModel { get; init; }
 
+    /// <summary>UI 下拉選單推薦的最新模型清單（首項為空代表 CLI 預設，亦可自訂輸入）。</summary>
+    public IReadOnlyList<string> PresetModels { get; init; } = [];
+
+    /// <summary>此 CLI 支援的思考程度 / 推理強度選項。</summary>
+    public IReadOnlyList<ThinkingEffort> SupportedEfforts { get; init; } = [];
+
+    /// <summary>已知模型各自支援的思考程度；自訂模型則回退到 <see cref="SupportedEfforts"/>。</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<ThinkingEffort>> ModelSupportedEfforts { get; init; } =
+        new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyList<ThinkingEffort> GetSupportedEfforts(string? model)
+    {
+        var normalizedModel = model?.Trim();
+        return !string.IsNullOrWhiteSpace(normalizedModel) &&
+               ModelSupportedEfforts.TryGetValue(normalizedModel, out var efforts)
+            ? efforts
+            : SupportedEfforts;
+    }
+
+    /// <summary>把舊設定或不相容的 Effort 降到該模型可接受的最接近等級。</summary>
+    public ThinkingEffort NormalizeEffort(string? model, ThinkingEffort effort)
+    {
+        var supported = GetSupportedEfforts(model);
+        if (supported.Contains(effort))
+        {
+            return effort;
+        }
+
+        var requestedRank = EffortRank(effort);
+        var fallback = ThinkingEffort.Default;
+        var fallbackRank = int.MinValue;
+        for (var i = 0; i < supported.Count; i++)
+        {
+            var candidate = supported[i];
+            if (candidate == ThinkingEffort.Default)
+            {
+                continue;
+            }
+
+            var candidateRank = EffortRank(candidate);
+            if (candidateRank <= requestedRank && candidateRank > fallbackRank)
+            {
+                fallback = candidate;
+                fallbackRank = candidateRank;
+            }
+        }
+
+        if (fallback != ThinkingEffort.Default)
+        {
+            return fallback;
+        }
+
+        return supported.FirstOrDefault(candidate => candidate != ThinkingEffort.Default);
+    }
+
+    private static int EffortRank(ThinkingEffort effort) => effort switch
+    {
+        ThinkingEffort.Minimal => 0,
+        ThinkingEffort.Low => 1,
+        ThinkingEffort.Medium => 2,
+        ThinkingEffort.High => 3,
+        ThinkingEffort.XHigh => 4,
+        ThinkingEffort.Max => 5,
+        ThinkingEffort.Ultra => 6,
+        _ => -1
+    };
+
     /// <summary>依應用程式逾時值產生 CLI 自身的逾時參數，讓子程序自己收尾而不是被強制終止。</summary>
     public Func<TimeSpan, IReadOnlyList<string>>? TimeoutArguments { get; init; }
 
@@ -122,9 +189,19 @@ public static class CliCatalog
             DefaultCommand = "agy",
             BaseArguments = [],
             PromptFlag = "--print",
-            // --effort low 降低推理量；--disable-slash-commands 停用技能展開，
-            // 兩者都直接減少送出的提示長度與回合數。
-            TokenSaverArguments = ["--effort", "low", "--disable-slash-commands", "--mode", "plan"],
+            // --disable-slash-commands 停用技能展開；--mode plan 唯讀工作區；
+            // 推理程度由 CliCommandBuilder 依設定或節省模式動態附加。
+            TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
+            // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
+            // （帶後綴的完整 ID，如 gemini-3.7-flash-high，是另一種寫法，這裡固定用前者）。
+            PresetModels = ["", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"],
+            SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
+            ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["gemini-3.7-flash"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
+                ["gemini-3.6-flash"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
+                ["gemini-3.1-pro"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.High]
+            },
             TimeoutArguments = timeout => ["--print-timeout", FormatGoDuration(timeout)],
             ExecutableCandidates = AntigravityCandidates
         },
@@ -136,12 +213,14 @@ public static class CliCatalog
             DefaultCommand = "agy",
             BaseArguments = [],
             PromptFlag = "--print",
-            // 注意：Claude 系列模型不接受 --effort，帶上去會直接被拒絕
-            // （Error: --effort is not supported for model ...），所以這裡只停用技能展開。
             TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
-            // 這個項目的用途就是喚醒 Claude / GPT 額度池，模型必須明確指定。
-            // 使用 `agy models` 列出的模型 ID，比顯示名稱少一層引號與空白的風險。
+            // 以 `agy models` 實際輸出核對的模型 ID（非顯示名稱）：
+            // claude-sonnet-4-6、claude-opus-4-6-thinking、gpt-oss-120b-medium。
+            // 這三個模型都不接受獨立的 --effort 旗標（agy 會直接報錯拒絕），
+            // 因此本設定檔不提供思考程度選項。
             DefaultModel = "claude-sonnet-4-6",
+            PresetModels = ["claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"],
+            SupportedEfforts = [ThinkingEffort.Default],
             TimeoutArguments = timeout => ["--print-timeout", FormatGoDuration(timeout)],
             ExecutableCandidates = AntigravityCandidates
         },
@@ -160,9 +239,21 @@ public static class CliCatalog
                 "--sandbox", "read-only",
                 "--ignore-user-config",
                 "--ignore-rules",
-                "-c", "model_reasoning_effort=\"low\"",
                 "-c", "model_verbosity=\"low\""
             ],
+            // 2026-08-14 由本機 Codex App Server `model/list` 直接取得的帳號可用清單。
+            // 空字串保留「由 CLI 自動選擇目前預設模型」的行為，避免未來再次被固定版本綁住。
+            PresetModels = ["", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+            SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
+            ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["gpt-5.6-sol"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
+                ["gpt-5.6-terra"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
+                ["gpt-5.6-luna"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max],
+                ["gpt-5.5"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh],
+                ["gpt-5.4"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh],
+                ["gpt-5.4-mini"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh]
+            },
             ExecutableCandidates = CodexCandidates
         },
         new()
@@ -180,11 +271,14 @@ public static class CliCatalog
             [
                 "--safe-mode",
                 "--strict-mcp-config",
-                "--effort", "low",
                 "--tools", "",
                 "--no-session-persistence",
                 "--prompt-suggestions", "false"
             ],
+            // 用官方文件的別名（`claude --help` 明載：sonnet/opus/fable 皆代表「最新版」），
+            // 而非寫死版本號的完整模型 ID，避免新一代模型上市後這裡的清單直接失效。
+            PresetModels = ["", "sonnet", "opus", "fable"],
+            SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max],
             ExecutableCandidates = ClaudeCandidates
         }
     ];

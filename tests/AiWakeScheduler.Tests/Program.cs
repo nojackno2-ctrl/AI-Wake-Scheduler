@@ -34,6 +34,7 @@ var deterministicTests = new (string Name, Func<Task> Run)[]
     ("ScheduleManagerDueJob", TestScheduleManagerAsync),
     ("ScheduleManagerAdaptiveWait", TestScheduleManagerAdaptiveWaitAsync),
     ("ScheduleManagerRestartDoesNotRefire", TestScheduleManagerRestartDoesNotRefireAsync),
+    ("ScheduleManagerCoalescesOverdueJobs", TestScheduleManagerCoalescesOverdueJobsAsync),
     ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
     ("InstallerContract", TestInstallerContractAsync)
 };
@@ -80,12 +81,63 @@ static Task TestArgumentTokenizerAsync()
 
 static Task TestCliCommandBuilderAsync()
 {
-    // Antigravity 的 --print 是「值就是提示詞」的字串旗標，必須排在所有旗標的最後
     Equal(["--print", "早安"], CliCommandBuilder.Build(CliKind.Antigravity, "早安", tokenSaverMode: false));
     Equal(["--model", "claude-sonnet-4-6", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", tokenSaverMode: false));
     Equal(["--model", "custom-model", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "--model custom-model", tokenSaverMode: false));
     Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "早安"], CliCommandBuilder.Build(CliKind.Codex, "早安", tokenSaverMode: false));
     Equal(["--print", "--model", "sonnet", "早安"], CliCommandBuilder.Build(CliKind.Claude, "早安", "--model sonnet", tokenSaverMode: false));
+
+    // 自訂 Model 與 ThinkingEffort 測試（模型 ID 與 effort 合法值均以實際 CLI 行為核對）
+    var agyCustom = CliCommandBuilder.Build(
+        CliKind.Antigravity,
+        "早安",
+        new CliProfile { Model = "gemini-3.7-flash", ThinkingEffort = ThinkingEffort.High },
+        tokenSaverMode: false);
+    Equal(["--model", "gemini-3.7-flash", "--effort", "high", "--print", "早安"], agyCustom);
+
+    var codexCustom = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { Model = "gpt-5.6-sol", ThinkingEffort = ThinkingEffort.Ultra },
+        tokenSaverMode: false);
+    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--model", "gpt-5.6-sol", "-c", "model_reasoning_effort=\"ultra\"", "早安"], codexCustom);
+
+    var codexMinimal = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { ThinkingEffort = ThinkingEffort.Minimal },
+        tokenSaverMode: false);
+    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-c", "model_reasoning_effort=\"low\"", "早安"], codexMinimal);
+
+    var codexLunaUltra = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { Model = "gpt-5.6-luna", ThinkingEffort = ThinkingEffort.Ultra },
+        tokenSaverMode: false);
+    Assert(codexLunaUltra.Contains("model_reasoning_effort=\"max\""), "GPT-5.6 Luna 的 Ultra 應降為支援的 Max。");
+
+    var codex55Max = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { Model = "gpt-5.5", ThinkingEffort = ThinkingEffort.Max },
+        tokenSaverMode: false);
+    Assert(codex55Max.Contains("model_reasoning_effort=\"xhigh\""), "GPT-5.5 的 Max 應降為支援的 XHigh。");
+
+    var claudeCustom = CliCommandBuilder.Build(
+        CliKind.Claude,
+        "早安",
+        new CliProfile { Model = "opus", ThinkingEffort = ThinkingEffort.Medium },
+        tokenSaverMode: false);
+    Equal(["--print", "--model", "opus", "--effort", "medium", "早安"], claudeCustom);
+
+    // AntigravityClaude 的三個模型（claude-sonnet-4-6、claude-opus-4-6-thinking、
+    // gpt-oss-120b-medium）在 agy 中皆已內建固定思考程度，一律不能帶 --effort。
+    var agyClaudeAnyModel = CliCommandBuilder.Build(
+        CliKind.AntigravityClaude,
+        "早安",
+        new CliProfile { Model = "gpt-oss-120b-medium", ThinkingEffort = ThinkingEffort.High },
+        tokenSaverMode: false);
+    Assert(!agyClaudeAnyModel.Contains("--effort"), "AntigravityClaude 的任何模型都不可帶 --effort。");
 
     // 迴歸測試：Antigravity 的旗標絕不能出現在 --print 之後，
     // 否則會被當成提示詞送出，其餘旗標則全部失效。
@@ -103,7 +155,24 @@ static Task TestCliCommandBuilderAsync()
 
     // 使用者以 -m 指定模型時，也不應再附加預設模型
     var shortModelOverride = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "-m custom", tokenSaverMode: false);
-    Assert(!shortModelOverride.Contains("Claude Sonnet 4.6 (Thinking)"), "使用者以 -m 指定模型時不應覆寫。");
+    Assert(!shortModelOverride.Contains("claude-sonnet-4-6"), "使用者以 -m 指定模型時不應覆寫。");
+
+    // 使用者以額外參數指定思考程度時，不應重複附加
+    var codexEffortOverride = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { ThinkingEffort = ThinkingEffort.Low, AdditionalArguments = "-c model_reasoning_effort=\"high\"" },
+        tokenSaverMode: false);
+    var occurrences = codexEffortOverride.Count(arg => arg.Contains("model_reasoning_effort", StringComparison.OrdinalIgnoreCase));
+    Assert(occurrences == 1, "使用者在額外參數自訂 model_reasoning_effort 時不應重複附加。");
+
+    var codexModelOverride = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { Model = "gpt-5.6-sol", ThinkingEffort = ThinkingEffort.Ultra, AdditionalArguments = "--model gpt-5.5" },
+        tokenSaverMode: false);
+    Assert(codexModelOverride.Count(argument => argument == "--model") == 1, "額外參數覆寫模型時不應重複附加 --model。");
+    Assert(codexModelOverride.Contains("model_reasoning_effort=\"xhigh\""), "Effort 應依額外參數實際指定的 GPT-5.5 正規化為 XHigh。");
 
     var saverAgy = CliCommandBuilder.Build(CliKind.Antigravity, "早安", timeout: TimeSpan.FromMinutes(3));
     Assert(saverAgy.Contains("--effort") && saverAgy.Contains("low"), "Antigravity 節省模式應包含 low effort。");
@@ -126,12 +195,22 @@ static Task TestCliCommandBuilderAsync()
     Assert(saverCodex.Last().Contains("只回「OK」", StringComparison.Ordinal), "節省模式應要求最短回覆。");
 
     var saverClaude = CliCommandBuilder.Build(CliKind.Claude, "早安");
+    Assert(saverClaude.Contains("--effort") && saverClaude.Contains("low"), "Claude 節省模式應包含 low effort。");
     Assert(saverClaude.Contains("--tools") && saverClaude.Contains(string.Empty), "節省模式應停用 Claude 內建工具。");
     Assert(saverClaude.Contains("--safe-mode"), "節省模式應停用 CLAUDE.md、技能、外掛與 MCP 伺服器。");
     Assert(saverClaude.Contains("--strict-mcp-config"), "節省模式應確保不載入任何 MCP 工具結構描述。");
     Assert(saverClaude.Contains("--no-session-persistence"), "節省模式不應保存一次性喚醒 session。");
     var suggestionsIndex = saverClaude.ToList().IndexOf("--prompt-suggestions");
     Assert(suggestionsIndex >= 0 && saverClaude[suggestionsIndex + 1] == "false", "節省模式應停用額外的提示建議生成。");
+
+    // 節省模式下若使用者明確指定了 ThinkingEffort.High，應尊重使用者設定而非強行覆蓋為 low
+    var saverCodexHigh = CliCommandBuilder.Build(
+        CliKind.Codex,
+        "早安",
+        new CliProfile { ThinkingEffort = ThinkingEffort.High },
+        tokenSaverMode: true);
+    Assert(saverCodexHigh.Contains("model_reasoning_effort=\"high\""), "使用者指定 High 時應使用 high。");
+    Assert(!saverCodexHigh.Contains("model_reasoning_effort=\"low\""), "使用者指定 High 時不應包含 low。");
 
     // --tools 是可變長度參數，後面必須緊接旗標，否則會吃掉提示詞
     var toolsIndex = saverClaude.ToList().IndexOf("--tools");
@@ -301,6 +380,86 @@ static async Task TestScheduleManagerRestartDoesNotRefireAsync()
     }
 }
 
+static async Task TestScheduleManagerCoalescesOverdueJobsAsync()
+{
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        var paths = new AppDataPaths(Path.Combine(directory, "data"));
+        var store = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, () => []);
+        var settings = AppSettings.CreateDefault();
+        var runner = new CountingCliRunner();
+
+        // 程式關閉了一段時間，三個排程都錯過了各自的時分。
+        var oldestId = Guid.NewGuid();
+        var middleId = Guid.NewGuid();
+        var newestId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = oldestId,
+                Name = "最早錯過",
+                ScheduledAt = DateTimeOffset.Now.AddHours(-3),
+                FinishedAt = null,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity]
+            },
+            new ScheduledJob
+            {
+                Id = middleId,
+                Name = "中間錯過",
+                ScheduledAt = DateTimeOffset.Now.AddHours(-2),
+                FinishedAt = null,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity]
+            },
+            new ScheduledJob
+            {
+                Id = newestId,
+                Name = "最近錯過",
+                ScheduledAt = DateTimeOffset.Now.AddMinutes(-30),
+                FinishedAt = null,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity]
+            }
+        ]);
+
+        await using var manager = new ScheduleManager(store, runner, () => settings);
+        await manager.InitializeAsync();
+
+        var deadline = DateTime.UtcNow.AddSeconds(10);
+        while (DateTime.UtcNow < deadline && runner.CallCount == 0)
+        {
+            await Task.Delay(25);
+        }
+        // 給補跑的那個排程一點時間完成，並讓其餘排程有機會（錯誤地）被觸發。
+        await Task.Delay(500);
+
+        Assert(runner.CallCount == 1, $"多個排程同時逾時時只應補做最近的一個，實際呼叫 {runner.CallCount} 次。");
+
+        var jobs = await manager.GetJobsAsync();
+        var newest = jobs.Single(item => item.Id == newestId);
+        var middle = jobs.Single(item => item.Id == middleId);
+        var oldest = jobs.Single(item => item.Id == oldestId);
+
+        Assert(newest.Status == ScheduleStatus.Pending, "被補做的排程應回到等待中。");
+        Assert(newest.ScheduledAt > DateTimeOffset.Now, "被補做的排程應排到下一個每日時點。");
+
+        Assert(middle.Status == ScheduleStatus.Pending, "被跳過的排程不應卡在執行中。");
+        Assert(middle.ScheduledAt > DateTimeOffset.Now, "被跳過的排程應直接推到下一個每日時點，而不是重複呼叫。");
+        Assert(oldest.Status == ScheduleStatus.Pending, "被跳過的排程不應卡在執行中。");
+        Assert(oldest.ScheduledAt > DateTimeOffset.Now, "被跳過的排程應直接推到下一個每日時點，而不是重複呼叫。");
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
 static Task TestCliCatalogAsync()
 {
     foreach (var kind in Enum.GetValues<CliKind>())
@@ -312,6 +471,27 @@ static Task TestCliCatalogAsync()
         Assert(!string.IsNullOrWhiteSpace(descriptor.DefaultCommand), "每個 CLI 都應有預設命令。");
         Assert(CliDisplayNames.Get(kind) == descriptor.DisplayName, "顯示名稱應由目錄提供。");
         Assert(CliDisplayNames.GetShort(kind) == descriptor.ShortName, "短名稱應由目錄提供。");
+        Assert(descriptor.PresetModels.Count >= 3, "每個 CLI 應至少提供最新 3 款推薦模型選項。");
+        Assert(descriptor.SupportedEfforts.Contains(ThinkingEffort.Default), "每個 CLI 都應允許使用 CLI 自身預設思考程度。");
+    }
+
+    // AntigravityClaude 的三個模型都已內建固定思考程度，agy 會直接拒絕 --effort，
+    // 因此這個設定檔刻意只提供「預設」一個選項（詳見 CliCommandBuilder 的實測註解）。
+    Assert(CliCatalog.Get(CliKind.AntigravityClaude).SupportedEfforts.Count == 1, "AntigravityClaude 不應提供無法生效的思考程度選項。");
+
+    var codex = CliCatalog.Get(CliKind.Codex);
+    Equal(
+        ["", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+        codex.PresetModels);
+    Assert(!codex.PresetModels.Any(model => model.Contains("gpt-5.2", StringComparison.OrdinalIgnoreCase) || model.Contains("gpt-5.1", StringComparison.OrdinalIgnoreCase)),
+        "Codex 推薦清單不應再包含 deprecated 的 GPT-5.2/5.1 Codex 模型。");
+    Assert(codex.GetSupportedEfforts("gpt-5.6-sol").Contains(ThinkingEffort.Ultra), "GPT-5.6 Sol 應支援 Ultra。");
+    Assert(!codex.GetSupportedEfforts("gpt-5.6-luna").Contains(ThinkingEffort.Ultra), "GPT-5.6 Luna 不支援 Ultra。");
+    Assert(codex.NormalizeEffort("gpt-5.5", ThinkingEffort.Max) == ThinkingEffort.XHigh, "GPT-5.5 Max 應正規化為 XHigh。");
+
+    foreach (var kind in new[] { CliKind.Antigravity, CliKind.Codex, CliKind.Claude })
+    {
+        Assert(CliCatalog.Get(kind).SupportedEfforts.Count >= 3, $"{kind} 應至少支援 3 種思考程度選項。");
     }
 
     Assert(CliCatalog.All.Count == Enum.GetValues<CliKind>().Length, "目錄應涵蓋所有 CliKind。");
