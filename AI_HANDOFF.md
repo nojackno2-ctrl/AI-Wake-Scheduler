@@ -1,5 +1,75 @@
 # AI HANDOFF
 
+## 2026-08-18 自動模式跨日不排半夜與隔日首次時間重置完成（完成，未提交）
+
+- **使用者要求**：「自動模式的倒數是只限於當日嗎，假設我設定早上0530作為首次喚醒，但是我0800才起床開電腦，正常來說他要從0800開始倒數，但是一旦超國2400，就不應該繼續倒數，而是等到隔天的0530再次啟動」->「改成跨日不排半夜」。
+- **實作重點**：
+  1. **資料模型（`Models.cs`）**：
+     - `ScheduledJob` 新增 `public TimeSpan? InitialTimeOfDay { get; set; }` 並更新 `Clone()`，確保設定的每日「首次喚醒時間」基準不因日間推進而遺失。
+  2. **領域計算（`ScheduleCalculator.cs`）**：
+     - 新增 `GetNextAutoIntervalOccurrence(TimeSpan initialTimeOfDay, DateTimeOffset finishedAt)`：
+       - 若 `finishedAt + 5h1m` 仍在當日（未超過午夜 24:00），則排在該時間（如 08:00 $\rightarrow$ 13:01 $\rightarrow$ 18:02 $\rightarrow$ 23:03）。
+       - 若推算時間跨入隔天（超過 24:00，例如 23:03 完工後算出的 04:04），不排在半夜，直接排定為隔日的首次喚醒時間（如隔天 05:30）。
+  3. **排程引擎（`ScheduleManager.cs`）**：
+     - `CompleteJobAsync`：使用 `GetNextAutoIntervalOccurrence` 計算下次執行時間。
+     - `InitializeAsync`：
+       - 若上次執行在昨日（或更早），且今日開機時間（如 08:00）已過首次喚醒時間（05:30），啟動時立即補做今日第一輪，並自 08:00 展開日間 5h1m 循環。
+       - 若今日提早開機（如 04:30），安靜等待至 05:30，不提前執行。
+       - 若今日已執行過且未滿 5h1m，重開程式不重複執行，維持既有倒數。
+     - `UpsertAsync` 與 `ScanAndStartDueJobsAsync` 同步更新支援 `InitialTimeOfDay`。
+  4. **WinForms UI（`MainForm.cs`）**：
+     - `SaveScheduleAsync`：儲存自動模式時填入 `InitialTimeOfDay`。
+     - `GridOnSelectionChanged`：選取排程時優先載入 `InitialTimeOfDay`，避免被目前倒數時分覆蓋。
+  5. **測試驗證（`Program.cs`）**：
+     - `TestScheduleCalculatorAsync`：新增當日 08:00 $\rightarrow$ 13:01、18:02 $\rightarrow$ 23:03、23:03 跨日重置隔天 05:30（不排 04:04）、20:00 跨日重置等單元測試。
+     - `TestScheduleManagerAutoIntervalAsync`：引入 `FakeTimeProvider` 驗證首次到期、立即執行推進、當日重開不重跑、隔日逾期開機補做、隔日提早開機等待等全套情境。
+- **驗證結果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含 4 個假 CLI 平行完成 1208 ms）。
+  - Integration 測試 1/1 通過（Codex、Antigravity Gemini、Antigravity Claude/GPT 即時讀取成功）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+
+
+
+- **使用者要求**：「我要你不管用什麼方法都要讀取道AGY的使用量倒數」->「這要可以把這個功能做到專案裡面嗎」-> 使用者批准實作。
+- **實作重點**：
+  1. **核心層（`CliUsageReader.cs`）**：
+     - `ReadAsync` 擴充支援 `CliKind.Antigravity` 與 `CliKind.AntigravityClaude`。
+     - **CSRF Token 取得機制全方位強化**：
+       - 實作 `NativeProcessHelper`，透過 Win32 `NtQueryInformationProcess` 搭配跨 Windows 版本的 `RTL_USER_PROCESS_PARAMETERS` 多偏移量掃描（0x60, 0x68, 0x70, 0x78, 0x80）直接在記憶體中抓取 `--csrf_token`（微秒級完成、零子程序開銷）。
+       - 內建多重 PowerShell 備用方案（`Get-CimInstance` 與 `Get-Process`，搭配 `-ExecutionPolicy Bypass`），確保各種權限與偵錯模式下皆能成功取得。
+     - **Port 偵測機制強化**：結合 `language_server.log` 啟動日誌掃描與 PowerShell `Get-NetTCPConnection` Listen 連接埠查詢。
+     - **平行查詢快取（3 秒 TTL）**：`_agyQueryLock` 與短期快取確保 `Antigravity` 與 `AntigravityClaude` 平行查詢時只向本機 Language Server 發送一次 RPC 請求。
+     - 使用 .NET 8 原生 `HttpClient`（自訂憑證信任）發送 Connect-RPC 請求至 `POST /exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData`，標頭帶上 `x-codeium-csrf-token`。
+     - `Antigravity`（Gemini 模型池）與 `AntigravityClaude`（Claude / GPT 模型池）各自獨立計算剩餘額度百分比與 `resetTime` 重置時間戳記。
+     - 提供公開靜態方法 `ParseAntigravityModelConfigs` 供可重現單元測試。
+  2. **UI 層（`MainForm.cs`）**：
+     - `RefreshUsageAsync` 狀態列更新為統計所有可用 CLI 額度更新狀態。
+     - 既有版面自動無縫支援雙額度池即時倒數更新（每秒本機即時倒數，不頻繁發送網路請求）。
+  3. **測試驗證（`Program.cs`）**：
+     - `TestCliUsageReaderAsync` 新增 Gemini、Claude/GPT 雙額度池解析、邊界與異常測試。
+     - `TestExecutableLocatorAsync`（`--integration`）加入本機真實 Language Server 額度讀取驗證，實測 Gemini 剩餘 94%（重置時間 19:10:00）、Claude/GPT 剩餘 100%（重置時間 19:24:27）。
+- **驗證結果**：
+  - Release 與 Debug 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含假 CLI 平行完成 1261 ms）。
+  - Integration 測試 1/1 通過（Codex、Antigravity Gemini、Antigravity Claude/GPT 全數即時讀取成功）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+
+
+## 2026-08-17 自動模式（每 5 個小時 + 1 分鐘再次呼叫）新增與驗證（完成，未提交）
+
+- 使用者要求：「加入一個自動模式，功能啟用第一次喚醒後，每5個小時+1分鐘再次呼叫」。
+- 實作重點：
+  - **領域與計算**：`Models.cs` 新增 `ScheduleRecurrence.Interval` 與繁中顯示名稱；`ScheduleCalculator.cs` 定義常數 `AutoInterval = TimeSpan.FromHours(5) + TimeSpan.FromMinutes(1)`（301 分鐘）並擴充 `GetNextOccurrence`。
+  - **排程引擎**：`ScheduleManager.cs` 支援 Interval 模式，在首次喚醒執行完畢（或手動「立即執行」完成）後自動將下次時間推進 `FinishedAt + 5小時1分鐘`；重開程式時，若前次執行在 5 小時 1 分鐘內則繼續等待（不重複扣額度），若關閉期間已逾期則啟動時立即補做一次並推進至下個 5 小時 1 分鐘。
+  - **WinForms UI**：`MainForm.cs` 編輯區新增「排程模式」下拉選單（`每天固定時間` 與 `自動模式（每 5 小時 1 分鐘）`），選擇自動模式時動態切換時間欄位標籤為「首次喚醒時間」；排程清單時間欄標題更新為「時間 / 週期」並在自動模式下清晰顯示 `每5h1m (HH:mm)`，倒數欄即時倒數。
+  - **測試驗證**：`Program.cs` 新增 `ScheduleManagerAutoInterval` 單元測試（驗證首次到期執行、執行後推進 5 小時 1 分鐘、立即執行推進、重啟未滿 5h1m 不重跑、重啟逾期補做）以及 `ScheduleCalculator` 301 分鐘精確推算測試。
+- 驗證結果：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含 4 個假 CLI 平行完成 1209 ms）。
+  - Integration 測試 1/1 通過。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+
 ## 2026-08-14 Codex CLI 模型清單更新（完成，未提交）
 
 - 使用者指出目前 Codex 下拉模型過舊。官方 OpenAI 模型目錄已將 `gpt-5.2-codex` 與 `gpt-5.1-codex*` 標為 deprecated；GPT-5.6 現行家族為 Sol／Terra／Luna。

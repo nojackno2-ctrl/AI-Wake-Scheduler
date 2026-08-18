@@ -16,6 +16,7 @@ internal sealed class MainForm : Form
 
     private readonly DataGridView _grid = new();
     private readonly TextBox _nameInput = new() { Dock = DockStyle.Fill };
+    private readonly ComboBox _recurrenceInput = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly DateTimePicker _timeInput = new() { Format = DateTimePickerFormat.Custom, CustomFormat = "HH:mm", ShowUpDown = true, Dock = DockStyle.Fill };
     private readonly TextBox _messageInput = new() { Text = "早安", Dock = DockStyle.Fill, MaxLength = 50 };
     private readonly TextBox _workingDirectoryInput = new() { Dock = DockStyle.Fill };
@@ -23,6 +24,7 @@ internal sealed class MainForm : Form
     private readonly ToolStripStatusLabel _statusLabel = new() { Text = "就緒" };
     private readonly ToolStripStatusLabel _clockLabel = new() { Spring = true, TextAlign = ContentAlignment.MiddleRight };
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 1000 };
+    private Label? _timeLabel;
     private readonly Dictionary<CliKind, CheckBox> _targetChecks = [];
     private readonly Dictionary<CliKind, Label> _usageLabels = [];
     private readonly Dictionary<CliKind, CliUsageSnapshot> _usageSnapshots = [];
@@ -116,6 +118,7 @@ internal sealed class MainForm : Form
         SuspendLayout();
 
         AppTheme.StyleInput(_nameInput);
+        AppTheme.StyleInput(_recurrenceInput);
         AppTheme.StyleInput(_timeInput);
         AppTheme.StyleInput(_messageInput);
         AppTheme.StyleInput(_workingDirectoryInput);
@@ -186,7 +189,7 @@ internal sealed class MainForm : Form
         }, 0, 0);
         header.Controls.Add(new Label
         {
-            Text = "每天在指定的幾點幾分，向勾選的 CLI 傳送一則簡短訊息（預設：早安）",
+            Text = "依排程或自動週期（每 5 小時 1 分鐘），向勾選的 CLI 傳送簡短訊息喚醒配額（預設：早安）",
             ForeColor = AppTheme.BannerSubtitle,
             AutoSize = true,
             Margin = new Padding(1, 5, 0, 0)
@@ -244,7 +247,7 @@ internal sealed class MainForm : Form
         _grid.ColumnHeadersDefaultCellStyle.Font = AppTheme.TableHeader;
         _grid.ColumnHeadersDefaultCellStyle.Padding = new Padding(6, 0, 6, 0);
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Name", HeaderText = "名稱", Width = 135 });
-        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ScheduledAt", HeaderText = "每天時間", Width = 90 });
+        _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "ScheduledAt", HeaderText = "時間 / 週期", Width = 115 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Countdown", HeaderText = "倒數", Width = 100 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Targets", HeaderText = "CLI", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 125 });
         _grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "狀態", Width = 80 });
@@ -284,7 +287,7 @@ internal sealed class MainForm : Form
             Dock = DockStyle.Fill,
             AutoScroll = true,
             ColumnCount = 2,
-            RowCount = 10,
+            RowCount = 11,
             Padding = new Padding(18, 16, 14, 16),
             BackColor = AppTheme.Canvas
         };
@@ -301,9 +304,16 @@ internal sealed class MainForm : Form
         editor.Controls.Add(title, 0, 0);
         editor.SetColumnSpan(title, 2);
 
+        _recurrenceInput.Items.Clear();
+        _recurrenceInput.Items.Add("每天固定時間");
+        _recurrenceInput.Items.Add("自動模式（每 5 小時 1 分鐘）");
+        _recurrenceInput.SelectedIndex = 0;
+        _recurrenceInput.SelectedIndexChanged += (_, _) => UpdateRecurrenceLabel();
+
         AddEditorRow(editor, 1, "名稱", _nameInput);
-        AddEditorRow(editor, 2, "每天時間", _timeInput);
-        AddEditorRow(editor, 3, "訊息", _messageInput);
+        AddEditorRow(editor, 2, "排程模式", _recurrenceInput);
+        _timeLabel = AddEditorRow(editor, 3, "每天時間", _timeInput);
+        AddEditorRow(editor, 4, "訊息", _messageInput);
 
         var directoryPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true };
         directoryPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -313,7 +323,7 @@ internal sealed class MainForm : Form
         AppTheme.StyleButton(browse);
         browse.Click += BrowseWorkingDirectory;
         directoryPanel.Controls.Add(browse, 1, 0);
-        AddEditorRow(editor, 4, "工作目錄", directoryPanel);
+        AddEditorRow(editor, 5, "工作目錄", directoryPanel);
 
         // CLI 勾選項直接由目錄產生，新增 CLI 不需要改動視窗程式碼。
         var targets = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
@@ -323,16 +333,16 @@ internal sealed class MainForm : Form
             _targetChecks[descriptor.Kind] = check;
             targets.Controls.Add(check);
         }
-        AddEditorRow(editor, 5, "傳送至", targets);
-        AddEditorRow(editor, 6, string.Empty, _enabledCheck);
+        AddEditorRow(editor, 6, "傳送至", targets);
+        AddEditorRow(editor, 7, string.Empty, _enabledCheck);
 
         var usagePanel = BuildUsagePanel();
-        editor.Controls.Add(usagePanel, 0, 7);
+        editor.Controls.Add(usagePanel, 0, 8);
         editor.SetColumnSpan(usagePanel, 2);
 
         var note = new Label
         {
-            Text = "此排程每天在指定時分執行。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，"
+            Text = "支援每日固定時間或每 5 小時 1 分鐘自動模式。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，"
                  + "並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。",
             AutoSize = true,
             MaximumSize = new Size(420, 0),
@@ -340,16 +350,24 @@ internal sealed class MainForm : Form
             Font = AppTheme.Caption,
             Margin = new Padding(0, 14, 0, 14)
         };
-        editor.Controls.Add(note, 0, 8);
+        editor.Controls.Add(note, 0, 9);
         editor.SetColumnSpan(note, 2);
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         _saveButton = ActionButton("建立排程", SaveScheduleAsync, AppTheme.ButtonVariant.Primary);
         buttons.Controls.Add(_saveButton);
         buttons.Controls.Add(ActionButton("CLI 設定…", OpenSettingsAsync));
-        editor.Controls.Add(buttons, 0, 9);
+        editor.Controls.Add(buttons, 0, 10);
         editor.SetColumnSpan(buttons, 2);
         parent.Controls.Add(editor);
+    }
+
+    private void UpdateRecurrenceLabel()
+    {
+        if (_timeLabel is not null)
+        {
+            _timeLabel.Text = _recurrenceInput.SelectedIndex == 1 ? "首次喚醒時間" : "每天時間";
+        }
     }
 
     private Control BuildUsagePanel()
@@ -637,12 +655,13 @@ internal sealed class MainForm : Form
 
             if (showStatus)
             {
-                var codex = snapshots.First(snapshot => snapshot.Cli == CliKind.Codex);
-                SetStatus(
-                    codex.Availability == CliUsageAvailability.Available
-                        ? "Codex 剩餘流量已更新"
-                        : $"額度讀取：{codex.Message}",
-                    codex.Availability == CliUsageAvailability.Unavailable ? AppTheme.Danger : SystemColors.ControlText);
+                var availableCount = snapshots.Count(snapshot => snapshot.Availability == CliUsageAvailability.Available);
+                var message = availableCount switch
+                {
+                    > 0 => $"已更新 {availableCount} 個 CLI 的即時額度與重置倒數",
+                    _ => "目前尚無可用之即時額度資料"
+                };
+                SetStatus(message, availableCount > 0 ? AppTheme.Success : SystemColors.ControlText);
             }
         }
         catch (OperationCanceledException)
@@ -725,15 +744,18 @@ internal sealed class MainForm : Form
     {
         try
         {
+            var isInterval = _recurrenceInput.SelectedIndex == 1;
+            var scheduledTimeOfDay = _timeInput.Value.TimeOfDay;
             var job = new ScheduledJob
             {
                 Id = _editingId ?? Guid.NewGuid(),
                 Name = _nameInput.Text.Trim(),
                 ScheduledAt = ReadScheduledAt(),
+                InitialTimeOfDay = isInterval ? new TimeSpan(scheduledTimeOfDay.Hours, scheduledTimeOfDay.Minutes, 0) : null,
                 Message = _messageInput.Text.Trim(),
                 WorkingDirectory = _workingDirectoryInput.Text.Trim(),
                 Targets = SelectedTargets(),
-                Recurrence = ScheduleRecurrence.Daily,
+                Recurrence = isInterval ? ScheduleRecurrence.Interval : ScheduleRecurrence.Daily,
                 Enabled = _enabledCheck.Checked
             };
             await Manager.UpsertAsync(job).ConfigureAwait(true);
@@ -846,7 +868,10 @@ internal sealed class MainForm : Form
             _saveButton.Text = "儲存修改";
         }
         _nameInput.Text = job.Name;
-        _timeInput.Value = ClampPickerValue(_timeInput, DateTime.Today + job.ScheduledAt.LocalDateTime.TimeOfDay);
+        _recurrenceInput.SelectedIndex = job.Recurrence == ScheduleRecurrence.Interval ? 1 : 0;
+        UpdateRecurrenceLabel();
+        var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
+        _timeInput.Value = ClampPickerValue(_timeInput, DateTime.Today + initialTime);
         _messageInput.Text = job.Message;
         _workingDirectoryInput.Text = job.WorkingDirectory;
         foreach (var (kind, check) in _targetChecks)
@@ -866,6 +891,8 @@ internal sealed class MainForm : Form
         _grid.ClearSelection();
         var proposed = DateTime.Now.AddMinutes(5);
         _nameInput.Text = "AI 倒數喚醒";
+        _recurrenceInput.SelectedIndex = 0;
+        UpdateRecurrenceLabel();
         _timeInput.Value = DateTime.Today.AddHours(proposed.Hour).AddMinutes(proposed.Minute);
         _messageInput.Text = "早安";
         _workingDirectoryInput.Text = _host.Paths.WakeupWorkspace;
@@ -1085,10 +1112,10 @@ internal sealed class MainForm : Form
         }
     }
 
-    private static void AddEditorRow(TableLayoutPanel panel, int row, string label, Control control)
+    private static Label AddEditorRow(TableLayoutPanel panel, int row, string label, Control control)
     {
         panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        panel.Controls.Add(new Label
+        var labelControl = new Label
         {
             Text = label,
             AutoSize = true,
@@ -1096,7 +1123,8 @@ internal sealed class MainForm : Form
             ForeColor = AppTheme.PrimaryText,
             Font = AppTheme.TableHeader,
             Margin = new Padding(0, 9, 14, 12)
-        }, 0, row);
+        };
+        panel.Controls.Add(labelControl, 0, row);
         if (!string.IsNullOrWhiteSpace(label))
         {
             control.AccessibleName = label;
@@ -1104,6 +1132,7 @@ internal sealed class MainForm : Form
         AppTheme.StyleInput(control);
         control.Margin = new Padding(0, 4, 0, 12);
         panel.Controls.Add(control, 1, row);
+        return labelControl;
     }
 
     private static Button ActionButton(

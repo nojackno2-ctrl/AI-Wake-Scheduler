@@ -35,6 +35,7 @@ var deterministicTests = new (string Name, Func<Task> Run)[]
     ("ScheduleManagerAdaptiveWait", TestScheduleManagerAdaptiveWaitAsync),
     ("ScheduleManagerRestartDoesNotRefire", TestScheduleManagerRestartDoesNotRefireAsync),
     ("ScheduleManagerCoalescesOverdueJobs", TestScheduleManagerCoalescesOverdueJobsAsync),
+    ("ScheduleManagerAutoInterval", TestScheduleManagerAutoIntervalAsync),
     ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
     ("InstallerContract", TestInstallerContractAsync)
 };
@@ -306,6 +307,48 @@ static async Task TestCliUsageReaderAsync()
         new CliProfile { Executable = "claude" },
         Environment.CurrentDirectory);
     Assert(unsupported.Availability == CliUsageAvailability.Unsupported, "沒有公開額度介面的 CLI 應明確標示不支援。");
+
+    // Antigravity (Gemini 與 Claude/GPT 雙額度池解析測試)
+    var agyResponse = """
+        {
+          "clientModelConfigs": [
+            {
+              "label": "Gemini 3.7 Flash (High)",
+              "quotaInfo": {
+                "remainingFraction": 0.9006,
+                "resetTime": "2026-08-18T05:25:50Z"
+              }
+            },
+            {
+              "label": "Claude Sonnet 4.6 (Thinking)",
+              "quotaInfo": {
+                "remainingFraction": 1.0,
+                "resetTime": "2026-08-18T09:09:25Z"
+              }
+            }
+          ]
+        }
+        """;
+
+    var agyGeminiSnapshot = CliUsageReader.ParseAntigravityModelConfigs(agyResponse, CliKind.Antigravity, observedAt);
+    Assert(agyGeminiSnapshot.Availability == CliUsageAvailability.Available, "Antigravity (Gemini) 配額回應應可解析。");
+    Assert(agyGeminiSnapshot.Windows.Count == 1, "Gemini 應有一個額度視窗。");
+    Assert(agyGeminiSnapshot.Windows[0].RemainingPercent == 90, "剩餘百分比應為 90。");
+    Assert(agyGeminiSnapshot.Windows[0].UsedPercent == 10, "已使用百分比應為 10。");
+    Assert(agyGeminiSnapshot.Windows[0].ResetsAt?.UtcDateTime.Hour == 5, "應精確解析 UTC 重置時分。");
+
+    var agyClaudeSnapshot = CliUsageReader.ParseAntigravityModelConfigs(agyResponse, CliKind.AntigravityClaude, observedAt);
+    Assert(agyClaudeSnapshot.Availability == CliUsageAvailability.Available, "Antigravity (Claude / GPT) 配額回應應可解析。");
+    Assert(agyClaudeSnapshot.Windows.Count == 1, "Claude/GPT 應有一個額度視窗。");
+    Assert(agyClaudeSnapshot.Windows[0].RemainingPercent == 100, "剩餘百分比應為 100。");
+    Assert(agyClaudeSnapshot.Windows[0].UsedPercent == 0, "已使用百分比應為 0。");
+    Assert(agyClaudeSnapshot.Windows[0].ResetsAt?.UtcDateTime.Hour == 9, "應精確解析 UTC 重置時分。");
+
+    var agyError = CliUsageReader.ParseAntigravityModelConfigs("{\"error\":{\"message\":\"invalid CSRF token\"}}", CliKind.Antigravity, observedAt);
+    Assert(agyError.Availability == CliUsageAvailability.Unavailable, "Antigravity 錯誤回應不可標示為可用。");
+
+    var agyMissingPool = CliUsageReader.ParseAntigravityModelConfigs("{\"clientModelConfigs\":[]}", CliKind.Antigravity, observedAt);
+    Assert(agyMissingPool.Availability == CliUsageAvailability.Unavailable, "缺少模型配額時應回傳 Unavailable。");
 }
 
 static async Task TestScheduleManagerRestartDoesNotRefireAsync()
@@ -608,6 +651,36 @@ static Task TestScheduleCalculatorAsync()
     Assert(minTime.LocalDateTime.TimeOfDay == TimeSpan.Zero, "00:00 應為合法每日時間。");
     var maxTime = ScheduleCalculator.GetNextDailyOccurrence(new TimeSpan(23, 59, 59), now);
     Assert(maxTime.LocalDateTime.TimeOfDay == new TimeSpan(23, 59, 0), "23:59 應為合法每日時間。");
+
+    // 自動模式（每 5 小時 1 分鐘 = 301 分鐘）測試
+    Assert(ScheduleCalculator.AutoInterval == TimeSpan.FromMinutes(301), "AutoInterval 應精確為 301 分鐘（5 小時 1 分鐘）。");
+    var initialWakeup = new TimeSpan(5, 30, 0);
+
+    // 1. 同日日間正常推進（08:00 完成 -> 13:01）
+    var finishedMorning = new DateTimeOffset(2026, 8, 10, 8, 0, 0, TimeSpan.FromHours(8));
+    var nextMorning = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finishedMorning);
+    Assert(nextMorning == finishedMorning.Add(ScheduleCalculator.AutoInterval), "當日日間 08:00 執行完成應推進至 13:01。");
+    Assert(nextMorning.LocalDateTime == new DateTime(2026, 8, 10, 13, 1, 0), "13:01 時間應正確。");
+
+    // 2. 同日傍晚正常推進（18:02 完成 -> 23:03）
+    var finishedEvening = new DateTimeOffset(2026, 8, 10, 18, 2, 0, TimeSpan.FromHours(8));
+    var nextEvening = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finishedEvening);
+    Assert(nextEvening == finishedEvening.Add(ScheduleCalculator.AutoInterval), "當日 18:02 執行完成應推進至 23:03。");
+    Assert(nextEvening.LocalDateTime == new DateTime(2026, 8, 10, 23, 3, 0), "23:03 時間應正確。");
+
+    // 3. 跨日不排半夜：23:03 完成後加 5h1m 為隔日 04:04（超過 24:00），應自動重置為隔日 05:30
+    var finishedLateNight = new DateTimeOffset(2026, 8, 10, 23, 3, 0, TimeSpan.FromHours(8));
+    var nextCrossDay = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finishedLateNight);
+    Assert(nextCrossDay.LocalDateTime == new DateTime(2026, 8, 11, 5, 30, 0), "23:03 跨日後不應排在半夜 04:04，應排在隔天 05:30。");
+
+    // 4. 20:00 執行跨日（加 5h1m 為 01:01），重置為隔日 05:30
+    var finished8pm = new DateTimeOffset(2026, 8, 10, 20, 0, 0, TimeSpan.FromHours(8));
+    var nextAfter8pm = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finished8pm);
+    Assert(nextAfter8pm.LocalDateTime == new DateTime(2026, 8, 11, 5, 30, 0), "20:00 跨日後應排在隔天 05:30。");
+
+    // 5. 跨日計算異常邊界
+    Throws<ArgumentOutOfRangeException>(() => ScheduleCalculator.GetNextAutoIntervalOccurrence(TimeSpan.FromHours(-1), finishedMorning));
+    Throws<ArgumentOutOfRangeException>(() => ScheduleCalculator.GetNextAutoIntervalOccurrence(TimeSpan.FromHours(24), finishedMorning));
 
     return Task.CompletedTask;
 }
@@ -963,6 +1036,170 @@ static async Task TestScheduleManagerBoundariesAndStateAsync()
     }
 }
 
+static async Task TestScheduleManagerAutoIntervalAsync()
+{
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        var paths = new AppDataPaths(Path.Combine(directory, "data"));
+        var store = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, () => []);
+        var settings = AppSettings.CreateDefault();
+        var runner = new CountingCliRunner();
+
+        var autoJobId = Guid.NewGuid();
+        var initialTime = DateTimeOffset.Now.AddSeconds(-1);
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = autoJobId,
+                Name = "自動模式測試",
+                ScheduledAt = initialTime,
+                InitialTimeOfDay = new TimeSpan(5, 30, 0),
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        // 1. 測試排程器初始化並觸發首次喚醒
+        await using (var manager = new ScheduleManager(store, runner, () => settings))
+        {
+            await manager.InitializeAsync();
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && runner.CallCount == 0)
+            {
+                await Task.Delay(25);
+            }
+            Assert(runner.CallCount == 1, "首次到期應觸發一次呼叫。");
+
+            var job = (await manager.GetJobsAsync()).Single(j => j.Id == autoJobId);
+            Assert(job.Recurrence == ScheduleRecurrence.Interval, "週期應維持 Interval。");
+            Assert(job.Status == ScheduleStatus.Pending, "執行後應回到 Pending 狀態。");
+            Assert(job.FinishedAt.HasValue, "應記錄 FinishedAt。");
+            var expectedNext = ScheduleCalculator.GetNextAutoIntervalOccurrence(job.InitialTimeOfDay!.Value, job.FinishedAt!.Value);
+            var diff = (job.ScheduledAt - expectedNext).Duration();
+            Assert(diff < TimeSpan.FromSeconds(2), $"執行完成後 ScheduledAt 應正確推算，預期：{expectedNext}，實際：{job.ScheduledAt}");
+
+            // 2. 測試手動「立即執行」對自動模式之推進
+            await manager.RunNowAsync(autoJobId);
+            deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && runner.CallCount == 1)
+            {
+                await Task.Delay(25);
+            }
+            Assert(runner.CallCount == 2, "立即執行應再觸發一次呼叫。");
+
+            job = (await manager.GetJobsAsync()).Single(j => j.Id == autoJobId);
+            expectedNext = ScheduleCalculator.GetNextAutoIntervalOccurrence(job.InitialTimeOfDay!.Value, job.FinishedAt!.Value);
+            diff = (job.ScheduledAt - expectedNext).Duration();
+            Assert(diff < TimeSpan.FromSeconds(2), $"立即執行後 ScheduledAt 應重新推進，預期：{expectedNext}，實際：{job.ScheduledAt}");
+        }
+
+        // 3. 測試重啟防護：1 小時前剛跑過（未滿 5 小時 1 分鐘），重開不應重新觸發
+        var recentRunner = new CountingCliRunner();
+        var recentRanAt = DateTimeOffset.Now.AddHours(-1);
+        var recentJobId = Guid.NewGuid();
+        var initialWakeup = new TimeSpan(5, 30, 0);
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = recentJobId,
+                Name = "近期已執行",
+                ScheduledAt = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, recentRanAt),
+                InitialTimeOfDay = initialWakeup,
+                FinishedAt = recentRanAt,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        await using (var recentManager = new ScheduleManager(store, recentRunner, () => settings))
+        {
+            await recentManager.InitializeAsync();
+            await Task.Delay(500);
+
+            Assert(recentRunner.CallCount == 0, "5 小時 1 分鐘未到期前重開程式不應重跑。");
+            var recentJob = (await recentManager.GetJobsAsync()).Single(j => j.Id == recentJobId);
+            Assert(recentJob.ScheduledAt > DateTimeOffset.Now, "排程時間應在未來的時點。");
+        }
+
+        // 4. 測試隔天逾時開機補做：昨天 23:03 跑過，今天 08:00 開機（超過 05:30），應立即補做一次
+        var lateBootTime = new DateTimeOffset(2026, 8, 19, 8, 0, 0, TimeSpan.FromHours(8));
+        var lateBootTimeProvider = new FakeTimeProvider(lateBootTime);
+        var lateBootRunner = new CountingCliRunner();
+        var yesterdayFinished = new DateTimeOffset(2026, 8, 18, 23, 3, 0, TimeSpan.FromHours(8));
+        var lateBootJobId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = lateBootJobId,
+                Name = "隔天逾時開機補做",
+                ScheduledAt = new DateTimeOffset(2026, 8, 19, 5, 30, 0, TimeSpan.FromHours(8)),
+                InitialTimeOfDay = initialWakeup,
+                FinishedAt = yesterdayFinished,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        await using (var lateBootManager = new ScheduleManager(store, lateBootRunner, () => settings, lateBootTimeProvider))
+        {
+            await lateBootManager.InitializeAsync();
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && lateBootRunner.CallCount == 0)
+            {
+                await Task.Delay(25);
+            }
+            Assert(lateBootRunner.CallCount == 1, "隔日 08:00 開機（已過 05:30）應立即補做今日第一輪。");
+            var lateJob = (await lateBootManager.GetJobsAsync()).Single(j => j.Id == lateBootJobId);
+            Assert(lateJob.ScheduledAt.LocalDateTime == new DateTime(2026, 8, 19, 13, 1, 0), "補做完成後應推進至當日 13:01。");
+        }
+
+        // 5. 測試隔天提早開機等待：昨天 23:03 跑過，今天 04:30 開機（未到 05:30），不應提前執行
+        var earlyBootTime = new DateTimeOffset(2026, 8, 19, 4, 30, 0, TimeSpan.FromHours(8));
+        var earlyBootTimeProvider = new FakeTimeProvider(earlyBootTime);
+        var earlyBootRunner = new CountingCliRunner();
+        var earlyBootJobId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = earlyBootJobId,
+                Name = "隔天提早開機等待",
+                ScheduledAt = new DateTimeOffset(2026, 8, 19, 5, 30, 0, TimeSpan.FromHours(8)),
+                InitialTimeOfDay = initialWakeup,
+                FinishedAt = yesterdayFinished,
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        await using (var earlyBootManager = new ScheduleManager(store, earlyBootRunner, () => settings, earlyBootTimeProvider))
+        {
+            await earlyBootManager.InitializeAsync();
+            await Task.Delay(500);
+
+            Assert(earlyBootRunner.CallCount == 0, "隔日 04:30 提早開機（未到 05:30）不應提前執行。");
+            var earlyJob = (await earlyBootManager.GetJobsAsync()).Single(j => j.Id == earlyBootJobId);
+            Assert(earlyJob.ScheduledAt.LocalDateTime == new DateTime(2026, 8, 19, 5, 30, 0), "排程時間應排定在今日 05:30。");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
 static async Task TestExecutableLocatorAsync()
 {
     var workingDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -1017,6 +1254,31 @@ static async Task TestExecutableLocatorAsync()
         Assert(codexUsage.Windows.Count > 0, "Codex 額度回應應至少有一個視窗。");
         Assert(codexUsage.Windows.All(window => window.RemainingPercent is >= 0 and <= 100),
             "Codex 剩餘百分比應落在 0 到 100。");
+
+        // 測試 Antigravity (Gemini 與 Claude/GPT) 即時額度讀取
+        var agyUsage = await new CliUsageReader().ReadAsync(
+            CliKind.Antigravity,
+            new CliProfile { Executable = "agy" },
+            workingDir);
+        Console.WriteLine($"  Antigravity (Gemini) Usage: Availability={agyUsage.Availability}, Windows={agyUsage.Windows.Count}, Message={agyUsage.Message}");
+        if (agyUsage.Availability == CliUsageAvailability.Available)
+        {
+            Assert(agyUsage.Windows.Count == 1, "Antigravity (Gemini) 應回傳 1 個額度視窗。");
+            Assert(agyUsage.Windows[0].RemainingPercent is >= 0 and <= 100, "Gemini 剩餘百分比應落在 0 到 100。");
+            Console.WriteLine($"  -> Gemini: 剩餘 {agyUsage.Windows[0].RemainingPercent}%, 重置時間: {agyUsage.Windows[0].ResetsAt?.LocalDateTime}");
+        }
+
+        var agyClaudeUsage = await new CliUsageReader().ReadAsync(
+            CliKind.AntigravityClaude,
+            new CliProfile { Executable = "agy" },
+            workingDir);
+        Console.WriteLine($"  Antigravity (Claude / GPT) Usage: Availability={agyClaudeUsage.Availability}, Windows={agyClaudeUsage.Windows.Count}, Message={agyClaudeUsage.Message}");
+        if (agyClaudeUsage.Availability == CliUsageAvailability.Available)
+        {
+            Assert(agyClaudeUsage.Windows.Count == 1, "Antigravity (Claude / GPT) 應回傳 1 個額度視窗。");
+            Assert(agyClaudeUsage.Windows[0].RemainingPercent is >= 0 and <= 100, "Claude/GPT 剩餘百分比應落在 0 到 100。");
+            Console.WriteLine($"  -> Claude/GPT: 剩餘 {agyClaudeUsage.Windows[0].RemainingPercent}%, 重置時間: {agyClaudeUsage.Windows[0].ResetsAt?.LocalDateTime}");
+        }
 
         var probeClaude = await runner.ProbeAsync(CliKind.Claude, new CliProfile { Executable = "claude" }, workingDir);
         Assert(probeClaude.Succeeded, $"Claude Probe 應成功：{probeClaude.Summary}");
@@ -1134,4 +1396,17 @@ internal sealed class CountingCliRunner : ICliRunner
         string workingDirectory,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(new CliProbeResult { Cli = kind, Succeeded = true, Summary = "fake" });
+}
+
+internal sealed class FakeTimeProvider : TimeProvider
+{
+    private DateTimeOffset _now;
+
+    public FakeTimeProvider(DateTimeOffset initial) => _now = initial;
+
+    public void SetUtcNow(DateTimeOffset now) => _now = now;
+
+    public override DateTimeOffset GetUtcNow() => _now.ToUniversalTime();
+
+    public override TimeZoneInfo LocalTimeZone => TimeZoneInfo.Local;
 }

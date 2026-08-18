@@ -32,7 +32,8 @@ public enum ScheduleRecurrence
     // can still be deserialized and migrated to Daily by ScheduleManager.
     Once,
     Daily,
-    Weekly
+    Weekly,
+    Interval
 }
 
 /// <summary>
@@ -180,6 +181,7 @@ public sealed class ScheduledJob
     public string WorkingDirectory { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     public List<CliKind> Targets { get; set; } = [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Codex, CliKind.Claude];
     public ScheduleRecurrence Recurrence { get; set; } = ScheduleRecurrence.Daily;
+    public TimeSpan? InitialTimeOfDay { get; set; }
     public bool Enabled { get; set; } = true;
     public ScheduleStatus Status { get; set; } = ScheduleStatus.Pending;
     public DateTimeOffset? StartedAt { get; set; }
@@ -215,6 +217,7 @@ public sealed class ScheduledJob
             WorkingDirectory = WorkingDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             Targets = targets,
             Recurrence = Recurrence,
+            InitialTimeOfDay = InitialTimeOfDay,
             Enabled = Enabled,
             Status = Status,
             StartedAt = StartedAt,
@@ -254,8 +257,9 @@ public static class ScheduleRecurrenceNames
     public static string Get(ScheduleRecurrence recurrence) => recurrence switch
     {
         ScheduleRecurrence.Once => "單次",
-        ScheduleRecurrence.Daily => "每天",
+        ScheduleRecurrence.Daily => "每天固定時間",
         ScheduleRecurrence.Weekly => "每週",
+        ScheduleRecurrence.Interval => "自動模式（每 5 小時 1 分鐘）",
         _ => recurrence.ToString()
     };
 }

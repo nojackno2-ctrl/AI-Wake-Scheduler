@@ -51,7 +51,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.2.0_x64.exe`**。
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.3.0_x64.exe`**。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
@@ -66,10 +66,11 @@
 4. （可選）勾選 **「登入 Windows 後自動啟動」**，確保開機或重啟後仍能在背景常駐。
 5. 點擊 **「儲存」**。
 
-### 3. 建立每日排程
+### 3. 建立每日排程或自動模式
 1. 在右側「排程內容」區：
    - **名稱**：輸入易辨識的名稱（例如「早晨 AI 喚醒」）。
-   - **每天時間**：設定每天觸發的時與分（例如 `08:00`）。
+   - **排程模式**：選擇「每天固定時間」或「自動模式（每 5 小時 1 分鐘）」。
+   - **時間 / 首次喚醒時間**：設定觸發的時與分（例如 `05:30`）。在自動模式下，日間每 5h1m 推進，若跨越午夜 24:00 則自動於隔天 05:30 重新啟動。
    - **工作目錄**：選擇或保持預設隔離目錄。
    - **傳送至**：勾選欲啟動的 CLI 目標（Antigravity (Gemini) / Antigravity (Claude / GPT) / Codex CLI / Claude CLI）。
    - **訊息**：輸入觸發短語（預設為「早安」）。
@@ -77,7 +78,7 @@
 
 ### 4. 測試與常駐
 - 可選取排程並點擊 **「立即執行」** 進行手動測試（不會跳過或影響原定的下一次每日排程時間）。
-- 主畫面「剩餘流量與重置倒數」會在開啟時讀取一次，也可按 **「重新讀取額度」** 手動更新；本地倒數不會重複呼叫模型。
+- 主畫面「剩餘流量與重置倒數」支援 Codex、Antigravity (Gemini) 與 Antigravity (Claude / GPT) 即時額度查詢，在開啟時自動讀取，也可按 **「重新讀取額度」** 手動更新；本地每秒精準倒數。
 - 點擊視窗右上角關閉按鈕，程式會自動最小化並縮至 Windows 右下角系統匣持續監控。
 - 雙擊系統匣圖示或右鍵選擇「開啟主視窗」即可還原主畫面。
 
@@ -117,7 +118,7 @@ dotnet build '.\AI倒數喚醒.sln' --configuration Release
 dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release
 ```
 
-預設測試完全不依賴本機 CLI 或登入狀態，可在 CI 與隔離環境重現。若要額外驗證本機已安裝的 AGY、Codex、Claude 以及 Codex 登入額度介面，請明確選用整合測試：
+預設測試完全不依賴本機 CLI 或登入狀態，可在 CI 與隔離環境重現。若要額外驗證本機已安裝的 AGY、Codex、Claude 以及登入額度介面，請明確選用整合測試：
 
 ```powershell
 dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release -- --integration
@@ -127,7 +128,7 @@ dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.2.0_x64.exe`。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.3.0_x64.exe`。
 
 ---
 
