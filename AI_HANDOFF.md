@@ -1,5 +1,126 @@
 # AI HANDOFF
 
+## 2026-08-18 自動模式跨日不排半夜與隔日首次時間重置完成（完成，未提交）
+
+- **使用者要求**：「自動模式的倒數是只限於當日嗎，假設我設定早上0530作為首次喚醒，但是我0800才起床開電腦，正常來說他要從0800開始倒數，但是一旦超國2400，就不應該繼續倒數，而是等到隔天的0530再次啟動」->「改成跨日不排半夜」。
+- **實作重點**：
+  1. **資料模型（`Models.cs`）**：
+     - `ScheduledJob` 新增 `public TimeSpan? InitialTimeOfDay { get; set; }` 並更新 `Clone()`，確保設定的每日「首次喚醒時間」基準不因日間推進而遺失。
+  2. **領域計算（`ScheduleCalculator.cs`）**：
+     - 新增 `GetNextAutoIntervalOccurrence(TimeSpan initialTimeOfDay, DateTimeOffset finishedAt)`：
+       - 若 `finishedAt + 5h1m` 仍在當日（未超過午夜 24:00），則排在該時間（如 08:00 $\rightarrow$ 13:01 $\rightarrow$ 18:02 $\rightarrow$ 23:03）。
+       - 若推算時間跨入隔天（超過 24:00，例如 23:03 完工後算出的 04:04），不排在半夜，直接排定為隔日的首次喚醒時間（如隔天 05:30）。
+  3. **排程引擎（`ScheduleManager.cs`）**：
+     - `CompleteJobAsync`：使用 `GetNextAutoIntervalOccurrence` 計算下次執行時間。
+     - `InitializeAsync`：
+       - 若上次執行在昨日（或更早），且今日開機時間（如 08:00）已過首次喚醒時間（05:30），啟動時立即補做今日第一輪，並自 08:00 展開日間 5h1m 循環。
+       - 若今日提早開機（如 04:30），安靜等待至 05:30，不提前執行。
+       - 若今日已執行過且未滿 5h1m，重開程式不重複執行，維持既有倒數。
+     - `UpsertAsync` 與 `ScanAndStartDueJobsAsync` 同步更新支援 `InitialTimeOfDay`。
+  4. **WinForms UI（`MainForm.cs`）**：
+     - `SaveScheduleAsync`：儲存自動模式時填入 `InitialTimeOfDay`。
+     - `GridOnSelectionChanged`：選取排程時優先載入 `InitialTimeOfDay`，避免被目前倒數時分覆蓋。
+  5. **測試驗證（`Program.cs`）**：
+     - `TestScheduleCalculatorAsync`：新增當日 08:00 $\rightarrow$ 13:01、18:02 $\rightarrow$ 23:03、23:03 跨日重置隔天 05:30（不排 04:04）、20:00 跨日重置等單元測試。
+     - `TestScheduleManagerAutoIntervalAsync`：引入 `FakeTimeProvider` 驗證首次到期、立即執行推進、當日重開不重跑、隔日逾期開機補做、隔日提早開機等待等全套情境。
+- **驗證結果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含 4 個假 CLI 平行完成 1208 ms）。
+  - Integration 測試 1/1 通過（Codex、Antigravity Gemini、Antigravity Claude/GPT 即時讀取成功）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+
+
+
+- **使用者要求**：「我要你不管用什麼方法都要讀取道AGY的使用量倒數」->「這要可以把這個功能做到專案裡面嗎」-> 使用者批准實作。
+- **實作重點**：
+  1. **核心層（`CliUsageReader.cs`）**：
+     - `ReadAsync` 擴充支援 `CliKind.Antigravity` 與 `CliKind.AntigravityClaude`。
+     - **CSRF Token 取得機制全方位強化**：
+       - 實作 `NativeProcessHelper`，透過 Win32 `NtQueryInformationProcess` 搭配跨 Windows 版本的 `RTL_USER_PROCESS_PARAMETERS` 多偏移量掃描（0x60, 0x68, 0x70, 0x78, 0x80）直接在記憶體中抓取 `--csrf_token`（微秒級完成、零子程序開銷）。
+       - 內建多重 PowerShell 備用方案（`Get-CimInstance` 與 `Get-Process`，搭配 `-ExecutionPolicy Bypass`），確保各種權限與偵錯模式下皆能成功取得。
+     - **Port 偵測機制強化**：結合 `language_server.log` 啟動日誌掃描與 PowerShell `Get-NetTCPConnection` Listen 連接埠查詢。
+     - **平行查詢快取（3 秒 TTL）**：`_agyQueryLock` 與短期快取確保 `Antigravity` 與 `AntigravityClaude` 平行查詢時只向本機 Language Server 發送一次 RPC 請求。
+     - 使用 .NET 8 原生 `HttpClient`（自訂憑證信任）發送 Connect-RPC 請求至 `POST /exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData`，標頭帶上 `x-codeium-csrf-token`。
+     - `Antigravity`（Gemini 模型池）與 `AntigravityClaude`（Claude / GPT 模型池）各自獨立計算剩餘額度百分比與 `resetTime` 重置時間戳記。
+     - 提供公開靜態方法 `ParseAntigravityModelConfigs` 供可重現單元測試。
+  2. **UI 層（`MainForm.cs`）**：
+     - `RefreshUsageAsync` 狀態列更新為統計所有可用 CLI 額度更新狀態。
+     - 既有版面自動無縫支援雙額度池即時倒數更新（每秒本機即時倒數，不頻繁發送網路請求）。
+  3. **測試驗證（`Program.cs`）**：
+     - `TestCliUsageReaderAsync` 新增 Gemini、Claude/GPT 雙額度池解析、邊界與異常測試。
+     - `TestExecutableLocatorAsync`（`--integration`）加入本機真實 Language Server 額度讀取驗證，實測 Gemini 剩餘 94%（重置時間 19:10:00）、Claude/GPT 剩餘 100%（重置時間 19:24:27）。
+- **驗證結果**：
+  - Release 與 Debug 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含假 CLI 平行完成 1261 ms）。
+  - Integration 測試 1/1 通過（Codex、Antigravity Gemini、Antigravity Claude/GPT 全數即時讀取成功）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+
+
+## 2026-08-17 自動模式（每 5 個小時 + 1 分鐘再次呼叫）新增與驗證（完成，未提交）
+
+- 使用者要求：「加入一個自動模式，功能啟用第一次喚醒後，每5個小時+1分鐘再次呼叫」。
+- 實作重點：
+  - **領域與計算**：`Models.cs` 新增 `ScheduleRecurrence.Interval` 與繁中顯示名稱；`ScheduleCalculator.cs` 定義常數 `AutoInterval = TimeSpan.FromHours(5) + TimeSpan.FromMinutes(1)`（301 分鐘）並擴充 `GetNextOccurrence`。
+  - **排程引擎**：`ScheduleManager.cs` 支援 Interval 模式，在首次喚醒執行完畢（或手動「立即執行」完成）後自動將下次時間推進 `FinishedAt + 5小時1分鐘`；重開程式時，若前次執行在 5 小時 1 分鐘內則繼續等待（不重複扣額度），若關閉期間已逾期則啟動時立即補做一次並推進至下個 5 小時 1 分鐘。
+  - **WinForms UI**：`MainForm.cs` 編輯區新增「排程模式」下拉選單（`每天固定時間` 與 `自動模式（每 5 小時 1 分鐘）`），選擇自動模式時動態切換時間欄位標籤為「首次喚醒時間」；排程清單時間欄標題更新為「時間 / 週期」並在自動模式下清晰顯示 `每5h1m (HH:mm)`，倒數欄即時倒數。
+  - **測試驗證**：`Program.cs` 新增 `ScheduleManagerAutoInterval` 單元測試（驗證首次到期執行、執行後推進 5 小時 1 分鐘、立即執行推進、重啟未滿 5h1m 不重跑、重啟逾期補做）以及 `ScheduleCalculator` 301 分鐘精確推算測試。
+- 驗證結果：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含 4 個假 CLI 平行完成 1209 ms）。
+  - Integration 測試 1/1 通過。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+
+## 2026-08-14 Codex CLI 模型清單更新（完成，未提交）
+
+- 使用者指出目前 Codex 下拉模型過舊。官方 OpenAI 模型目錄已將 `gpt-5.2-codex` 與 `gpt-5.1-codex*` 標為 deprecated；GPT-5.6 現行家族為 Sol／Terra／Luna。
+- 本機 Codex CLI 0.148.0-alpha.9 以已登入主機身份呼叫只讀 App Server `model/list`（未建立模型回合、未消耗 Token），實際可選：`gpt-5.6-sol`（預設）、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`。
+- App Server 同時回報模型 Effort 上限：Sol/Terra 支援 low～ultra；Luna 支援 low～max；5.5/5.4/5.4-mini 支援 low～xhigh。下一步更新靜態推薦清單、UI Effort 選項與參數正規化測試，確保不送出模型不接受的 Max/Ultra 組合。
+- 已完成程式變更：Codex 下拉改為上述 6 款現行模型並保留空白的 CLI 自動預設；新增 Ultra；設定視窗會隨模型切換合法 Effort，核心執行路徑也會把舊設定或過高 Effort 降到該模型可接受的最高值。另順手套用同一機制修正 Gemini 3.1 Pro 不接受 Medium 的既知組合。尚待建置與測試，不得先宣稱完成。
+- 最終補強額外參數 `--model`／`-m` 覆寫的解析，讓 Effort 依真正生效的模型正規化；Release 重新建置成功（0 警告、0 錯誤），deterministic 測試 12/12 通過，四個假 CLI 平行完成 1212 ms。
+
+## 2026-08-14 本輪驗證完成（CLI 模型與思考程度）
+
+- 目前工作樹的 Release `dotnet build --no-restore` 成功，0 警告、0 錯誤。
+- 第一次 sandbox 內 deterministic 測試外層 120 秒逾時：前 6 組通過，停在 `CliRunnerSafeArguments` 的刻意損毀 EXE 啟動案例；直接執行測試 AppHost 也在相同位置阻塞。
+- 依環境邊界改在使用者主機重跑同一份已建置測試 AppHost，12/12 全數通過；四個各延遲 1 秒的假 CLI 平行完成耗時 1256 ms。此結果確認功能與程序測試通過，sandbox 逾時屬損毀 EXE 測試的隔離環境限制。
+- 本機安全核對：Codex CLI 0.148.0-alpha.9 的 `exec --help` 明列 `--model`，Claude CLI 2.1.220 的 `--help` 明列 `--model`／`--effort`；主機登入狀態執行只讀 `agy models` 仍列出全部下拉 ID（Gemini 3.7/3.6 Flash、Gemini 3.1 Pro、Claude Sonnet/Opus 4.6、GPT-OSS 120B Medium），未送出模型請求或消耗 Token。
+
+## 2026-08-14 CLI 模型與思考程度（Reasoning Effort）自訂功能（完成，未提交，含使用者回報後的修正）
+
+- 第一版實作依網路搜尋與臆測填入模型 ID，**未實際對照已安裝 CLI 驗證**。使用者實測 Settings 視窗後回報兩個問題：
+  1. 視窗只看得到前兩個 CLI（Codex CLI、Claude CLI 兩列被裁掉，看不到也捲不到）。
+  2. 「他提供的模型要真的可以呼叫」——質疑下拉清單裡的模型 ID 是否真實存在。
+- 根因與修正：
+  - **UI 裁切臭蟲**：`SettingsForm.BuildLayout()` 的 root `TableLayoutPanel` 把放 CLI 表格的那一列設為 `RowStyle(Percent, 100)`，同時 root 又設了 `AutoScroll = true`。這個組合會讓 TableLayoutPanel 把該列硬壓縮進「目前可見高度」，超出視窗的列直接被裁掉，而不是觸發捲動。已改為 `RowStyle(AutoSize)`，讓表格長到完整自然高度，交由外層 `AutoScroll` 捲動顯示；同時把預設視窗高度從 740 調到 820 減少捲動機會。
+  - **模型 ID 不實**：改為實測核對而非猜測：
+    - 用已安裝的 `agy.exe`（`C:\Users\nojac\AppData\Local\agy\bin\agy.exe`）跑 `agy models` 取得真實可用清單，並用一個明顯不存在的模型名稱丟給 `agy --print "hi" --model <fake>` 確認 agy 在打 API 之前就會本地驗證並立即報錯（不消耗任何 Token/額度），藉此安全地驗證多組 model/effort 組合是否合法。
+    - 確認結果：`claude-sonnet-5`／`claude-opus-5`／`claude-fable-5`／`gemini-2.5-flash` 這些 ID **agy 完全不認識**；真正存在的是 `gemini-3.7/3.6/3.5-flash`（各自可搭配獨立的 `--effort low/medium/high`，其中 `gemini-3.1-pro` 只支援 low/high，沒有 medium）、`claude-sonnet-4-6`、`claude-opus-4-6-thinking`、`gpt-oss-120b-medium`（這三個模型 agy 會直接拒絕額外的 `--effort`，因為思考程度已內建在模型裡）。
+    - `claude` CLI（`~/.local/bin/claude.exe`）的 `--help` 明確記載 `--model` 接受別名 `sonnet`/`opus`/`fable`（代表「最新版」）或完整 ID（如 `claude-fable-5`）；為避免未來新一代模型上市後清單直接失效，Settings 改用別名而非寫死版本號。同時 `--help` 記載 `--effort` 合法值為 `low|medium|high|xhigh|max`（原本用到不存在的組合）。
+    - （歷史紀錄，已由本檔最上方 2026-08-14 App Server 實測結果取代）第一版當時誤判 Codex CLI 本機未安裝，並採用 `gpt-5.2-codex`／`gpt-5.1-codex-*`；這些模型現已確認 deprecated，不得再作為現行清單依據。
+  - `ThinkingEffort` enum 的 `None` 改名為 `Minimal`（語意修正：真正的旗標值是「最低」而非「關閉」）並新增 `XHigh`。`CliCommandBuilder.AppendEffortArguments` 依上述實測結果重寫四個 CLI 各自的合法對應表；`AntigravityClaude` 設定檔的思考程度選項精簡為只有「預設」，因為它的三個模型沒有一個支援獨立的 `--effort`。
+  - `AI 倒數喚醒.exe`（`AiWakeScheduler.WinForms`）本機同名程式已在系統匣安裝，且 computer-use 存取請求被使用者拒絕，因此**這次修正未經實際畫面截圖驗證**，僅以程式碼層級的 WinForms 版面配置原理與建置/測試結果佐證，不得宣稱已做視覺 QA。
+- 驗證：Release 建置 0 警告 0 錯誤；重寫後 deterministic 測試 12/12 通過。尚待使用者實際開啟 Settings 視窗確認捲動與模型清單顯示正確。
+
+## 2026-08-13 GitHub upload (complete)
+
+- User authorized uploading the complete current verified worktree, including the WinForms redesign and installer-experience hardening. Scope is this repository only.
+- Remote audit after `fetch --prune --tags` found local `main` and `origin/main` identical with no other pre-existing branches. Initial source commit `f76af8a` was pushed to `agent/ui-installer-experience`; Draft PR #2 targets `main`: https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/pull/2
+- GitHub connector PR creation returned `403 Resource not accessible by integration`; the authenticated host `gh pr create` fallback succeeded. A final handoff-only commit records the completed remote state on the same PR branch.
+- This authorization does not include a GitHub Release, tag, installer execution, or installed-application update.
+
+## 2026-08-13 installer experience hardening (complete, uncommitted)
+
+- Scope is limited to the existing Inno Setup installer and its deterministic contract test; the concurrent uncommitted WinForms redesign remains preserved and untouched.
+- The Start Menu application and uninstall shortcuts are now mandatory and carry a stable AppUserModelID plus `{app}` working directory. Desktop and Windows-startup shortcuts remain optional and default unchecked.
+- Added previous-install preference reuse, explicit uninstall registration, setup/uninstall logging, no automatic application restart, Add/Remove Programs metadata, installed README/LICENSE files, and matching README guidance for manual Start/Taskbar pinning.
+- Verification: deterministic tests passed 12/12, `dotnet format --verify-no-changes --no-restore` and `git diff --check` passed, self-contained publish succeeded, and Inno Setup 6.7.3 compiled `dist/AI倒數喚醒_Setup_v1.2.0_x64.exe` (48,591,174 bytes, SHA-256 `BD28FA5F9C327A6A7DBEA407C7480B4127B77CA227FB36807D334BA86BA0F68F`, file version 1.2.0). The first sandboxed canonical build was blocked only by denied access to the user NuGet.Config; the approved host rerun passed. The older self-maintained Traditional Chinese `.isl` still falls back to English for newer uncommon Inno messages, as reported by compiler warnings.
+- No installer was executed, no installed application was updated, and no commit/push/release was performed.
+
+## 2026-08-12 v1.2.0 publication and local install
+
+- Published GitHub Release `v1.2.0` from `7fad2ef64e57bad1cb073081ca201f351e654dad`; downloaded installer SHA-256 `48204008F77A280E2192A90C8997C8838E2868F884F6D0C2905BBE93B49D4ADB` matched GitHub and checksum.
+- Installed for the current user; registry reports `1.2.0`, installed EXE reports file `1.2.0.0` / product `1.2.0+7fad2ef64e57bad1cb073081ca201f351e654dad`, and the installed process remained responsive.
+
 ## 目前目標
 
 已完成 C# Windows 桌面程式、Inno Setup 安裝包打包，並成功完成 GitHub v1.0.0 官方版本（含 Setup 安裝檔 Asset）發布；後續維持維護狀態。
@@ -191,3 +312,40 @@
       （cs, de, es, fr, it, ja, ko, pl, pt-BR, ru, tr, zh-Hans, zh-Hant）共 15.5 MB（未壓縮），
       可用 `<SatelliteResourceLanguages>zh-Hant;en</SatelliteResourceLanguages>` 限定。
       WinForms 專案不建議啟用 PublishTrimmed。
+
+## 2026-08-13 重複安裝唯讀檢查
+
+- Windows 標準安裝位置只找到一份正式安裝：目前使用者的 `AI 倒數喚醒 v1.2.0`，
+  位於 `%LOCALAPPDATA%\Programs\AI 倒數喚醒`；未找到全機或 x86 的第二份正式安裝。
+- 登錄檔的 32/64 位元檢視顯示同一個 Inno Setup AppId 與同一路徑，並非兩套安裝。
+- 專案輸出目錄另有 Debug、Release 與 publish 建置副本；這些不是 Windows 已安裝程式。
+- 發現開機啟動來源重複且目標不同：Startup 捷徑指向正式安裝版 `1.2.0`，但 HKCU Run
+  仍指向專案 Debug 版 `1.1.0`。檢查當下唯一執行中的程序也是 Debug 版（PID 22372）。
+- 本次僅檢查，未停止程序、移除啟動項、刪除建置輸出或解除安裝。
+
+## 2026-08-13 切換為正式版
+
+- 依使用者授權移除 HKCU Run 中指向專案 Debug `1.1.0` 的舊自動啟動值；保留安裝程式建立、
+  指向 `%LOCALAPPDATA%\Programs\AI 倒數喚醒\AI倒數喚醒.exe --minimized` 的 Startup 捷徑。
+- 已停止 Debug 程序並啟動正式版。獨立複核只有一個 `AI倒數喚醒.exe` 程序（PID 18268），
+  路徑為正式安裝目錄、FileVersion `1.2.0.0`、ProductVersion
+  `1.2.0+7fad2ef64e57bad1cb073081ca201f351e654dad`，且 `Responding=True`。
+- 未解除安裝、刪除專案建置副本或修改產品程式碼。
+
+## 2026-08-13 WinForms UI 全面重構
+
+- 新目標：在不變更功能、資料流、資訊架構與對外行為的前提下，重構主視窗與 CLI 設定視窗的完整視覺系統；不得增加 NuGet 相依。
+- 設計審計完成：現況是深藍標題列、系統預設控制項與高密度雙欄工作區；排程清單、編輯器、額度、狀態列與設定流程均有功能價值，全部保留。待改善項目是控制項視覺不一致、表格層級偏弱、缺少空清單狀態、設定頁區塊界線不足，以及按鈕主要／次要／危險操作不易辨識。
+- Design Read：Windows 開發者使用的排程工具，採冷靜、可信、偏 Fluent 的原生 WinForms 桌面語言。`DESIGN_VARIANCE=4`、`MOTION_INTENSITY=2`、`VISUAL_DENSITY=6`，模式為 `Redesign - Preserve`；設計技能不直接涵蓋原生產品 UI，因此僅吸收配色、字體、間距、形狀一致、完整狀態與可及性原則，以現有 WinForms 實作。
+- UI 程式變更里程碑：`AppTheme` 已集中冷色中性色盤、單一藍色互動重點、字級、主要／次要／危險按鈕、輸入框、群組框與高對比模式退化策略。主視窗已重整標題、工作區間距、資料表表頭／列高／選取狀態、按鈕層級、空排程狀態、額度區塊與欄位可及名稱；設定視窗已分為 CLI 連線、啟動與資源、連線檢查三個清楚區塊。未變更事件、資料模型、排程流程或外部行為，也未增加相依。
+- 第一輪 Release 建置已實際成功：0 警告、0 錯誤。尚待 deterministic tests、視覺 QA、格式與差異檢查。
+- 最終驗證完成：Release build 成功（0 警告、0 錯誤）；deterministic tests 11/11 通過（四 CLI 平行測試 1213 ms）；`dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 均通過。主要文字／按鈕配色的計算對比值分別為 5.38:1、6.91:1、9.74:1、6.44:1，均達 WCAG AA；另提供 Windows 高對比模式系統色退化。
+- 視覺 QA 未完成：依 `computer-use` 技能初始化時仍被 `EPERM: lstat C:\Users\nojac\AppData\Local\OpenAI\Codex` 阻擋，沒有取得畫面；而目前正式安裝版仍在系統匣正常執行，為避免中斷排程，未停止正式版或啟動會撞單一執行個體鎖的工作區版本。不得宣稱已做實際畫面驗證。
+
+## 2026-08-13 已安裝軟體更新驗證
+
+- 以 `dist\AI倒數喚醒_Setup_v1.2.0_x64.exe` 靜默覆蓋更新目前使用者安裝；安裝程序結束碼為 `0`，未要求重新開機。
+- 已安裝執行檔為 `%LOCALAPPDATA%\Programs\AI 倒數喚醒\AI倒數喚醒.exe`，FileVersion `1.2.0.0`、ProductVersion `1.2.0+f6d7415c7615e6d709e75b301e01921a8f8db56d`、SHA-256 `33FC819E4278B41C2D0B381E7447F456C95AFFFDA5F0D0AE49D1A35EFEDFF4F2`；與本次 `bin\publish-selfcontained` 產物逐位元相同。
+- 已確認登錄的版本、安裝位置、解除安裝命令、專案／問題回報／更新網址正確；開始功能表的啟動與解除安裝捷徑均存在且指向目前安裝位置，既有開機啟動選項亦由安裝器保留。
+- 從已安裝路徑以 `--minimized` 啟動後，PID `23496` 且 `Responding=True`。這是程序啟動與回應證據，不等同完整視覺或排程行為驗證。
+- 本次使用者授權範圍是更新已安裝軟體；此交接紀錄尚未提交或推送。
