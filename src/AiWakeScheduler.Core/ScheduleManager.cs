@@ -60,19 +60,59 @@ public sealed class ScheduleManager : IAsyncDisposable
 
         foreach (var job in loaded)
         {
-            // 舊版本允許單次與每週排程。保留使用者選的時分，
-            // 但一律遷移為本程式的每日 HH:mm 契約。
-            job.Recurrence = ScheduleRecurrence.Daily;
+            if (job.Recurrence is ScheduleRecurrence.Once or ScheduleRecurrence.Weekly)
+            {
+                // 舊版本允許單次與每週排程。保留使用者選的時分，
+                // 但一律遷移為本程式的每日 HH:mm 契約。
+                job.Recurrence = ScheduleRecurrence.Daily;
+            }
 
-            var timeOfDay = job.ScheduledAt.LocalDateTime.TimeOfDay;
-            var lastOccurrence = ScheduleCalculator.GetPreviousDailyOccurrence(timeOfDay, now);
+            if (job.Recurrence == ScheduleRecurrence.Interval)
+            {
+                var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
+                job.InitialTimeOfDay = initialTime;
 
-            // 只有「今天這一次真的還沒跑過」才補做。
-            // 否則每次重開程式都會再喚醒一輪，白白多花一整輪的 Token。
-            var alreadyRan = job.FinishedAt is { } finished && finished >= lastOccurrence;
-            job.ScheduledAt = alreadyRan
-                ? ScheduleCalculator.GetNextDailyOccurrence(timeOfDay, now)
-                : lastOccurrence;
+                if (job.FinishedAt is { } finished)
+                {
+                    var localFinished = finished.LocalDateTime;
+                    var localNow = now.LocalDateTime;
+
+                    if (localFinished.Date < localNow.Date)
+                    {
+                        // 上次執行在今日以前（昨天或更早）
+                        // 今日的首次喚醒基準時間
+                        var todayInitial = ScheduleCalculator.GetPreviousDailyOccurrence(initialTime, now);
+                        var alreadyRanToday = finished >= todayInitial;
+                        job.ScheduledAt = alreadyRanToday
+                            ? ScheduleCalculator.GetNextDailyOccurrence(initialTime, now)
+                            : todayInitial;
+                    }
+                    else
+                    {
+                        // 上次執行在今天之內
+                        var nextOccurrence = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialTime, finished);
+                        job.ScheduledAt = nextOccurrence;
+                    }
+                }
+                else
+                {
+                    // 從未執行過：設定為今日首次喚醒
+                    var lastOccurrence = ScheduleCalculator.GetPreviousDailyOccurrence(initialTime, now);
+                    job.ScheduledAt = lastOccurrence;
+                }
+            }
+            else
+            {
+                var timeOfDay = job.ScheduledAt.LocalDateTime.TimeOfDay;
+                var lastOccurrence = ScheduleCalculator.GetPreviousDailyOccurrence(timeOfDay, now);
+
+                // 只有「今天這一次真的還沒跑過」才補做。
+                // 否則每次重開程式都會再喚醒一輪，白白多花一整輪的 Token。
+                var alreadyRan = job.FinishedAt is { } finished && finished >= lastOccurrence;
+                job.ScheduledAt = alreadyRan
+                    ? ScheduleCalculator.GetNextDailyOccurrence(timeOfDay, now)
+                    : lastOccurrence;
+            }
 
             if (job.Status == ScheduleStatus.Running)
             {
@@ -125,10 +165,22 @@ public sealed class ScheduleManager : IAsyncDisposable
         try
         {
             var saved = job.Clone();
-            saved.Recurrence = ScheduleRecurrence.Daily;
-            saved.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
-                saved.ScheduledAt.LocalDateTime.TimeOfDay,
-                Now);
+            if (saved.Recurrence == ScheduleRecurrence.Interval)
+            {
+                var initialTime = saved.InitialTimeOfDay ?? saved.ScheduledAt.LocalDateTime.TimeOfDay;
+                saved.InitialTimeOfDay = initialTime;
+                if (saved.ScheduledAt <= Now)
+                {
+                    saved.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(initialTime, Now);
+                }
+            }
+            else
+            {
+                saved.Recurrence = ScheduleRecurrence.Daily;
+                saved.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                    saved.ScheduledAt.LocalDateTime.TimeOfDay,
+                    Now);
+            }
             saved.Status = saved.Enabled ? ScheduleStatus.Pending : ScheduleStatus.Disabled;
             saved.StartedAt = null;
             saved.FinishedAt = null;
@@ -319,9 +371,12 @@ public sealed class ScheduleManager : IAsyncDisposable
                     else
                     {
                         job.FinishedAt = now;
-                        job.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
-                            job.ScheduledAt.LocalDateTime.TimeOfDay,
-                            now);
+                        var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
+                        job.ScheduledAt = job.Recurrence == ScheduleRecurrence.Interval
+                            ? ScheduleCalculator.GetNextAutoIntervalOccurrence(initialTime, now)
+                            : ScheduleCalculator.GetNextDailyOccurrence(
+                                job.ScheduledAt.LocalDateTime.TimeOfDay,
+                                now);
                     }
                 }
 
@@ -453,11 +508,19 @@ public sealed class ScheduleManager : IAsyncDisposable
 
             if (stored.Enabled)
             {
-                if (stored.ScheduledAt <= now)
+                if (stored.Recurrence == ScheduleRecurrence.Interval)
                 {
-                    stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
-                        stored.ScheduledAt.LocalDateTime.TimeOfDay,
-                        now);
+                    var initialTime = stored.InitialTimeOfDay ?? stored.ScheduledAt.LocalDateTime.TimeOfDay;
+                    stored.ScheduledAt = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialTime, stored.FinishedAt ?? now);
+                }
+                else
+                {
+                    if (stored.ScheduledAt <= now)
+                    {
+                        stored.ScheduledAt = ScheduleCalculator.GetNextDailyOccurrence(
+                            stored.ScheduledAt.LocalDateTime.TimeOfDay,
+                            now);
+                    }
                 }
                 stored.Status = ScheduleStatus.Pending;
             }

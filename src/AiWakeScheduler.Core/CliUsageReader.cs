@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 
@@ -46,17 +47,366 @@ public sealed class CliUsageReader
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        if (kind != CliKind.Codex)
+        return kind switch
         {
-            return Task.FromResult(new CliUsageSnapshot(
+            CliKind.Codex => ReadCodexAsync(profile, workingDirectory, cancellationToken),
+            CliKind.Antigravity or CliKind.AntigravityClaude => ReadAntigravityAsync(kind, cancellationToken),
+            _ => Task.FromResult(new CliUsageSnapshot(
                 kind,
                 CliUsageAvailability.Unsupported,
                 [],
                 "目前 CLI 未提供可機器解析的剩餘額度介面。",
-                DateTimeOffset.Now));
+                DateTimeOffset.Now))
+        };
+    }
+
+    private static readonly SemaphoreSlim _agyQueryLock = new(1, 1);
+    private static (string Json, DateTimeOffset CachedAt)? _cachedAgyResponse;
+    private static readonly TimeSpan AgyCacheDuration = TimeSpan.FromSeconds(3);
+
+    private static async Task<CliUsageSnapshot> ReadAntigravityAsync(
+        CliKind kind,
+        CancellationToken cancellationToken)
+    {
+        var observedAt = DateTimeOffset.Now;
+
+        try
+        {
+            var lsProcesses = Process.GetProcessesByName("language_server");
+            if (lsProcesses.Length == 0)
+            {
+                return Unavailable(kind, "Antigravity 尚未啟動，請先開啟 Antigravity 以讀取即時額度。", observedAt);
+            }
+
+            string responseJson;
+
+            await _agyQueryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_cachedAgyResponse.HasValue &&
+                    DateTimeOffset.Now - _cachedAgyResponse.Value.CachedAt < AgyCacheDuration)
+                {
+                    responseJson = _cachedAgyResponse.Value.Json;
+                }
+                else
+                {
+                    var targetProc = lsProcesses[0];
+                    var pid = targetProc.Id;
+
+                    // 1. 解析 CSRF Token
+                    var csrfToken = await TryGetCsrfTokenAsync(pid, cancellationToken).ConfigureAwait(false);
+                    if (string.IsNullOrWhiteSpace(csrfToken))
+                    {
+                        return Unavailable(kind, "無法取得 Antigravity 認證權杖（CSRF Token）。", observedAt);
+                    }
+
+                    // 2. 尋找 HTTPS 監聽連接埠
+                    var ports = GetAntigravityCandidatePorts(pid);
+                    if (ports.Count == 0)
+                    {
+                        return Unavailable(kind, "無法偵測到 Antigravity Language Server 監聽連接埠。", observedAt);
+                    }
+
+                    // 3. 透過 HttpClient 呼叫 RPC
+                    using var handler = new HttpClientHandler
+                    {
+                        ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+                    };
+                    using var client = new HttpClient(handler)
+                    {
+                        Timeout = TimeSpan.FromSeconds(5)
+                    };
+
+                    using var requestMessage = new HttpRequestMessage(
+                        HttpMethod.Post,
+                        $"https://127.0.0.1:{ports[0]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
+                    {
+                        Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                    };
+                    requestMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
+
+                    try
+                    {
+                        using var response = await client.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+                        responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception) when (ports.Count > 1)
+                    {
+                        using var retryMessage = new HttpRequestMessage(
+                            HttpMethod.Post,
+                            $"https://127.0.0.1:{ports[1]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
+                        {
+                            Content = new StringContent("{}", Encoding.UTF8, "application/json")
+                        };
+                        retryMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
+                        using var response = await client.SendAsync(retryMessage, cancellationToken).ConfigureAwait(false);
+                        responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    }
+
+                    _cachedAgyResponse = (responseJson, DateTimeOffset.Now);
+                }
+            }
+            finally
+            {
+                _agyQueryLock.Release();
+            }
+
+            return ParseAntigravityModelConfigs(responseJson, kind, observedAt);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Unavailable(kind, "讀取 Antigravity 額度逾時。", observedAt);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return Unavailable(kind, $"Antigravity 額度查詢失敗：{ex.Message}", observedAt);
+        }
+    }
+
+    private static async Task<string?> TryGetCsrfTokenAsync(int pid, CancellationToken cancellationToken)
+    {
+        // 1. 優先使用原生 Win32 PEB 讀取（微秒級完成、零子程序開銷）
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var nativeCmd = NativeProcessHelper.GetCommandLine(pid);
+                if (!string.IsNullOrWhiteSpace(nativeCmd))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(nativeCmd, @"--csrf_token\s+([^\s]+)");
+                    if (match.Success)
+                    {
+                        return match.Groups[1].Value;
+                    }
+                }
+            }
+            catch
+            {
+            }
         }
 
-        return ReadCodexAsync(profile, workingDirectory, cancellationToken);
+        // 2. 備用方案 A：透過 PowerShell 查詢 CIM 物件（精確語法）
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+
+            using var process = new Process { StartInfo = startInfo };
+            if (process.Start())
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+
+                var output = await process.StandardOutput.ReadToEndAsync(cts.Token).ConfigureAwait(false);
+                await process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(output, @"--csrf_token\s+([^\s]+)");
+                    if (match.Success)
+                    {
+                        return match.Groups[1].Value;
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        // 3. 備用方案 B：透過 PowerShell Get-Process 篩選
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"(Get-Process -Id {pid} -ErrorAction SilentlyContinue).CommandLine\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8
+            };
+
+            using var process = new Process { StartInfo = startInfo };
+            if (process.Start())
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(TimeSpan.FromSeconds(5));
+
+                var output = await process.StandardOutput.ReadToEndAsync(cts.Token).ConfigureAwait(false);
+                await process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(output, @"--csrf_token\s+([^\s]+)");
+                    if (match.Success)
+                    {
+                        return match.Groups[1].Value;
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static List<int> GetAntigravityCandidatePorts(int pid)
+    {
+        var ports = new List<int>();
+
+        // 1. 從日誌中解析 HTTPS 連接埠（掃描前 200 行與後 200 行）
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        var possibleLogPaths = new[]
+        {
+            Path.Combine(appData, "Antigravity", "logs", "language_server.log"),
+            Path.Combine(appData, "Antigravity IDE", "logs", "language_server.log")
+        };
+
+        foreach (var logPath in possibleLogPaths)
+        {
+            if (!File.Exists(logPath)) continue;
+
+            try
+            {
+                using var fs = new FileStream(logPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var reader = new StreamReader(fs, Encoding.UTF8);
+
+                string? line;
+                var lineCount = 0;
+                while ((line = reader.ReadLine()) is not null && lineCount < 200)
+                {
+                    lineCount++;
+                    var m = System.Text.RegularExpressions.Regex.Match(line, @"listening on \w+ port at (\d+) for HTTPS", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (m.Success && int.TryParse(m.Groups[1].Value, out var port))
+                    {
+                        if (!ports.Contains(port)) ports.Add(port);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        // 2. 透過 PowerShell 取得該進程目前處於 Listen 狀態的 LocalPort
+        if (ports.Count == 0 && pid > 0 && OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = "powershell.exe",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    StandardOutputEncoding = Encoding.UTF8
+                };
+                startInfo.ArgumentList.Add("-NoProfile");
+                startInfo.ArgumentList.Add("-Command");
+                startInfo.ArgumentList.Add($"(Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue).LocalPort");
+
+                using var process = new Process { StartInfo = startInfo };
+                if (process.Start())
+                {
+                    var output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit(3000);
+                    foreach (var line in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        if (int.TryParse(line.Trim(), out var p) && !ports.Contains(p))
+                        {
+                            ports.Add(p);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return ports;
+    }
+
+    /// <summary>解析 Antigravity GetCascadeModelConfigData 的 JSON 回應。</summary>
+    public static CliUsageSnapshot ParseAntigravityModelConfigs(string json, CliKind kind, DateTimeOffset observedAt)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("error", out var error))
+            {
+                var message = error.TryGetProperty("message", out var errorMessage)
+                    ? errorMessage.GetString()
+                    : error.GetRawText();
+                return Unavailable(kind, $"Antigravity 額度查詢失敗：{message}", observedAt);
+            }
+
+            if (!root.TryGetProperty("clientModelConfigs", out var configs) || configs.ValueKind != JsonValueKind.Array)
+            {
+                return Unavailable(kind, "Antigravity 回應缺少 clientModelConfigs。", observedAt);
+            }
+
+            var isGeminiPool = kind == CliKind.Antigravity;
+            var windowName = isGeminiPool ? "Antigravity (Gemini)" : "Antigravity (Claude / GPT)";
+
+            foreach (var config in configs.EnumerateArray())
+            {
+                var label = config.TryGetProperty("label", out var labelProp) ? labelProp.GetString() ?? "" : "";
+                var matchPool = isGeminiPool
+                    ? label.Contains("Gemini", StringComparison.OrdinalIgnoreCase)
+                    : (label.Contains("Claude", StringComparison.OrdinalIgnoreCase) || label.Contains("GPT", StringComparison.OrdinalIgnoreCase));
+
+                if (!matchPool) continue;
+
+                if (config.TryGetProperty("quotaInfo", out var quotaInfo) && quotaInfo.ValueKind == JsonValueKind.Object)
+                {
+                    var remainingFraction = 1.0;
+                    if (quotaInfo.TryGetProperty("remainingFraction", out var remProp) && remProp.TryGetDouble(out var remVal))
+                    {
+                        remainingFraction = Math.Clamp(remVal, 0.0, 1.0);
+                    }
+
+                    var usedPercent = (int)Math.Round((1.0 - remainingFraction) * 100.0);
+
+                    DateTimeOffset? resetsAt = null;
+                    if (quotaInfo.TryGetProperty("resetTime", out var resetProp) && resetProp.ValueKind == JsonValueKind.String)
+                    {
+                        if (DateTimeOffset.TryParse(resetProp.GetString(), out var parsedReset))
+                        {
+                            resetsAt = parsedReset;
+                        }
+                    }
+
+                    var window = new CliUsageWindow(windowName, Math.Clamp(usedPercent, 0, 100), null, resetsAt);
+                    return new CliUsageSnapshot(kind, CliUsageAvailability.Available, [window], "讀取成功", observedAt);
+                }
+            }
+
+            return Unavailable(kind, $"Antigravity 已回應，但未找到對應的 {windowName} 配額資料。", observedAt);
+        }
+        catch (JsonException ex)
+        {
+            return Unavailable(kind, $"Antigravity 回應 JSON 解析失敗：{ex.Message}", observedAt);
+        }
     }
 
     private static async Task<CliUsageSnapshot> ReadCodexAsync(
@@ -114,7 +464,7 @@ public sealed class CliUsageReader
             var token = timeoutSource.Token;
 
             await process.StandardInput.WriteLineAsync(
-                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.2.0\"}}}")
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.3.0\"}}}")
                 .ConfigureAwait(false);
             await process.StandardInput.FlushAsync(token).ConfigureAwait(false);
 
@@ -322,5 +672,134 @@ public sealed class CliUsageReader
         catch
         {
         }
+    }
+}
+
+internal static class NativeProcessHelper
+{
+    [DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(
+        IntPtr processHandle,
+        int processInformationClass,
+        ref PROCESS_BASIC_INFORMATION processInformation,
+        int processInformationLength,
+        out int returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(int processAccess, bool bInheritHandle, int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ReadProcessMemory(
+        IntPtr hProcess,
+        IntPtr lpBaseAddress,
+        [Out] byte[] lpBuffer,
+        int dwSize,
+        out IntPtr lpNumberOfBytesRead);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_BASIC_INFORMATION
+    {
+        public IntPtr ExitStatus;
+        public IntPtr PebBaseAddress;
+        public IntPtr AffinityMask;
+        public IntPtr BasePriority;
+        public IntPtr UniqueProcessId;
+        public IntPtr InheritedFromUniqueProcessId;
+    }
+
+    private const int PROCESS_QUERY_INFORMATION = 0x0400;
+    private const int PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+    private const int PROCESS_VM_READ = 0x0010;
+
+    public static string? GetCommandLine(int pid)
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+
+        var hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, false, pid);
+        if (hProcess == IntPtr.Zero)
+        {
+            hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid);
+        }
+        if (hProcess == IntPtr.Zero) return null;
+
+        try
+        {
+            var pbi = new PROCESS_BASIC_INFORMATION();
+            var status = NtQueryInformationProcess(hProcess, 0, ref pbi, Marshal.SizeOf(pbi), out _);
+            if (status != 0 || pbi.PebBaseAddress == IntPtr.Zero) return null;
+
+            if (IntPtr.Size == 8) // 64-bit
+            {
+                var ptrBuf = new byte[8];
+                if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress + 0x20, ptrBuf, 8, out _)) return null;
+                var procParams = (IntPtr)BitConverter.ToInt64(ptrBuf, 0);
+                if (procParams == IntPtr.Zero) return null;
+
+                // 掃描 RTL_USER_PROCESS_PARAMETERS 中的可能 CommandLine 偏移量（0x60 ~ 0x80）
+                var candidateOffsets = new[] { 0x70, 0x78, 0x68, 0x60, 0x80 };
+                var cmdLineHeader = new byte[16];
+
+                foreach (var offset in candidateOffsets)
+                {
+                    if (!ReadProcessMemory(hProcess, procParams + offset, cmdLineHeader, 16, out _)) continue;
+                    var length = BitConverter.ToUInt16(cmdLineHeader, 0);
+                    var bufferPtr = (IntPtr)BitConverter.ToInt64(cmdLineHeader, 8);
+                    if (bufferPtr == IntPtr.Zero || length < 10 || length > 32768) continue;
+
+                    var cmdBuf = new byte[length];
+                    if (ReadProcessMemory(hProcess, bufferPtr, cmdBuf, length, out _))
+                    {
+                        var str = Encoding.Unicode.GetString(cmdBuf);
+                        if (str.Contains("--csrf_token", StringComparison.OrdinalIgnoreCase) ||
+                            str.Contains("language_server", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return str;
+                        }
+                    }
+                }
+            }
+            else // 32-bit
+            {
+                var ptrBuf = new byte[4];
+                if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress + 0x10, ptrBuf, 4, out _)) return null;
+                var procParams = (IntPtr)BitConverter.ToInt32(ptrBuf, 0);
+                if (procParams == IntPtr.Zero) return null;
+
+                var candidateOffsets = new[] { 0x40, 0x44, 0x38, 0x48 };
+                var cmdLineHeader = new byte[8];
+
+                foreach (var offset in candidateOffsets)
+                {
+                    if (!ReadProcessMemory(hProcess, procParams + offset, cmdLineHeader, 8, out _)) continue;
+                    var length = BitConverter.ToUInt16(cmdLineHeader, 0);
+                    var bufferPtr = (IntPtr)BitConverter.ToInt32(cmdLineHeader, 4);
+                    if (bufferPtr == IntPtr.Zero || length < 10 || length > 32768) continue;
+
+                    var cmdBuf = new byte[length];
+                    if (ReadProcessMemory(hProcess, bufferPtr, cmdBuf, length, out _))
+                    {
+                        var str = Encoding.Unicode.GetString(cmdBuf);
+                        if (str.Contains("--csrf_token", StringComparison.OrdinalIgnoreCase) ||
+                            str.Contains("language_server", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return str;
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            CloseHandle(hProcess);
+        }
+
+        return null;
     }
 }

@@ -6,6 +6,11 @@ namespace AiWakeScheduler.Core;
 public static class ScheduleCalculator
 {
     /// <summary>
+    /// 自動模式的循環間隔（5 個小時 + 1 分鐘 = 301 分鐘）。
+    /// </summary>
+    public static readonly TimeSpan AutoInterval = TimeSpan.FromHours(5) + TimeSpan.FromMinutes(1);
+
+    /// <summary>
     /// 計算下一次每日排程的執行時間。
     /// </summary>
     public static DateTimeOffset GetNextDailyOccurrence(
@@ -55,6 +60,36 @@ public static class ScheduleCalculator
     }
 
     /// <summary>
+    /// 計算自動模式（每 5 小時 1 分鐘）在指定執行完成時間後的下一次執行時間。
+    /// 當日完成後若加 5 小時 1 分鐘仍在當日（24:00 前），排在該時間；
+    /// 若跨入隔天（超過 24:00），則不排在半夜，直接排定為隔天的首次喚醒時間。
+    /// </summary>
+    public static DateTimeOffset GetNextAutoIntervalOccurrence(
+        TimeSpan initialTimeOfDay,
+        DateTimeOffset finishedAt)
+    {
+        if (initialTimeOfDay < TimeSpan.Zero || initialTimeOfDay >= TimeSpan.FromDays(1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(initialTimeOfDay), "首次喚醒時間必須介於 00:00 到 23:59。");
+        }
+
+        var localFinished = finishedAt.LocalDateTime;
+        var candidateLocal = localFinished.Add(AutoInterval);
+
+        // 若推算時間仍在完成當日（未跨過 24:00）
+        if (candidateLocal.Date == localFinished.Date)
+        {
+            return CreateLocalDateTimeOffset(candidateLocal);
+        }
+
+        // 跨日：不於半夜執行，排定為隔日的首次喚醒時間
+        var nextDayDate = localFinished.Date.AddDays(1);
+        var targetTime = new TimeSpan(initialTimeOfDay.Hours, initialTimeOfDay.Minutes, 0);
+        var nextDayCandidate = nextDayDate.Add(targetTime);
+        return CreateLocalDateTimeOffset(nextDayCandidate);
+    }
+
+    /// <summary>
     /// 計算指定週期下一次的執行時間。
     /// </summary>
     public static DateTimeOffset GetNextOccurrence(
@@ -65,6 +100,22 @@ public static class ScheduleCalculator
         if (recurrence == ScheduleRecurrence.Once)
         {
             throw new ArgumentException("單次排程沒有下一次執行時間。", nameof(recurrence));
+        }
+
+        if (recurrence == ScheduleRecurrence.Interval)
+        {
+            if (previousOccurrence > now)
+            {
+                return previousOccurrence;
+            }
+
+            var initialTime = previousOccurrence.LocalDateTime.TimeOfDay;
+            var next = GetNextAutoIntervalOccurrence(initialTime, previousOccurrence);
+            while (next <= now)
+            {
+                next = GetNextAutoIntervalOccurrence(initialTime, next);
+            }
+            return next;
         }
 
         var incrementDays = recurrence switch

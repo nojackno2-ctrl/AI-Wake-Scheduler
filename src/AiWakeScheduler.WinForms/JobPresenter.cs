@@ -9,7 +9,11 @@ namespace AiWakeScheduler.WinForms;
 /// </summary>
 internal static class JobPresenter
 {
-    public static string Time(ScheduledJob job) => job.ScheduledAt.LocalDateTime.ToString("HH:mm");
+    public static string Time(ScheduledJob job) => job.Recurrence switch
+    {
+        ScheduleRecurrence.Interval => $"每5h1m ({job.ScheduledAt.LocalDateTime:HH:mm})",
+        _ => job.ScheduledAt.LocalDateTime.ToString("HH:mm")
+    };
 
     public static string Countdown(ScheduledJob job, DateTimeOffset now)
     {
