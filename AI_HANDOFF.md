@@ -1,6 +1,15 @@
 # AI HANDOFF
 
-## 2026-08-18 自動模式跨日不排半夜與隔日首次時間重置完成（完成，未提交）
+## 2026-08-18 v1.3.0 發布與 GitHub Release 完成（已提交並推送）
+
+- **使用者要求**：「推送到github並發布執行檔」-> 經使用者明確授權進行 Commit、Push、打包與 Release。
+- **發布流程與產物**：
+  1. 版本號全面升級為 `v1.3.0`（`AiWakeScheduler.WinForms.csproj`、`installer/AI倒數喚醒.iss`、`build-installer.ps1`、`CliUsageReader.cs`、`README.md`）。
+  2. 執行 `build-installer.ps1`：Deterministic 測試 14/14 全數通過、Self-Contained win-x64 發布完成、Inno Setup 成功編譯出 `dist\AI倒數喚醒_Setup_v1.3.0_x64.exe`（48,612,048 bytes，SHA256: `E7F20E5ED2E6746A4B62ADAC0D4A33C1CD43280EB70CBB39C90FBB14466734C9`）。
+  3. Git 提交 `bfdcd7c` 並推送到遠端 `origin/main`。
+  4. 透過 GitHub CLI 建立官方 Release `v1.3.0`，並成功上傳安裝包與校驗檔：https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v1.3.0
+
+## 2026-08-18 自動模式跨日不排半夜與隔日首次時間重置完成（已包含於 v1.3.0）
 
 - **使用者要求**：「自動模式的倒數是只限於當日嗎，假設我設定早上0530作為首次喚醒，但是我0800才起床開電腦，正常來說他要從0800開始倒數，但是一旦超國2400，就不應該繼續倒數，而是等到隔天的0530再次啟動」->「改成跨日不排半夜」。
 - **實作重點**：
