@@ -70,15 +70,21 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--minimized"; Tasks: startupicon
 
 [Registry]
 ; 程式內建「開機時自動啟動」開關會自行寫入此機碼(StartupManager.cs),
 ; 安裝程式本身不建立它，僅在解除安裝時一併清除，避免殘留指向已移除路徑的啟動項。
+; v1.3.0 起主程式改用 requireAdministrator 資訊清單，這把舊登錄機碼機制留給升級中的舊使用者做清除用。
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "AI倒數喚醒"; ValueType: none; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; 主程式現在需要系統管理員權限執行（見 app.manifest），啟動資料夾捷徑每次登入都會跳 UAC，
+; 改用工作排程器建立「以最高權限執行」+「登入時觸發」的工作，才能維持靜默背景啟動。
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /SC ONLOGON /RL HIGHEST /TN ""AI倒數喚醒"" /TR ""\""{app}\{#MyAppExeName}\"" --minimized"""; Flags: runhidden; Tasks: startupicon
+
+[UninstallRun]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""AI倒數喚醒"" /F"; Flags: runhidden
 
 [UninstallDelete]
 Type: files; Name: "{app}\*.log"

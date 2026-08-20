@@ -6,6 +6,10 @@
     <AssemblyName>AI倒數喚醒</AssemblyName>
     <RootNamespace>AiWakeScheduler.WinForms</RootNamespace>
     <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
+    <!-- 需要系統管理員權限以啟用 SeDebugPrivilege 讀取 Antigravity CSRF Token，
+         詳見 app.manifest；自動啟動改用工作排程器的「以最高權限執行」，
+         登入時靜默啟動不會跳出 UAC 提示 -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- 每個螢幕各自的 DPI 都會正確套用，多螢幕混合縮放時文字不會糊掉 -->
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- 常駐系統匣的桌面程式：工作站 GC 且不使用背景 GC 執行緒，
