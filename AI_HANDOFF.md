@@ -1,5 +1,14 @@
 # AI HANDOFF
 
+## 2026-08-21 v1.3.1 發布與 GitHub Release 完成（已提交並推送）
+
+- **使用者要求**：「推送AI倒數喚醒並發布執行檔」-> 經使用者明確授權進行 Commit、Push、打包與 Release。
+- **發布流程與產物**：
+  1. 版本號全面升級為 `v1.3.1`（`AiWakeScheduler.WinForms.csproj`、`installer/AI倒數喚醒.iss`、`build-installer.ps1`、`CliUsageReader.cs`、`README.md`）。
+  2. 執行 `build-installer.ps1`：Deterministic 測試 14/14 全數通過、Self-Contained win-x64 發布完成、Inno Setup 成功編譯出 `dist\AI倒數喚醒_Setup_v1.3.1_x64.exe`（48,607,109 bytes，SHA256: `56CF8BB90F1A83FF89DF5DC45FE00AB35FCF784D4E5E12760D739A30E2A1F4A0`）。
+  3. Git 提交並推送到遠端 `origin/main`，建立並推送 Tag `v1.3.1`。
+  4. 透過 GitHub CLI 建立官方 Release `v1.3.1`，並成功上傳安裝包與校驗檔。
+
 ## 2026-08-20 開機自動啟動衝突修復與程式碼防護優化（已完成）
 
 - **使用者要求**：「開機只執行正式安裝版跟程式碼優化」。

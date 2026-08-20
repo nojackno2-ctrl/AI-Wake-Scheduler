@@ -1,6 +1,6 @@
 ; AI 倒數喚醒 (AI Wake Scheduler) Inno Setup 6 腳本
 #define MyAppName "AI 倒數喚醒"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "AI Wake Scheduler"
 #define MyAppURL "https://github.com/nojackno2-ctrl/AI-Wake-Scheduler"
 #define MyAppExeName "AI倒數喚醒.exe"
