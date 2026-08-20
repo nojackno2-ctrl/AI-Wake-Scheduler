@@ -7,10 +7,14 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        var isMinimized = args.Contains("--minimized", StringComparer.OrdinalIgnoreCase);
         using var mutex = new Mutex(true, SingleInstanceMutexName, out var ownsMutex);
         if (!ownsMutex)
         {
-            MessageBox.Show("AI 倒數喚醒已經在執行。", "AI 倒數喚醒", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!isMinimized)
+            {
+                MessageBox.Show("AI 倒數喚醒已經在執行。", "AI 倒數喚醒", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
             return;
         }
 
@@ -37,6 +41,8 @@ internal static class Program
 
     private static void Run(string[] args)
     {
+        StartupManager.MigrateLegacyIfNeeded();
+
         var host = AppHost.CreateAsync().GetAwaiter().GetResult();
         try
         {

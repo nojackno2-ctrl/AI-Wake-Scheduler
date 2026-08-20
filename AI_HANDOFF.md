@@ -1,5 +1,24 @@
 # AI HANDOFF
 
+## 2026-08-20 開機自動啟動衝突修復與程式碼防護優化（已完成）
+
+- **使用者要求**：「開機只執行正式安裝版跟程式碼優化」。
+- **實作與系統處置**：
+  1. **系統開機項清理與程序切換**：
+     - 已移除登錄檔 `HKCU:\Software\Microsoft\Windows\CurrentVersion\Run\AI倒數喚醒` 中指向 Debug 版的開機項。
+     - 保留啟動資料夾捷徑 `AI 倒數喚醒.lnk`（指向 `%LOCALAPPDATA%\Programs\AI 倒數喚醒\AI倒數喚醒.exe --minimized`，正式安裝版）。
+     - 已停止原本常駐的 Debug 程序（PID 21924），並啟動正式安裝版（PID 11936，`Responding=True`）。
+  2. **程式碼優化（`Program.cs`）**：
+     - 在單一執行個體 Mutex 檢查處加入判斷：若啟動參數包含 `--minimized`（開機或背景啟動），且已有另一實例在執行中時，直接**靜默退出**（不彈出 `MessageBox` 提示），徹底避免開機彈窗干擾。
+     - 若為使用者手動雙擊啟動（無 `--minimized`），則維持彈窗提示「AI 倒數喚醒已經在執行。」。
+  3. **啟動管理強化（`StartupManager.cs`）**：
+     - 新增 `CleanupStartupShortcuts()`，在透過 UI 設定「開機時自動啟動」開關時，自動清理啟動資料夾中的捷徑（`AI 倒數喚醒.lnk`、`AI倒數喚醒.lnk`），避免登錄檔與啟動資料夾同時存在導致未來再次產生雙重啟動衝突。
+- **驗證結果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 14/14 全數通過（含 4 個假 CLI 平行完成 1249 ms）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - 本機開機項與程序狀態複核確認無誤。
+
 ## 2026-08-18 v1.3.0 發布與 GitHub Release 完成（已提交並推送）
 
 - **使用者要求**：「推送到github並發布執行檔」-> 經使用者明確授權進行 Commit、Push、打包與 Release。

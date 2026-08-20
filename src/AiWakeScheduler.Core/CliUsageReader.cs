@@ -699,6 +699,83 @@ internal static class NativeProcessHelper
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr processHandle, int desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern bool LookupPrivilegeValue(string? lpSystemName, string lpName, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(
+        IntPtr tokenHandle,
+        bool disableAllPrivileges,
+        ref TOKEN_PRIVILEGES newState,
+        int bufferLength,
+        IntPtr previousState,
+        IntPtr returnLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID
+    {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES
+    {
+        public int PrivilegeCount;
+        public LUID Luid;
+        public int Attributes;
+    }
+
+    private const int TOKEN_ADJUST_PRIVILEGES = 0x0020;
+    private const int TOKEN_QUERY = 0x0008;
+    private const int SE_PRIVILEGE_ENABLED = 0x0002;
+
+    private static bool _debugPrivilegeAttempted;
+
+    /// <summary>
+    /// 嘗試啟用 SeDebugPrivilege：管理員權杖預設具備此權限但未啟動，
+    /// 需顯式呼叫 AdjustTokenPrivileges 開啟後，OpenProcess 才能無視目標行程的
+    /// DACL 限制（Antigravity language_server 已對 PROCESS_VM_READ 加上拒絕規則）。
+    /// 非管理員權杖沒有這個特權，呼叫會失敗但不影響其餘備援方案。
+    /// </summary>
+    private static void EnsureDebugPrivilegeEnabled()
+    {
+        if (_debugPrivilegeAttempted) return;
+        _debugPrivilegeAttempted = true;
+
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out var hToken))
+        {
+            return;
+        }
+
+        try
+        {
+            if (!LookupPrivilegeValue(null, "SeDebugPrivilege", out var luid))
+            {
+                return;
+            }
+
+            var privileges = new TOKEN_PRIVILEGES
+            {
+                PrivilegeCount = 1,
+                Luid = luid,
+                Attributes = SE_PRIVILEGE_ENABLED
+            };
+
+            AdjustTokenPrivileges(hToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally
+        {
+            CloseHandle(hToken);
+        }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
     [StructLayout(LayoutKind.Sequential)]
     private struct PROCESS_BASIC_INFORMATION
     {
@@ -717,6 +794,8 @@ internal static class NativeProcessHelper
     public static string? GetCommandLine(int pid)
     {
         if (!OperatingSystem.IsWindows()) return null;
+
+        EnsureDebugPrivilegeEnabled();
 
         var hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, false, pid);
         if (hProcess == IntPtr.Zero)
