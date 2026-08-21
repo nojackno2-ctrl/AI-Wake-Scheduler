@@ -259,7 +259,7 @@ internal sealed class SettingsForm : Form
         options.Controls.Add(timeoutRow);
 
         var refreshRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
-        refreshRow.Controls.Add(new Label { Text = "背景自動讀取配額間隔（分鐘，0 表示關閉）：", AutoSize = true, Margin = new Padding(0, 7, 5, 0) });
+        refreshRow.Controls.Add(new Label { Text = "未倒數時的背景自動讀取間隔（分鐘，0 表示關閉；倒數中將於倒數結束自動讀取）：", AutoSize = true, Margin = new Padding(0, 7, 5, 0) });
         AppTheme.StyleInput(_quotaAutoRefreshInput);
         refreshRow.Controls.Add(_quotaAutoRefreshInput);
         options.Controls.Add(refreshRow);

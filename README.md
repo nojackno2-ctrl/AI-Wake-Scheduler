@@ -51,7 +51,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.4.0_x64.exe`**。
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.5.0_x64.exe`**。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
@@ -128,7 +128,7 @@ dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.4.0_x64.exe`。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.5.0_x64.exe`。
 
 ---
 

@@ -40,6 +40,7 @@ internal sealed class MainForm : Form
     private bool _refreshingSelection;
     private int _refreshRequested;
     private bool _refreshDeferred;
+    private readonly Dictionary<CliKind, DateTimeOffset> _lastCountdownEndRefresh = [];
     private string _lastClockText = string.Empty;
     private DateTimeOffset _lastUsageRefreshTime = DateTimeOffset.MinValue;
 
@@ -533,9 +534,16 @@ internal sealed class MainForm : Form
                 return;
             }
 
+            var latestFromReader = _host.UsageReader.GetLatestSnapshots();
+            foreach (var (k, snap) in latestFromReader)
+            {
+                _usageSnapshots[k] = snap;
+            }
+
             _refreshDeferred = false;
             ApplyJobs(jobs);
             UpdateStatusSummary(jobs);
+            UpdateUsageLabels(DateTimeOffset.Now);
         }
         catch (ObjectDisposedException)
         {
@@ -964,12 +972,57 @@ internal sealed class MainForm : Form
         }
         UpdateUsageLabels(now);
 
-        if (_host.Settings.QuotaAutoRefreshMinutes > 0 &&
-            _lastUsageRefreshTime != DateTimeOffset.MinValue &&
-            now - _lastUsageRefreshTime >= TimeSpan.FromMinutes(_host.Settings.QuotaAutoRefreshMinutes))
+        // 1. 倒數結束時自動讀取：檢查是否有任何 CLI 的倒數時間已到（resetsAt <= now）
+        var hasCountdownEnded = false;
+        foreach (var descriptor in CliCatalog.All)
         {
-            _lastUsageRefreshTime = now;
+            if (_usageSnapshots.TryGetValue(descriptor.Kind, out var snapshot) &&
+                snapshot.Availability == CliUsageAvailability.Available &&
+                snapshot.Windows.Count > 0)
+            {
+                var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
+                    ?? snapshot.Windows[0];
+
+                if (targetWindow.IsActiveCountdown && targetWindow.ResetsAt is { } resetsAt && now >= resetsAt)
+                {
+                    if (!_lastCountdownEndRefresh.TryGetValue(descriptor.Kind, out var lastRefresh) ||
+                        now - lastRefresh >= TimeSpan.FromSeconds(15))
+                    {
+                        _lastCountdownEndRefresh[descriptor.Kind] = now;
+                        hasCountdownEnded = true;
+                    }
+                }
+            }
+        }
+
+        if (hasCountdownEnded)
+        {
             _ = RefreshUsageAsync(showStatus: false);
+        }
+        else
+        {
+            // 2. 沒抓到倒數（未在倒數中）時依設定間隔背景探測
+            // 若所有已啟用 CLI 皆處於正常有效倒數中，則略過定時查詢，避免產生不必要的連線與 429
+            var hasUncapturedCountdown = false;
+            foreach (var descriptor in CliCatalog.All)
+            {
+                if (!_usageSnapshots.TryGetValue(descriptor.Kind, out var snapshot) ||
+                    snapshot.Availability != CliUsageAvailability.Available ||
+                    !CliUsageReader.IsCountingDown(snapshot, now))
+                {
+                    hasUncapturedCountdown = true;
+                    break;
+                }
+            }
+
+            if (hasUncapturedCountdown &&
+                _host.Settings.QuotaAutoRefreshMinutes > 0 &&
+                _lastUsageRefreshTime != DateTimeOffset.MinValue &&
+                now - _lastUsageRefreshTime >= TimeSpan.FromMinutes(_host.Settings.QuotaAutoRefreshMinutes))
+            {
+                _lastUsageRefreshTime = now;
+                _ = RefreshUsageAsync(showStatus: false);
+            }
         }
     }
 

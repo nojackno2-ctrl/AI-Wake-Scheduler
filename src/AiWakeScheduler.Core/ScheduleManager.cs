@@ -28,6 +28,7 @@ public sealed class ScheduleManager : IAsyncDisposable
 
     private readonly ConcurrentDictionary<CliKind, DateTimeOffset> _lastQuotaWakeupByCli = new();
     private static readonly TimeSpan QuotaWakeupCooldown = TimeSpan.FromMinutes(2);
+    private DateTimeOffset _lastQuotaProbeAt = DateTimeOffset.MinValue;
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     /// <summary>排程異動時用來立刻喚醒背景迴圈，不必等到下一個間隔。</summary>
@@ -343,12 +344,26 @@ public sealed class ScheduleManager : IAsyncDisposable
         TimeSpan nextDelay;
 
         ScheduledJob? intervalJobToProbe = null;
+        List<CliKind>? targetsToProbe = null;
         AppSettings? settingsSnapshot = null;
+        TimeSpan? quotaProbeInterval = null;
+        Guid? quotaManagedJobId = null;
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             var now = Now;
+            if (_usageReader is not null)
+            {
+                settingsSnapshot = _settingsProvider().Clone();
+                if (settingsSnapshot.QuotaAutoRefreshMinutes > 0)
+                {
+                    quotaProbeInterval = TimeSpan.FromMinutes(settingsSnapshot.QuotaAutoRefreshMinutes);
+                }
+            }
+
+            var quotaProbeDue = quotaProbeInterval.HasValue &&
+                (_lastQuotaProbeAt == DateTimeOffset.MinValue || now - _lastQuotaProbeAt >= quotaProbeInterval.Value);
             List<ScheduledJob>? overdue = null;
             for (var i = 0; i < _jobs.Count; i++)
             {
@@ -358,14 +373,46 @@ public sealed class ScheduleManager : IAsyncDisposable
                     continue;
                 }
 
-                if (job.Recurrence == ScheduleRecurrence.Interval && _usageReader is not null && intervalJobToProbe is null)
+                if (job.Recurrence == ScheduleRecurrence.Interval &&
+                    _usageReader is not null &&
+                    quotaManagedJobId is null)
                 {
                     var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
                     var localNow = now.LocalDateTime;
                     var todayInitial = localNow.Date.Add(new TimeSpan(initialTime.Hours, initialTime.Minutes, 0));
                     if (localNow >= todayInitial)
                     {
-                        intervalJobToProbe = job.Clone();
+                        quotaManagedJobId = job.Id;
+
+                        // 檢查哪些 target CLI 需要探測：
+                        // 1. 倒數結束時：先前在倒數但 resetsAt <= now
+                        // 2. 沒抓到倒數：未在倒數中且 quotaProbeDue
+                        var dueTargets = new List<CliKind>();
+                        for (var t = 0; t < job.Targets.Count; t++)
+                        {
+                            var target = job.Targets[t];
+                            var snapshot = _usageReader.GetLatestSnapshot(target);
+                            var isCountingDown = snapshot is not null && CliUsageReader.IsCountingDown(snapshot, now);
+
+                            if (snapshot is not null && !isCountingDown && snapshot.Windows.Count > 0 &&
+                                snapshot.Windows[0].ResetsAt is { } reset && reset <= now)
+                            {
+                                // 倒數剛結束
+                                dueTargets.Add(target);
+                            }
+                            else if (!isCountingDown && quotaProbeDue)
+                            {
+                                // 沒抓到倒數，依設定間隔探測
+                                dueTargets.Add(target);
+                            }
+                        }
+
+                        if (dueTargets.Count > 0)
+                        {
+                            intervalJobToProbe = job.Clone();
+                            targetsToProbe = dueTargets;
+                            _lastQuotaProbeAt = now;
+                        }
                         continue;
                     }
                 }
@@ -414,12 +461,18 @@ public sealed class ScheduleManager : IAsyncDisposable
                 await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
             }
 
-            if (intervalJobToProbe is not null)
+            nextDelay = CalculateNextDelay(now, quotaManagedJobId);
+            if (quotaManagedJobId.HasValue &&
+                quotaProbeInterval.HasValue &&
+                intervalJobToProbe is null &&
+                _lastQuotaProbeAt != DateTimeOffset.MinValue)
             {
-                settingsSnapshot = _settingsProvider().Clone();
+                var untilNextQuotaProbe = (_lastQuotaProbeAt + quotaProbeInterval.Value) - now;
+                if (untilNextQuotaProbe < nextDelay)
+                {
+                    nextDelay = untilNextQuotaProbe;
+                }
             }
-
-            nextDelay = CalculateNextDelay(now);
         }
         finally
         {
@@ -443,14 +496,14 @@ public sealed class ScheduleManager : IAsyncDisposable
         }
 
         // 自動模式「流量未倒數立即執行」：在當日首次呼叫時間之後，針對有被啟用的 CLI 中未倒數者立即執行
-        if (intervalJobToProbe is not null && _usageReader is not null && settingsSnapshot is not null)
+        if (intervalJobToProbe is not null && targetsToProbe is { Count: > 0 } && _usageReader is not null && settingsSnapshot is not null)
         {
             var now = Now;
             var nonCountingDown = new List<CliKind>();
 
-            for (var i = 0; i < intervalJobToProbe.Targets.Count; i++)
+            for (var i = 0; i < targetsToProbe.Count; i++)
             {
-                var kind = intervalJobToProbe.Targets[i];
+                var kind = targetsToProbe[i];
                 if (_lastQuotaWakeupByCli.TryGetValue(kind, out var lastWake) && now - lastWake < QuotaWakeupCooldown)
                 {
                     continue;
@@ -537,7 +590,7 @@ public sealed class ScheduleManager : IAsyncDisposable
     }
 
     /// <summary>計算距離最近一個待執行排程的等待時間。呼叫端必須已持有 <see cref="_gate"/>。</summary>
-    private TimeSpan CalculateNextDelay(DateTimeOffset now)
+    private TimeSpan CalculateNextDelay(DateTimeOffset now, Guid? ignoredJobId = null)
     {
         var shortest = MaxIdleWait;
         for (var i = 0; i < _jobs.Count; i++)
@@ -547,11 +600,38 @@ public sealed class ScheduleManager : IAsyncDisposable
             {
                 continue;
             }
+            if (ignoredJobId.HasValue && job.Id == ignoredJobId.Value)
+            {
+                continue;
+            }
 
             var remaining = job.ScheduledAt - now;
             if (remaining < shortest)
             {
                 shortest = remaining;
+            }
+
+            // 自動模式：若目標 CLI 正在倒數，將倒數結束時刻納入喚醒時間
+            if (job.Recurrence == ScheduleRecurrence.Interval && _usageReader is not null)
+            {
+                for (var t = 0; t < job.Targets.Count; t++)
+                {
+                    var target = job.Targets[t];
+                    var snapshot = _usageReader.GetLatestSnapshot(target);
+                    if (snapshot is not null && CliUsageReader.IsCountingDown(snapshot, now))
+                    {
+                        var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
+                            ?? snapshot.Windows[0];
+                        if (targetWindow.ResetsAt is { } resetsAt)
+                        {
+                            var untilReset = resetsAt - now;
+                            if (untilReset > TimeSpan.Zero && untilReset < shortest)
+                            {
+                                shortest = untilReset;
+                            }
+                        }
+                    }
+                }
             }
         }
         return shortest;
@@ -577,6 +657,31 @@ public sealed class ScheduleManager : IAsyncDisposable
             settings.EnsureDefaults();
             var timeout = TimeSpan.FromMinutes(settings.ExecutionTimeoutMinutes);
 
+            // 執行前：若支援用量讀取，且最新快照非近期取得，先讀取目標 CLI 的最新流量與倒數狀態
+            if (_usageReader is not null)
+            {
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    var target = targets[i];
+                    var snap = _usageReader.GetLatestSnapshot(target);
+                    if (snap is null || Now - snap.ObservedAt > TimeSpan.FromSeconds(10))
+                    {
+                        try
+                        {
+                            var profile = settings.CliProfiles.TryGetValue(target, out var p) ? p.Clone() : new CliProfile();
+                            await _usageReader.ReadAsync(
+                                target,
+                                profile,
+                                job.WorkingDirectory,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
+
             // 先把所有 Task 具現化，確保每個選定的 CLI 都獨立啟動；
             // Task.WhenAll 只負責等待完成，不會讓程序變成循序執行。
             var runs = new Task<CliRunResult>[targets.Count];
@@ -595,6 +700,30 @@ public sealed class ScheduleManager : IAsyncDisposable
 
             var results = await Task.WhenAll(runs).ConfigureAwait(false);
             await CompleteJobAsync(job.Id, results, targets).ConfigureAwait(false);
+
+            // 執行後：稍待讓 API / Language Server 扣抵額度並開啟新一輪倒數，自動捕捉最新倒數
+            if (_usageReader is not null)
+            {
+                try
+                {
+                    var delay = _time == TimeProvider.System ? TimeSpan.FromSeconds(2) : TimeSpan.FromMilliseconds(50);
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    for (var i = 0; i < targets.Count; i++)
+                    {
+                        var target = targets[i];
+                        var profile = settings.CliProfiles.TryGetValue(target, out var p) ? p.Clone() : new CliProfile();
+                        await _usageReader.ReadAsync(
+                            target,
+                            profile,
+                            job.WorkingDirectory,
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    RaiseJobsChanged();
+                }
+                catch
+                {
+                }
+            }
         }
         catch (Exception ex)
         {
