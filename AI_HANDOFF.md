@@ -1,5 +1,14 @@
 # AI HANDOFF
 
+## 2026-08-21 v1.4.0 發布與 GitHub Release 完成（已提交並推送）
+
+- **使用者授權**：「推送到github並發布執行檔」。
+- **執行成果**：
+  1. 版本號全面升級為 `v1.4.0`（`AiWakeScheduler.WinForms.csproj`、`installer/AI倒數喚醒.iss`、`build-installer.ps1`、`CliUsageReader.cs`、`README.md`）。
+  2. 執行 `build-installer.ps1`：Deterministic 測試 15/15 全數通過、Self-Contained win-x64 發布完成、Inno Setup 成功編譯出 `dist\AI倒數喚醒_Setup_v1.4.0_x64.exe`（48,613,406 bytes，SHA256: `4A584C23DF8297D53F9A7D4BCB66D5EC4A5DD2A12BC045E29D177B37B5BB6A24`）。
+  3. Git 提交並推送到遠端 `origin/main`，建立並推送 Tag `v1.4.0`。
+  4. 透過 GitHub CLI 建立官方 Release `v1.4.0`，並成功上傳安裝包與校驗檔：`https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v1.4.0`。
+
 ## 2026-08-21 排程清單各 CLI 獨立倒數與自訂背景定時配額讀取完成並驗證
 
 - **使用者要求**：「執行第1項（自動模式中，把每個CLI的倒數分開）」、「第2項也要，但是每個幾分鐘可以由使用者來決定，這個會消耗流量嗎?」。
