@@ -1386,6 +1386,142 @@ static async Task TestScheduleManagerQuotaAwareIntervalAsync()
                 Assert(lateRunner.ExecutedClis.Contains(CliKind.Claude), "未倒數的 Claude 應被呼叫。");
             }
         }
+
+        // 3. 背景排程迴圈即使被頻繁喚醒，未倒數時也只能依使用者設定的分鐘間隔查一次額度。
+        // 這是 Claude /api/oauth/usage 不再因每 30 秒重查而觸發 HTTP 429 的迴歸測試。
+        settings.QuotaAutoRefreshMinutes = 10;
+        var throttledNow = new DateTimeOffset(2026, 8, 21, 9, 0, 0, TimeSpan.FromHours(8));
+        var throttledTimeProvider = new FakeTimeProvider(throttledNow);
+        var throttledUsageReader = new FakeCliUsageReader();
+        // 模擬未抓到倒數（例如 100% 額度或未在倒數中）
+        throttledUsageReader.Snapshots[CliKind.Claude] = new CliUsageSnapshot(
+            CliKind.Claude,
+            CliUsageAvailability.Available,
+            [new CliUsageWindow("Claude（5 小時）", 0, TimeSpan.FromHours(5), throttledNow.AddHours(-1), IsActiveCountdown: false)],
+            "讀取成功",
+            throttledNow);
+
+        var throttledJobId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = throttledJobId,
+                Name = "額度探測節流測試",
+                ScheduledAt = throttledNow.AddHours(4),
+                InitialTimeOfDay = initialWakeup,
+                FinishedAt = throttledNow.AddHours(-1),
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Claude],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        await using (var throttledManager = new ScheduleManager(
+            store,
+            new CountingCliRunner(),
+            () => settings,
+            throttledUsageReader,
+            throttledTimeProvider))
+        {
+            await throttledManager.InitializeAsync();
+            var firstProbeDeadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < firstProbeDeadline && throttledUsageReader.GetReadCount(CliKind.Claude) < 2)
+            {
+                await Task.Delay(25);
+            }
+            Assert(throttledUsageReader.GetReadCount(CliKind.Claude) == 2, "啟動探測與執行後捕捉新倒數應各讀取一次 Claude 額度。");
+
+            var throttledJob = (await throttledManager.GetJobsAsync()).Single();
+            for (var i = 0; i < 3; i++)
+            {
+                await throttledManager.UpsertAsync(throttledJob);
+                await Task.Delay(100);
+            }
+            Assert(throttledUsageReader.GetReadCount(CliKind.Claude) == 2,
+                "10 分鐘探測間隔內即使排程器被喚醒多次，也不應重查 Claude 額度。");
+
+            // 推進 11 分鐘，因為仍處於未倒數狀態，應觸發定期探測
+            throttledTimeProvider.SetUtcNow(throttledNow.AddMinutes(11));
+            await throttledManager.UpsertAsync(throttledJob);
+            var secondProbeDeadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < secondProbeDeadline && throttledUsageReader.GetReadCount(CliKind.Claude) < 3)
+            {
+                await Task.Delay(25);
+            }
+            Assert(throttledUsageReader.GetReadCount(CliKind.Claude) >= 3,
+                "超過使用者設定的 10 分鐘後，應允許下一次 Claude 額度探測。");
+        }
+
+        // 4. 倒數結束時（Countdown Ended）自動喚醒並探測
+        var countdownEndNow = new DateTimeOffset(2026, 8, 21, 9, 0, 0, TimeSpan.FromHours(8));
+        var countdownEndTimeProvider = new FakeTimeProvider(countdownEndNow);
+        var countdownEndReader = new FakeCliUsageReader();
+        var countdownEndRunner = new CountingCliRunner();
+
+        // 模擬 Claude 倒數即將在 15 分鐘後（09:15）結束
+        var resetPoint = countdownEndNow.AddMinutes(15);
+        countdownEndReader.Snapshots[CliKind.Claude] = new CliUsageSnapshot(
+            CliKind.Claude,
+            CliUsageAvailability.Available,
+            [new CliUsageWindow("Claude（5 小時）", 10, TimeSpan.FromHours(5), resetPoint, IsActiveCountdown: true)],
+            "讀取成功",
+            countdownEndNow);
+
+        var countdownJobId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = countdownJobId,
+                Name = "倒數結束自動喚醒測試",
+                ScheduledAt = resetPoint,
+                InitialTimeOfDay = initialWakeup,
+                FinishedAt = countdownEndNow.AddHours(-1),
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Claude],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        await using (var countdownManager = new ScheduleManager(
+            store,
+            countdownEndRunner,
+            () => settings,
+            countdownEndReader,
+            countdownEndTimeProvider))
+        {
+            await countdownManager.InitializeAsync();
+            var initDeadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < initDeadline && countdownEndReader.GetReadCount(CliKind.Claude) < 1)
+            {
+                await Task.Delay(25);
+            }
+            Assert(countdownEndReader.GetReadCount(CliKind.Claude) == 1, "啟動初始化探測。");
+
+            // 時間推進至倒數剛結束（09:16），且伺服器已更新為未倒數（額度已重置）
+            countdownEndReader.Snapshots[CliKind.Claude] = new CliUsageSnapshot(
+                CliKind.Claude,
+                CliUsageAvailability.Available,
+                [new CliUsageWindow("Claude（5 小時）", 0, TimeSpan.FromHours(5), resetPoint, IsActiveCountdown: false)],
+                "讀取成功",
+                countdownEndNow.AddMinutes(16));
+
+            countdownEndTimeProvider.SetUtcNow(countdownEndNow.AddMinutes(16));
+            // 喚醒排程器評估
+            var countdownJob = (await countdownManager.GetJobsAsync()).Single();
+            await countdownManager.UpsertAsync(countdownJob);
+
+            var wakeDeadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < wakeDeadline && countdownEndRunner.CallCount < 1)
+            {
+                await Task.Delay(25);
+            }
+            Assert(countdownEndRunner.CallCount == 1, "倒數結束後，排程器應自動探測並喚醒已重置的 Claude。");
+            Assert(countdownEndReader.GetReadCount(CliKind.Claude) >= 2, "倒數結束與執行前/後應觸發額度讀取。");
+        }
     }
     finally
     {
@@ -1599,6 +1735,32 @@ internal sealed class CountingCliRunner : ICliRunner
 internal sealed class FakeCliUsageReader : ICliUsageReader
 {
     public Dictionary<CliKind, CliUsageSnapshot> Snapshots { get; } = [];
+    private readonly Dictionary<CliKind, CliUsageSnapshot> _latestSnapshots = [];
+    private readonly Dictionary<CliKind, int> _readCounts = [];
+
+    public int GetReadCount(CliKind kind)
+    {
+        lock (_readCounts)
+        {
+            return _readCounts.GetValueOrDefault(kind);
+        }
+    }
+
+    public CliUsageSnapshot? GetLatestSnapshot(CliKind kind)
+    {
+        lock (_latestSnapshots)
+        {
+            return _latestSnapshots.GetValueOrDefault(kind);
+        }
+    }
+
+    public IReadOnlyDictionary<CliKind, CliUsageSnapshot> GetLatestSnapshots()
+    {
+        lock (_latestSnapshots)
+        {
+            return new Dictionary<CliKind, CliUsageSnapshot>(_latestSnapshots);
+        }
+    }
 
     public Task<CliUsageSnapshot> ReadAsync(
         CliKind kind,
@@ -1606,17 +1768,32 @@ internal sealed class FakeCliUsageReader : ICliUsageReader
         string workingDirectory,
         CancellationToken cancellationToken = default)
     {
-        if (Snapshots.TryGetValue(kind, out var snapshot))
+        lock (_readCounts)
         {
-            return Task.FromResult(snapshot);
+            _readCounts[kind] = _readCounts.GetValueOrDefault(kind) + 1;
         }
 
-        return Task.FromResult(new CliUsageSnapshot(
-            kind,
-            CliUsageAvailability.Unavailable,
-            [],
-            "No fake data",
-            DateTimeOffset.Now));
+        CliUsageSnapshot result;
+        if (Snapshots.TryGetValue(kind, out var snapshot))
+        {
+            result = snapshot;
+        }
+        else
+        {
+            result = new CliUsageSnapshot(
+                kind,
+                CliUsageAvailability.Unavailable,
+                [],
+                "No fake data",
+                DateTimeOffset.Now);
+        }
+
+        lock (_latestSnapshots)
+        {
+            _latestSnapshots[kind] = result;
+        }
+
+        return Task.FromResult(result);
     }
 }
 
