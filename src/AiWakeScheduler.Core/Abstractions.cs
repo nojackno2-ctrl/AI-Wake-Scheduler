@@ -43,4 +43,9 @@ public interface ICliUsageReader
         CliProfile profile,
         string workingDirectory,
         CancellationToken cancellationToken = default);
+
+    CliUsageSnapshot? GetLatestSnapshot(CliKind kind) => null;
+
+    IReadOnlyDictionary<CliKind, CliUsageSnapshot> GetLatestSnapshots() =>
+        new Dictionary<CliKind, CliUsageSnapshot>();
 }

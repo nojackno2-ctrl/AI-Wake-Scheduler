@@ -67,7 +67,13 @@ public sealed class CliUsageReader : ICliUsageReader
         return false;
     }
 
-    public Task<CliUsageSnapshot> ReadAsync(
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<CliKind, CliUsageSnapshot> _latestSnapshots = new();
+
+    public CliUsageSnapshot? GetLatestSnapshot(CliKind kind) => _latestSnapshots.GetValueOrDefault(kind);
+
+    public IReadOnlyDictionary<CliKind, CliUsageSnapshot> GetLatestSnapshots() => _latestSnapshots;
+
+    public async Task<CliUsageSnapshot> ReadAsync(
         CliKind kind,
         CliProfile profile,
         string workingDirectory,
@@ -75,7 +81,7 @@ public sealed class CliUsageReader : ICliUsageReader
     {
         ArgumentNullException.ThrowIfNull(profile);
 
-        return kind switch
+        var snapshot = await (kind switch
         {
             CliKind.Codex => ReadCodexAsync(profile, workingDirectory, cancellationToken),
             CliKind.Antigravity or CliKind.AntigravityClaude => ReadAntigravityAsync(kind, cancellationToken),
@@ -86,12 +92,21 @@ public sealed class CliUsageReader : ICliUsageReader
                 [],
                 "目前 CLI 未提供可機器解析的剩餘額度介面。",
                 DateTimeOffset.Now))
-        };
+        }).ConfigureAwait(false);
+
+        _latestSnapshots[kind] = snapshot;
+        return snapshot;
     }
 
     private static readonly SemaphoreSlim _agyQueryLock = new(1, 1);
     private static (string Json, DateTimeOffset CachedAt)? _cachedAgyResponse;
     private static readonly TimeSpan AgyCacheDuration = TimeSpan.FromSeconds(3);
+    private readonly SemaphoreSlim _claudeQueryLock = new(1, 1);
+    private static readonly TimeSpan ClaudeCacheDuration = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ClaudeDefaultRateLimitBackoff = TimeSpan.FromMinutes(5);
+    private CliUsageSnapshot? _cachedClaudeSnapshot;
+    private DateTimeOffset _cachedClaudeAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _claudeRetryAfterAt = DateTimeOffset.MinValue;
 
     private static async Task<CliUsageSnapshot> ReadAntigravityAsync(
         CliKind kind,
@@ -482,12 +497,31 @@ public sealed class CliUsageReader : ICliUsageReader
         }
     }
 
-    private static async Task<CliUsageSnapshot> ReadClaudeAsync(CancellationToken cancellationToken)
+    private async Task<CliUsageSnapshot> ReadClaudeAsync(CancellationToken cancellationToken)
     {
         var observedAt = DateTimeOffset.Now;
+        var lockTaken = false;
 
         try
         {
+            await _claudeQueryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            lockTaken = true;
+            observedAt = DateTimeOffset.Now;
+
+            if (_cachedClaudeSnapshot is not null &&
+                observedAt - _cachedClaudeAt < ClaudeCacheDuration)
+            {
+                return RefreshClaudeSnapshot(
+                    _cachedClaudeSnapshot,
+                    observedAt,
+                    "讀取成功（共用最近 30 秒內的 Claude 查詢結果）");
+            }
+
+            if (observedAt < _claudeRetryAfterAt)
+            {
+                return CreateClaudeRateLimitedSnapshot(observedAt, _claudeRetryAfterAt);
+            }
+
             var credentialsPath = GetClaudeCredentialsPath();
             if (credentialsPath is null || !File.Exists(credentialsPath))
             {
@@ -514,13 +548,20 @@ public sealed class CliUsageReader : ICliUsageReader
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.TryAddWithoutValidation("anthropic-beta", ClaudeOAuthBeta);
                 request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.4.0");
+                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.5.0");
 
                 using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {
-                    return ParseClaudeUsage(responseJson, observedAt);
+                    var snapshot = ParseClaudeUsage(responseJson, observedAt);
+                    if (snapshot.Availability == CliUsageAvailability.Available)
+                    {
+                        _cachedClaudeSnapshot = snapshot;
+                        _cachedClaudeAt = observedAt;
+                        _claudeRetryAfterAt = DateTimeOffset.MinValue;
+                    }
+                    return snapshot;
                 }
 
                 // Claude Code 可能剛好在另一個程序輪替短效 access token；重新讀檔後重試一次。
@@ -538,6 +579,12 @@ public sealed class CliUsageReader : ICliUsageReader
                         CliKind.Claude,
                         "Claude Code 登入憑證已過期；請先開啟 Claude Code 或重新執行 claude auth login。",
                         observedAt);
+                }
+
+                if (response.StatusCode == HttpStatusCode.TooManyRequests)
+                {
+                    _claudeRetryAfterAt = ResolveClaudeRetryAfter(response, observedAt);
+                    return CreateClaudeRateLimitedSnapshot(observedAt, _claudeRetryAfterAt);
                 }
 
                 return Unavailable(
@@ -568,6 +615,63 @@ public sealed class CliUsageReader : ICliUsageReader
         {
             return Unavailable(CliKind.Claude, ex.Message, observedAt);
         }
+        finally
+        {
+            if (lockTaken)
+            {
+                _claudeQueryLock.Release();
+            }
+        }
+    }
+
+    private CliUsageSnapshot CreateClaudeRateLimitedSnapshot(
+        DateTimeOffset observedAt,
+        DateTimeOffset retryAfterAt)
+    {
+        var localRetryAt = retryAfterAt.ToLocalTime();
+        var message = $"Claude 額度查詢暫時受限（HTTP 429），將於 {localRetryAt:HH:mm:ss} 後再試。";
+        return _cachedClaudeSnapshot is null
+            ? Unavailable(CliKind.Claude, message, observedAt)
+            : RefreshClaudeSnapshot(_cachedClaudeSnapshot, observedAt, $"{message}目前沿用最近一次成功資料。");
+    }
+
+    private static CliUsageSnapshot RefreshClaudeSnapshot(
+        CliUsageSnapshot snapshot,
+        DateTimeOffset observedAt,
+        string message)
+    {
+        var windows = new CliUsageWindow[snapshot.Windows.Count];
+        for (var i = 0; i < snapshot.Windows.Count; i++)
+        {
+            var window = snapshot.Windows[i];
+            var isActiveCountdown = window.UsedPercent > 0 &&
+                window.ResetsAt is { } resetsAt &&
+                resetsAt > observedAt;
+            windows[i] = window with { IsActiveCountdown = isActiveCountdown };
+        }
+
+        return snapshot with
+        {
+            Windows = windows,
+            Message = message,
+            ObservedAt = observedAt
+        };
+    }
+
+    private static DateTimeOffset ResolveClaudeRetryAfter(
+        HttpResponseMessage response,
+        DateTimeOffset observedAt)
+    {
+        if (response.Headers.RetryAfter?.Date is { } retryDate && retryDate > observedAt)
+        {
+            return retryDate;
+        }
+        if (response.Headers.RetryAfter?.Delta is { } retryDelay && retryDelay > TimeSpan.Zero)
+        {
+            return observedAt + retryDelay;
+        }
+
+        return observedAt + ClaudeDefaultRateLimitBackoff;
     }
 
     private static string? GetClaudeCredentialsPath()
@@ -718,7 +822,7 @@ public sealed class CliUsageReader : ICliUsageReader
             var token = timeoutSource.Token;
 
             await process.StandardInput.WriteLineAsync(
-                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.4.0\"}}}")
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.5.0\"}}}")
                 .ConfigureAwait(false);
             await process.StandardInput.FlushAsync(token).ConfigureAwait(false);
 

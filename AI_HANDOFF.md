@@ -1,5 +1,65 @@
 # AI HANDOFF
 
+## 2026-08-22 v1.5.0 發布與 GitHub Release 完成（已提交並推送）
+
+- **使用者授權**：「上傳github並發布執行檔」。
+- **核心功能升級**：
+  1. **自動讀取流量時機重構**：
+     - **執行前**：啟動目標 CLI 前先校準最新流量與倒數狀態。
+     - **倒數結束時**：排程器將 CLI 倒數結束時刻納入自適應睡眠時間推算，倒數歸零當下背景自動醒來探測，若額度已重置則立即執行該 CLI。
+     - **未倒數時**：依設定間隔背景定時探測；若所有 CLI 都在倒數中則略過探測，避免不必要的 API 查詢。
+     - **執行完成後**：執行完畢自動讀取最新扣抵倒數，即時更新主視窗與表格倒數欄位。
+  2. **Claude 429 退避與防抖冷卻機制**：
+     - Claude OAuth 查詢加入單航班鎖與 30 秒成功快取。
+     - HTTP 429 優先遵守 `Retry-After` 退避（無標頭預設 5 分鐘），退避期間不重送請求，沿用最近成功快照。
+     - 排程器背景探測嚴格遵守使用者設定之 `QuotaAutoRefreshMinutes` 間隔。
+- **發布流程與產物**：
+  1. 版本號全面升級為 `v1.5.0`（`AiWakeScheduler.WinForms.csproj`、`installer/AI倒數喚醒.iss`、`build-installer.ps1`、`CliUsageReader.cs`、`README.md`）。
+  2. 執行 `build-installer.ps1`：Deterministic 測試 15/15 全數通過、Self-Contained win-x64 發布完成、Inno Setup 成功編譯出 `dist\AI倒數喚醒_Setup_v1.5.0_x64.exe`（48,619,278 bytes，SHA256: `2484E36818C8C218F386DC4907704A1BE8C633B8206143A88060DCB1BF2D8EAD`）。
+  3. Git 提交並推送到遠端 `origin/main`，建立並推送 Tag `v1.5.0`。
+  4. 透過 GitHub CLI 建立官方 Release `v1.5.0`，並成功上傳安裝包與校驗檔：`https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v1.5.0`。
+
+## 2026-08-21 自動讀取流量時機重構（執行前、倒數結束時、沒抓到倒數、執行後）完成並驗證
+
+- **使用者需求**：「自動讀取流量時機改成執行前，倒數結束時，沒抓到倒數」，並同意代理人建議之「執行完成後自動抓取新倒數」與「倒數結束 15 秒冷卻防抖重試」。
+- **核心實作架構**：
+  1. **執行前 (Before Execution)**：
+     - 在 `ScheduleManager.ExecuteJobAsync` 啟動目標 CLI 前，若最新快照非近期取得，先讀取目標 CLI 的最新流量與倒數狀態。
+  2. **倒數結束時 (Countdown Ended)**：
+     - `CalculateNextDelay`：將正在倒數之 CLI 的倒數結束時刻納入自適應睡眠時間推算，倒數歸零當下背景迴圈立刻醒來。
+     - `ScanAndStartDueJobsAsync`：當發現目標 CLI 倒數已歸零（`resetsAt <= now`），觸發探測，若額度已重置（未倒數）則立即執行該 CLI。
+     - `MainForm.UiTimerOnTick`：每秒 UI 迴圈監控各快照，若 `now >= resetsAt` 立即觸發 `RefreshUsageAsync(showStatus: false)`（附帶 15 秒每 CLI 防抖冷卻）。
+  3. **沒抓到倒數 (No Active Countdown)**：
+     - 若 CLI 處於 100% 額度或未捕捉到有效倒數，才依 `QuotaAutoRefreshMinutes` 週期進行背景探測。
+     - 若所有 CLI 皆處於正常有效倒數中，完全跳過盲目定期輪詢，徹底根除 API 負載與 HTTP 429。
+  4. **執行完成後 (After Execution)**：
+     - CLI 執行完畢後稍待 2 秒（測試環境 50ms）讓 API / Language Server 扣抵額度並開啟新一輪倒數，自動再次讀取最新倒數並觸發 `JobsChanged`，主視窗與表格即時同步最新倒數時間。
+  5. **快照存取與設定優化**：
+     - `ICliUsageReader` 新增 `GetLatestSnapshot` 與 `GetLatestSnapshots`，`CliUsageReader` 維護 `ConcurrentDictionary<CliKind, CliUsageSnapshot> _latestSnapshots`。
+     - `MainForm.RefreshGridAsync` 從 `UsageReader.GetLatestSnapshots()` 自動同步最新快照。
+     - `SettingsForm` 提示標籤更新為：「未倒數時的背景自動讀取間隔（分鐘，0 表示關閉；倒數中將於倒數結束自動讀取）：」。
+- **測試與驗證成果**：
+  1. Release 方案建置成功（0 警告、0 錯誤）。
+  2. Deterministic 測試 15/15 全數通過（含未倒數節流探測、倒數結束自動喚醒探測、執行前/後用量讀取）。
+  3. Real CLI 整合測試 15/15 全數通過。
+  4. `git status` 與程式碼差異檢查無任何多餘殘留。
+- **尚未執行**：未 commit、push、打包、安裝或發布（遵守 AGENTS.md 規則）。
+
+- **使用者回報**：主畫面 Claude 額度顯示「Claude 額度查詢失敗（HTTP 429）」。
+- **已確認根因**：`ScheduleManager` 的自適應迴圈最長每 30 秒醒一次；當存在已過每日首次時間的自動排程時，`ScanAndStartDueJobsAsync` 每輪都會重新呼叫所有啟用 CLI 的 `ICliUsageReader.ReadAsync`。這條背景探測沒有套用 `AppSettings.QuotaAutoRefreshMinutes`，因此 Claude `/api/oauth/usage` 可被每 30 秒查詢一次，另會疊加主視窗開啟、手動重讀及 UI 定時重讀，足以觸發 HTTP 429。
+- **目前程式行為**：`ReadClaudeAsync` 對 401 有權杖重讀，但沒有併發合併、成功快取、`Retry-After` 退避或 429 的最近成功資料降級。
+- **已完成程式變更**：
+  1. `ScheduleManager` 的自動排程額度探測改為遵守 `QuotaAutoRefreshMinutes`；同一設定間隔內即使 30 秒迴圈或排程異動多次喚醒，也不再重送額度查詢，0 表示停用這條背景額度探測。
+  2. `CliUsageReader` 的 Claude 查詢加入單航班鎖與 30 秒成功快取，避免主視窗與排程器同時對 `/api/oauth/usage` 發出重複請求。
+  3. Claude 收到 HTTP 429 時優先遵守 `Retry-After`，缺少標頭時預設退避 5 分鐘；退避期間不再連線重試，有最近成功快照時沿用並重新校準倒數狀態，否則顯示可再次嘗試的時間。
+  4. `ScheduleManagerQuotaAwareInterval` 新增迴歸情境：10 分鐘內多次喚醒排程器仍只允許一次 Claude 額度讀取，時間推進 11 分鐘後才允許第二次。
+- **驗證結果**：
+  1. Release 方案建置成功（0 警告、0 錯誤）。
+  2. 新增的 `ScheduleManagerQuotaAwareInterval` 迴歸情境已在 sandbox 通過；同輪另有 ArgumentTokenizer、CliCatalog、CliCommandBuilder、CliUsageReader、ScheduleCalculator、JsonFileStore 通過。
+  3. 完整 deterministic suite 在既有 `CliRunnerSafeArguments` 假 EXE 子程序案例再次卡住；前 7 組通過後已中止。嘗試改到主機環境重跑時，升權審核因本工作階段 Codex 用量上限拒絕，因此本輪不得宣稱 15/15 全數通過。
+  4. `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+- **尚未執行**：未停止或替換目前執行中的 v1.4.0 正式安裝版，未對真實 Claude API 重打查詢，未 commit、push、打包、安裝或發布。
+
 ## 2026-08-21 v1.4.0 發布與 GitHub Release 完成（已提交並推送）
 
 - **使用者授權**：「推送到github並發布執行檔」。
