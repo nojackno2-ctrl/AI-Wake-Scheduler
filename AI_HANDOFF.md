@@ -1,5 +1,86 @@
 # AI HANDOFF
 
+## 2026-08-21 排程清單各 CLI 獨立倒數與自訂背景定時配額讀取完成並驗證
+
+- **使用者要求**：「執行第1項（自動模式中，把每個CLI的倒數分開）」、「第2項也要，但是每個幾分鐘可以由使用者來決定，這個會消耗流量嗎?」。
+- **流量諮詢結論**：查詢配額完全為**純唯讀查詢**（Antigravity 本機 RPC、Claude OAuth 方案查詢、Codex 限制視窗），不呼叫模型亦不建立對話回合，**0 Token 消耗，不佔用任何對話額度**。
+- **修復與實作成果**：
+  1. **排程清單各 CLI 獨立倒數（`JobPresenter.cs` / `MainForm.cs`）**：
+     - 在 `JobPresenter.Countdown` 中傳入用量快照字典 `usageSnapshots`。
+     - 若排程為自動模式（`Interval`），「倒數計時」欄位將直接分開呈現各已勾選 CLI 的獨立倒數狀態（例如：`Gemini 02:03:15；Claude 04:15:00；Claude/GPT 未倒數`）。
+     - `MainForm` 之 `_uiTimer`（每 1 秒 tick）就地更新表格各 CLI 獨立倒數秒數，各 CLI 倒數即時跳動且互不干擾。
+  2. **使用者自訂背景自動讀取配額間隔（`Models.cs` / `SettingsForm.cs` / `MainForm.cs`）**：
+     - 在 `AppSettings` 中新增 `QuotaAutoRefreshMinutes` 欄位（預設 10 分鐘，0 代表關閉定時自動重讀）。
+     - 在「設定」視窗加入「背景自動讀取配額間隔（分鐘，0 表示關閉）：[ 10 ] 分鐘」數值控制項。
+     - 在 `MainForm.cs` 依據設定之分鐘數，於背景靜默自動執行 `RefreshUsageAsync(showStatus: false)` 定期校準伺服器端最新真實倒數。
+  3. **測試與驗證（`Program.cs`）**：
+     - 單元測試加入 `AppSettings.QuotaAutoRefreshMinutes` 複製、克隆與預設值 clamp 測試。
+     - Release 建置成功（0 警告、0 錯誤）。
+     - Deterministic 測試 15/15 全數通過（4 個假 CLI 平行完成 1213 ms）。
+     - Integration 測試 1/1 通過（本機 Antigravity Gemini 剩餘 76% 固定倒數至 11:28:18，Claude/GPT 剩餘 100% 正確識別為未倒數）。
+     - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。未 commit、push、發布。
+
+## 2026-08-21 讀取配額間隔 5 秒連續採樣與真實倒數判定完成並驗證
+
+- **使用者要求**：「我發現讀取流量程式會自己倒數，但實際上CLI根本沒有在倒數，為了避免這種狀況，讀取流量的時候應該要連續讀取好幾次，確認倒數真的有再跑」、「讀取配額間隔5秒」。
+- **問題根因與修復成果**：
+  1. **滑動時間戳記（Sliding Timestamp）辨識與多重取樣（`CliUsageReader.cs`）**：
+     - 當 CLI 模型完全未被使用（`UsedPercent == 0`，100% 額度）時，Language Server/API 每次查詢都會動態產生 `now + 5h` 的滑動時間戳記。
+     - 在 `CliUsageReader` 引入連續採樣驗證機制：取樣間隔明確設定為 **5 秒**（`Task.Delay(TimeSpan.FromSeconds(5))`），比對兩次取樣的 `resetsAt` 時間戳記。
+     - 若時間戳記隨查詢時刻滑動，或 `UsedPercent == 0`，判定為未倒數（`IsActiveCountdown = false`）。
+     - 只有在 `UsedPercent > 0` 且兩次採樣之 `resetsAt` 為固定時間戳記（差距 < 2 秒）且 `resetsAt > now` 時，才判定為真實倒數中（`IsActiveCountdown = true`）。
+  2. **介面顯示優化（`MainForm.cs`）**：
+     - 在 `FormatUsage` 中：
+       - `IsActiveCountdown == true`：顯示即時倒數計時（如 `剩餘 81%（02:03:18 後重置，08/21 11:28）`）。
+       - `IsActiveCountdown == false`（未倒數 / 額度充足）：顯示 `剩餘 100%（未倒數 / 額度充足）`，徹底消除無效之本地自體倒數。
+  3. **自動模式與判定輔助（`CliUsageReader.IsCountingDown`）**：
+     - `IsCountingDown` 直接檢驗 `targetWindow.IsActiveCountdown && targetWindow.ResetsAt > now`，確保自動排程在進行未倒數喚醒時精確判斷真正未倒數之 CLI。
+  4. **測試與驗證（`Program.cs`）**：
+     - 單元測試加入 `IsActiveCountdown` 固定與滑動時間戳記判定斷言。
+     - Release 建置成功（0 警告、0 錯誤）。
+     - Deterministic 測試 15/15 全數通過（4 個假 CLI 平行完成 1209 ms）。
+     - Integration 測試 1/1 通過（本機 Antigravity Gemini 剩餘 81% 固定倒數至 11:28:18，Claude/GPT 剩餘 100% 正確識別為未倒數）。
+     - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。未 commit、push、發布。
+
+## 2026-08-21 自動模式「流量未倒數立即執行」與「重新讀取倒數」按鈕修復完成並驗證
+
+- **使用者要求**：「重新讀取倒數按鈕消失了，在自動模式中，加入流量未倒數立即執行，立即執行是針對有被啟用的CLI，而且只針對沒有倒數的，而不是全部呼叫，而且是以當天首次呼叫時間之後才算」。
+- **修復與實作成果**：
+  1. **修復「重新讀取倒數」按鈕版面（`MainForm.cs`）**：
+     - 修復「剩餘流量與重置倒數」GroupBox 內部 TableLayoutPanel 因 4 組 CLI 多行文字排版擠壓導致按鈕被裁切消失的問題。
+     - TableLayoutPanel 設為 `RowCount = CliCatalog.All.Count + 1`、`Dock = DockStyle.Top`、`AutoSize = true`、`AutoSizeMode = GrowAndShrink`，為每列（含按鈕列）加入明確 `RowStyle(SizeType.AutoSize)`，GroupBox 也設定 `AutoSizeMode = GrowAndShrink`。按鈕文字統一定義為「重新讀取倒數」。
+  2. **抽象與額度狀態判斷（`Abstractions.cs` / `CliUsageReader.cs`）**：
+     - 定義 `ICliUsageReader` 介面，解耦 `ScheduleManager` 與實體用量讀取，支援可重現測試模擬。
+     - `CliUsageReader` 實作 `ICliUsageReader` 並新增 `IsCountingDown(CliUsageSnapshot? snapshot, DateTimeOffset now)`，支援 Claude 5 小時短期視窗、Antigravity Gemini、Antigravity Claude/GPT、Codex 精準倒數判定。
+  3. **排程引擎精準單獨喚醒（`ScheduleManager.cs`）**：
+     - 建構函式注入 `ICliUsageReader? usageReader`。
+     - 在自動模式（`Interval`）掃描時：若當前時間已過當日「首次喚醒時間」（`localNow >= todayInitial`），透過 `_usageReader` 探測排程勾選啟用（`job.Targets`）之 CLI。
+     - 若發現有啟用的 CLI `IsCountingDown == false`（未在倒數中或倒數已結束），**僅單獨將未倒數之 CLI 列表抽出執行**，絕不呼叫仍在倒數中之其他 CLI。
+     - 引入 `_lastQuotaWakeupByCli`（2 分鐘冷卻期）防止狀態更新延遲造成重複觸發；執行完成後合併更新 `job.LastResults`。
+  4. **組合根（`AppHost.cs`）**：
+     - 將 `usageReader` 注入 `ScheduleManager`。
+  5. **測試與驗證（`Program.cs`）**：
+     - `TestCliUsageReaderAsync`：加入 `IsCountingDown` 於未來時間、過去時間、Claude 5h/7d 視窗及錯誤狀態之完整斷言。
+     - 新增 `TestScheduleManagerQuotaAwareIntervalAsync` 單元測試：
+       - 驗證當日首次時間前（07:30 < 08:00）：未倒數亦不提前喚醒。
+       - 驗證當日首次時間後（08:30 > 08:00）：啟用 3 個 CLI（1 個倒數中、2 個未倒數），精準只喚醒未倒數的 2 個 CLI，且不呼叫倒數中的 CLI。
+  6. **驗證結果**：
+     - Release 建置成功（0 警告、0 錯誤）。
+     - Deterministic 測試 15/15 全數通過（含 4 個假 CLI 平行完成 1203 ms）。
+     - Integration 測試 1/1 通過（真實 Antigravity Gemini 剩餘 90%、Claude/GPT 剩餘 100% 讀取成功）。
+     - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。未 commit、push、發布。
+
+## 2026-08-21 Claude CLI 真實額度倒數讀取完成並驗證
+
+- **使用者要求**：「不管用什麼方法都要讀取道 claude 的倒數」。
+- 本機 `Claude Code 2.1.220` 已登入 Claude Pro；其原生執行檔明確包含唯讀查詢 `GET /api/oauth/usage`，以及 `five_hour`、`seven_day`、`resets_at` 等欄位。官方 Claude Code 文件亦確認 `/usage` 顯示方案用量與重置時間。
+- 已用本機 Claude Code 的 OAuth access token 對 `https://api.anthropic.com/api/oauth/usage` 實際唯讀驗證成功；回應同時包含五小時與七天視窗、使用百分比及精確重置時間。這證實舊有「Claude CLI 不支援機器讀取」判斷已過時。
+- `CliUsageReader` 已新增 Claude 分支：從 `%USERPROFILE%\.claude\.credentials.json`（亦支援 `CLAUDE_CONFIG_DIR`）唯讀載入短效 access token，帶 Bearer 與 `oauth-2025-04-20` 標頭查詢 Anthropic usage 端點；401 時會重讀一次本機權杖以接住 Claude Code 同步輪替，但不自行寫入或記錄任何認證資料。
+- 新增 `ParseClaudeUsage`，解析 `five_hour`、`seven_day` 及可選的 Opus／Sonnet／OAuth Apps／Cowork 七天視窗；單元測試固定驗證百分比、視窗長度、時區與錯誤回應，integration 測試加入真實 Claude 額度查詢。README 已同步移除舊有 Claude「不支援」說明。
+- Release build 成功（0 警告、0 錯誤）。第一次在 sandbox 內執行 deterministic tests 時，前 6 組（含新的 `CliUsageReader`）通過，之後再次卡在此環境既知的損毀 EXE 程序案例而無輸出，約 120 秒後手動終止；改在主機環境重跑後 14/14 全數通過，四個假 CLI 平行完成耗時 1258 ms。
+- 主機 integration 1/1 通過；產品程式實際讀得 Claude 五小時視窗剩餘 100%、重置 2026-08-21 11:19:59，以及七天視窗剩餘 74%、重置 2026-08-26 05:59:59。該輪 Antigravity 因抓不到 CSRF token 回傳 Unavailable，測試按既有設計不將其視為 Claude 功能失敗。
+- `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。未 commit、push、打包、安裝或發布。
+
 ## 2026-08-21 v1.3.1 發布與 GitHub Release 完成（已提交並推送）
 
 - **使用者要求**：「推送AI倒數喚醒並發布執行檔」-> 經使用者明確授權進行 Commit、Push、打包與 Release。

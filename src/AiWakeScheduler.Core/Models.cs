@@ -79,6 +79,7 @@ public sealed class AppSettings
     public bool MinimizeToTray { get; set; } = true;
     public bool TokenSaverMode { get; set; } = true;
     public int ExecutionTimeoutMinutes { get; set; } = 3;
+    public int QuotaAutoRefreshMinutes { get; set; } = 10;
     public Dictionary<CliKind, CliProfile> CliProfiles { get; set; } = CreateDefaultProfiles();
 
     public static AppSettings CreateDefault() => new();
@@ -93,6 +94,7 @@ public sealed class AppSettings
         destination.MinimizeToTray = MinimizeToTray;
         destination.TokenSaverMode = TokenSaverMode;
         destination.ExecutionTimeoutMinutes = ExecutionTimeoutMinutes;
+        destination.QuotaAutoRefreshMinutes = QuotaAutoRefreshMinutes;
 
         var profiles = new Dictionary<CliKind, CliProfile>(CliProfiles.Count);
         foreach (var pair in CliProfiles)
@@ -128,6 +130,7 @@ public sealed class AppSettings
         }
 
         ExecutionTimeoutMinutes = Math.Clamp(ExecutionTimeoutMinutes, 1, 120);
+        QuotaAutoRefreshMinutes = Math.Clamp(QuotaAutoRefreshMinutes, 0, 1440);
     }
 
     private static Dictionary<CliKind, CliProfile> CreateDefaultProfiles()

@@ -36,6 +36,7 @@ var deterministicTests = new (string Name, Func<Task> Run)[]
     ("ScheduleManagerRestartDoesNotRefire", TestScheduleManagerRestartDoesNotRefireAsync),
     ("ScheduleManagerCoalescesOverdueJobs", TestScheduleManagerCoalescesOverdueJobsAsync),
     ("ScheduleManagerAutoInterval", TestScheduleManagerAutoIntervalAsync),
+    ("ScheduleManagerQuotaAwareInterval", TestScheduleManagerQuotaAwareIntervalAsync),
     ("ScheduleManagerBoundariesAndState", TestScheduleManagerBoundariesAndStateAsync),
     ("InstallerContract", TestInstallerContractAsync)
 };
@@ -269,7 +270,7 @@ static Task TestInstallerContractAsync()
     return Task.CompletedTask;
 }
 
-static async Task TestCliUsageReaderAsync()
+static Task TestCliUsageReaderAsync()
 {
     var observedAt = new DateTimeOffset(2026, 8, 12, 8, 0, 0, TimeSpan.FromHours(8));
     var primaryReset = observedAt.AddHours(2).ToUnixTimeSeconds();
@@ -302,11 +303,33 @@ static async Task TestCliUsageReaderAsync()
         observedAt);
     Assert(error.Availability == CliUsageAvailability.Unavailable, "伺服器錯誤不可標示為可用額度。");
 
-    var unsupported = await new CliUsageReader().ReadAsync(
-        CliKind.Claude,
-        new CliProfile { Executable = "claude" },
-        Environment.CurrentDirectory);
-    Assert(unsupported.Availability == CliUsageAvailability.Unsupported, "沒有公開額度介面的 CLI 應明確標示不支援。");
+    var claudeResponse = """
+        {
+          "five_hour": {
+            "utilization": 7.4,
+            "resets_at": "2026-08-12T10:30:00+08:00"
+          },
+          "seven_day": {
+            "utilization": 26.0,
+            "resets_at": "2026-08-18T05:59:59+08:00"
+          },
+          "seven_day_opus": null,
+          "extra_usage": { "is_enabled": false }
+        }
+        """;
+    var claudeSnapshot = CliUsageReader.ParseClaudeUsage(claudeResponse, observedAt);
+    Assert(claudeSnapshot.Availability == CliUsageAvailability.Available, "Claude OAuth usage 回應應可解析。");
+    Assert(claudeSnapshot.Windows.Count == 2, "Claude 五小時與七天額度視窗都應保留。");
+    Assert(claudeSnapshot.Windows[0].UsedPercent == 7, "Claude utilization 應四捨五入為已使用百分比。");
+    Assert(claudeSnapshot.Windows[0].RemainingPercent == 93, "Claude 剩餘百分比應為 100 減 utilization。");
+    Assert(claudeSnapshot.Windows[0].Duration == TimeSpan.FromHours(5), "Claude 主要額度應標示五小時視窗。");
+    Assert(claudeSnapshot.Windows[0].ResetsAt?.Offset == TimeSpan.FromHours(8), "Claude 重置時間應保留原始時區。");
+    Assert(claudeSnapshot.Windows[1].Duration == TimeSpan.FromDays(7), "Claude 次要額度應標示七天視窗。");
+
+    var claudeError = CliUsageReader.ParseClaudeUsage(
+        "{\"error\":{\"message\":\"invalid bearer token\"}}",
+        observedAt);
+    Assert(claudeError.Availability == CliUsageAvailability.Unavailable, "Claude 錯誤回應不可標示為可用額度。");
 
     // Antigravity (Gemini 與 Claude/GPT 雙額度池解析測試)
     var agyResponse = """
@@ -349,6 +372,50 @@ static async Task TestCliUsageReaderAsync()
 
     var agyMissingPool = CliUsageReader.ParseAntigravityModelConfigs("{\"clientModelConfigs\":[]}", CliKind.Antigravity, observedAt);
     Assert(agyMissingPool.Availability == CliUsageAvailability.Unavailable, "缺少模型配額時應回傳 Unavailable。");
+
+    // 測試 IsCountingDown 判斷邏輯
+    var futureReset = observedAt.AddHours(3);
+    var pastReset = observedAt.AddHours(-1);
+
+    var countingDownSnapshot = new CliUsageSnapshot(
+        CliKind.Antigravity,
+        CliUsageAvailability.Available,
+        [new CliUsageWindow("Antigravity (Gemini)", 10, TimeSpan.FromHours(5), futureReset, IsActiveCountdown: true)],
+        "讀取成功",
+        observedAt);
+    Assert(CliUsageReader.IsCountingDown(countingDownSnapshot, observedAt), "真實倒數且重置時間在未來時應判定為倒數中。");
+
+    var slidingSnapshot = new CliUsageSnapshot(
+        CliKind.AntigravityClaude,
+        CliUsageAvailability.Available,
+        [new CliUsageWindow("Antigravity (Claude / GPT)", 0, TimeSpan.FromHours(5), futureReset, IsActiveCountdown: false)],
+        "讀取成功",
+        observedAt);
+    Assert(!CliUsageReader.IsCountingDown(slidingSnapshot, observedAt), "滑動時間戳記（未消耗額度）應判定為未倒數。");
+
+    var expiredSnapshot = new CliUsageSnapshot(
+        CliKind.Antigravity,
+        CliUsageAvailability.Available,
+        [new CliUsageWindow("Antigravity (Gemini)", 0, TimeSpan.FromHours(5), pastReset, IsActiveCountdown: false)],
+        "讀取成功",
+        observedAt);
+    Assert(!CliUsageReader.IsCountingDown(expiredSnapshot, observedAt), "重置時間在過去時應判定為未倒數。");
+
+    var claude5hPast7dFuture = new CliUsageSnapshot(
+        CliKind.Claude,
+        CliUsageAvailability.Available,
+        [
+            new CliUsageWindow("Claude（5 小時）", 0, TimeSpan.FromHours(5), pastReset, IsActiveCountdown: false),
+            new CliUsageWindow("Claude（7 天）", 20, TimeSpan.FromDays(7), futureReset.AddDays(4), IsActiveCountdown: true)
+        ],
+        "讀取成功",
+        observedAt);
+    Assert(!CliUsageReader.IsCountingDown(claude5hPast7dFuture, observedAt), "Claude 5小時已重置時即使7天仍在倒數也應判定為未倒數。");
+
+    Assert(!CliUsageReader.IsCountingDown(null, observedAt), "null snapshot 應判定為未倒數。");
+    Assert(!CliUsageReader.IsCountingDown(claudeError, observedAt), "Unavailable snapshot 應判定為未倒數。");
+
+    return Task.CompletedTask;
 }
 
 static async Task TestScheduleManagerRestartDoesNotRefireAsync()
@@ -1029,6 +1096,15 @@ static async Task TestScheduleManagerBoundariesAndStateAsync()
         await ThrowsAsync<InvalidOperationException>(() => manager.RunNowAsync(runningJobId));
         await ThrowsAsync<InvalidOperationException>(() => manager.UpsertAsync(runningState!));
         await ThrowsAsync<InvalidOperationException>(() => manager.DeleteAsync(runningJobId));
+
+        // 9. 驗證 AppSettings.QuotaAutoRefreshMinutes 預設值與 CopyTo / EnsureDefaults
+        var testSettings = new AppSettings { QuotaAutoRefreshMinutes = 30 };
+        var copiedSettings = testSettings.Clone();
+        Assert(copiedSettings.QuotaAutoRefreshMinutes == 30, "Clone / CopyTo 應複製 QuotaAutoRefreshMinutes。");
+
+        var invalidSettings = new AppSettings { QuotaAutoRefreshMinutes = -5 };
+        invalidSettings.EnsureDefaults();
+        Assert(invalidSettings.QuotaAutoRefreshMinutes == 0, "EnsureDefaults 應將負值 clamp 為 0。");
     }
     finally
     {
@@ -1150,7 +1226,7 @@ static async Task TestScheduleManagerAutoIntervalAsync()
             }
         ]);
 
-        await using (var lateBootManager = new ScheduleManager(store, lateBootRunner, () => settings, lateBootTimeProvider))
+        await using (var lateBootManager = new ScheduleManager(store, lateBootRunner, () => settings, timeProvider: lateBootTimeProvider))
         {
             await lateBootManager.InitializeAsync();
             var deadline = DateTime.UtcNow.AddSeconds(10);
@@ -1184,7 +1260,7 @@ static async Task TestScheduleManagerAutoIntervalAsync()
             }
         ]);
 
-        await using (var earlyBootManager = new ScheduleManager(store, earlyBootRunner, () => settings, earlyBootTimeProvider))
+        await using (var earlyBootManager = new ScheduleManager(store, earlyBootRunner, () => settings, timeProvider: earlyBootTimeProvider))
         {
             await earlyBootManager.InitializeAsync();
             await Task.Delay(500);
@@ -1192,6 +1268,123 @@ static async Task TestScheduleManagerAutoIntervalAsync()
             Assert(earlyBootRunner.CallCount == 0, "隔日 04:30 提早開機（未到 05:30）不應提前執行。");
             var earlyJob = (await earlyBootManager.GetJobsAsync()).Single(j => j.Id == earlyBootJobId);
             Assert(earlyJob.ScheduledAt.LocalDateTime == new DateTime(2026, 8, 19, 5, 30, 0), "排程時間應排定在今日 05:30。");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
+static async Task TestScheduleManagerQuotaAwareIntervalAsync()
+{
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        var paths = new AppDataPaths(Path.Combine(directory, "data"));
+        var store = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, () => []);
+        var settings = AppSettings.CreateDefault();
+        var initialWakeup = new TimeSpan(8, 0, 0);
+
+        // 1. 當日首次時間之前（07:30 < 08:00）：即便未倒數也不提前喚醒
+        var earlyNow = new DateTimeOffset(2026, 8, 21, 7, 30, 0, TimeSpan.FromHours(8));
+        var earlyTimeProvider = new FakeTimeProvider(earlyNow);
+        var earlyRunner = new CountingCliRunner();
+        var fakeUsageReader = new FakeCliUsageReader();
+
+        // 模擬三個 CLI：全部未在倒數中（例如 reset 在過去或 100% 額度）
+        fakeUsageReader.Snapshots[CliKind.Antigravity] = new CliUsageSnapshot(
+            CliKind.Antigravity,
+            CliUsageAvailability.Available,
+            [new CliUsageWindow("Antigravity (Gemini)", 0, TimeSpan.FromHours(5), earlyNow.AddHours(-1))],
+            "讀取成功",
+            earlyNow);
+        fakeUsageReader.Snapshots[CliKind.AntigravityClaude] = new CliUsageSnapshot(
+            CliKind.AntigravityClaude,
+            CliUsageAvailability.Available,
+            [new CliUsageWindow("Antigravity (Claude / GPT)", 0, TimeSpan.FromHours(5), earlyNow.AddHours(-1))],
+            "讀取成功",
+            earlyNow);
+        fakeUsageReader.Snapshots[CliKind.Claude] = new CliUsageSnapshot(
+            CliKind.Claude,
+            CliUsageAvailability.Available,
+            [
+                new CliUsageWindow("Claude（5 小時）", 0, TimeSpan.FromHours(5), earlyNow.AddHours(-1)),
+                new CliUsageWindow("Claude（7 天）", 20, TimeSpan.FromDays(7), earlyNow.AddDays(4))
+            ],
+            "讀取成功",
+            earlyNow);
+
+        var jobId = Guid.NewGuid();
+        await store.SaveAsync(
+        [
+            new ScheduledJob
+            {
+                Id = jobId,
+                Name = "流量未倒數測試",
+                ScheduledAt = new DateTimeOffset(2026, 8, 21, 13, 1, 0, TimeSpan.FromHours(8)),
+                InitialTimeOfDay = initialWakeup,
+                FinishedAt = new DateTimeOffset(2026, 8, 20, 23, 0, 0, TimeSpan.FromHours(8)),
+                Message = "早安",
+                WorkingDirectory = directory,
+                Targets = [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Claude],
+                Recurrence = ScheduleRecurrence.Interval
+            }
+        ]);
+
+        await using (var earlyManager = new ScheduleManager(store, earlyRunner, () => settings, fakeUsageReader, earlyTimeProvider))
+        {
+            await earlyManager.InitializeAsync();
+            await Task.Delay(400);
+            Assert(earlyRunner.CallCount == 0, "當日首次喚醒時間（08:00）之前，07:30 不應觸發未倒數立即執行。");
+        }
+
+        // 2. 當日首次時間之後（08:30 > 08:00）：
+        // 設定 Antigravity（Gemini）倒數中（resets at 13:30），
+        // AntigravityClaude 與 Claude 未倒數（resets at 07:30，已過期）。
+        // 預期：只喚醒 AntigravityClaude 與 Claude，不呼叫 Antigravity！
+        var lateNow = new DateTimeOffset(2026, 8, 21, 8, 30, 0, TimeSpan.FromHours(8));
+        var lateTimeProvider = new FakeTimeProvider(lateNow);
+        var lateRunner = new CountingCliRunner();
+
+        fakeUsageReader.Snapshots[CliKind.Antigravity] = new CliUsageSnapshot(
+            CliKind.Antigravity,
+            CliUsageAvailability.Available,
+            [new CliUsageWindow("Antigravity (Gemini)", 10, TimeSpan.FromHours(5), lateNow.AddHours(5), IsActiveCountdown: true)],
+            "讀取成功",
+            lateNow); // 倒數中！
+        fakeUsageReader.Snapshots[CliKind.AntigravityClaude] = new CliUsageSnapshot(
+            CliKind.AntigravityClaude,
+            CliUsageAvailability.Available,
+            [new CliUsageWindow("Antigravity (Claude / GPT)", 0, TimeSpan.FromHours(5), lateNow.AddHours(-1), IsActiveCountdown: false)],
+            "讀取成功",
+            lateNow); // 未倒數！
+        fakeUsageReader.Snapshots[CliKind.Claude] = new CliUsageSnapshot(
+            CliKind.Claude,
+            CliUsageAvailability.Available,
+            [
+                new CliUsageWindow("Claude（5 小時）", 0, TimeSpan.FromHours(5), lateNow.AddMinutes(-30), IsActiveCountdown: false), // 未倒數！
+                new CliUsageWindow("Claude（7 天）", 30, TimeSpan.FromDays(7), lateNow.AddDays(3), IsActiveCountdown: true)
+            ],
+            "讀取成功",
+            lateNow);
+
+        await using (var lateManager = new ScheduleManager(store, lateRunner, () => settings, fakeUsageReader, lateTimeProvider))
+        {
+            await lateManager.InitializeAsync();
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline && lateRunner.CallCount < 2)
+            {
+                await Task.Delay(25);
+            }
+
+            Assert(lateRunner.CallCount == 2, $"當日首次時間後，應只呼叫未倒數的 2 個 CLI，實際呼叫 {lateRunner.CallCount} 次。");
+            lock (lateRunner.ExecutedClis)
+            {
+                Assert(!lateRunner.ExecutedClis.Contains(CliKind.Antigravity), "處於倒數中的 Antigravity 不應被呼叫。");
+                Assert(lateRunner.ExecutedClis.Contains(CliKind.AntigravityClaude), "未倒數的 AntigravityClaude 應被呼叫。");
+                Assert(lateRunner.ExecutedClis.Contains(CliKind.Claude), "未倒數的 Claude 應被呼叫。");
+            }
         }
     }
     finally
@@ -1364,6 +1557,7 @@ static async Task ThrowsAsync<TException>(Func<Task> action) where TException : 
 internal sealed class CountingCliRunner : ICliRunner
 {
     private int _callCount;
+    public readonly List<CliKind> ExecutedClis = [];
 
     public int CallCount => Volatile.Read(ref _callCount);
 
@@ -1378,6 +1572,10 @@ internal sealed class CountingCliRunner : ICliRunner
         bool tokenSaverMode = true,
         CancellationToken cancellationToken = default)
     {
+        lock (ExecutedClis)
+        {
+            ExecutedClis.Add(kind);
+        }
         Interlocked.Increment(ref _callCount);
         LastTokenSaverMode = tokenSaverMode;
         return Task.FromResult(new CliRunResult
@@ -1396,6 +1594,30 @@ internal sealed class CountingCliRunner : ICliRunner
         string workingDirectory,
         CancellationToken cancellationToken = default) =>
         Task.FromResult(new CliProbeResult { Cli = kind, Succeeded = true, Summary = "fake" });
+}
+
+internal sealed class FakeCliUsageReader : ICliUsageReader
+{
+    public Dictionary<CliKind, CliUsageSnapshot> Snapshots { get; } = [];
+
+    public Task<CliUsageSnapshot> ReadAsync(
+        CliKind kind,
+        CliProfile profile,
+        string workingDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        if (Snapshots.TryGetValue(kind, out var snapshot))
+        {
+            return Task.FromResult(snapshot);
+        }
+
+        return Task.FromResult(new CliUsageSnapshot(
+            kind,
+            CliUsageAvailability.Unavailable,
+            [],
+            "No fake data",
+            DateTimeOffset.Now));
+    }
 }
 
 internal sealed class FakeTimeProvider : TimeProvider

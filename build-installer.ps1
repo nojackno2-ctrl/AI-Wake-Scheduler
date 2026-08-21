@@ -13,7 +13,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$expectedVersion = "1.3.1"
+$expectedVersion = "1.4.0"
 $projectFile = Join-Path $ScriptDir "src\AiWakeScheduler.WinForms\AiWakeScheduler.WinForms.csproj"
 $installerScript = (Get-ChildItem -Path (Join-Path $ScriptDir "installer") -Filter "*.iss" | Select-Object -First 1).FullName
 [xml]$projectXml = Get-Content -Raw -LiteralPath $projectFile

@@ -32,3 +32,15 @@ public interface ICliRunner
         string workingDirectory,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// CLI 額度與倒數讀取的抽象。排程管理器可藉此判斷個別 CLI 是否仍在倒數中。
+/// </summary>
+public interface ICliUsageReader
+{
+    Task<CliUsageSnapshot> ReadAsync(
+        CliKind kind,
+        CliProfile profile,
+        string workingDirectory,
+        CancellationToken cancellationToken = default);
+}

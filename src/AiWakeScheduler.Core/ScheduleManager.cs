@@ -22,8 +22,12 @@ public sealed class ScheduleManager : IAsyncDisposable
 
     private readonly IDataStore<List<ScheduledJob>> _jobStore;
     private readonly ICliRunner _cliRunner;
+    private readonly ICliUsageReader? _usageReader;
     private readonly Func<AppSettings> _settingsProvider;
     private readonly TimeProvider _time;
+
+    private readonly ConcurrentDictionary<CliKind, DateTimeOffset> _lastQuotaWakeupByCli = new();
+    private static readonly TimeSpan QuotaWakeupCooldown = TimeSpan.FromMinutes(2);
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     /// <summary>排程異動時用來立刻喚醒背景迴圈，不必等到下一個間隔。</summary>
@@ -39,11 +43,13 @@ public sealed class ScheduleManager : IAsyncDisposable
         IDataStore<List<ScheduledJob>> jobStore,
         ICliRunner cliRunner,
         Func<AppSettings> settingsProvider,
+        ICliUsageReader? usageReader = null,
         TimeProvider? timeProvider = null)
     {
         _jobStore = jobStore;
         _cliRunner = cliRunner;
         _settingsProvider = settingsProvider;
+        _usageReader = usageReader;
         _time = timeProvider ?? TimeProvider.System;
     }
 
@@ -260,8 +266,14 @@ public sealed class ScheduleManager : IAsyncDisposable
             _gate.Release();
         }
 
+        var now = Now;
+        for (var i = 0; i < execution.Targets.Count; i++)
+        {
+            _lastQuotaWakeupByCli[execution.Targets[i]] = now;
+        }
+
         RaiseJobsChanged();
-        StartExecution(execution, cancellationToken);
+        StartExecution(execution, execution.Targets, cancellationToken);
     }
 
     /// <summary>
@@ -327,8 +339,11 @@ public sealed class ScheduleManager : IAsyncDisposable
     /// </summary>
     private async Task<TimeSpan> ScanAndStartDueJobsAsync(CancellationToken cancellationToken)
     {
-        List<ScheduledJob>? dueJobs = null;
+        List<(ScheduledJob Job, IReadOnlyList<CliKind> Targets)>? dueJobs = null;
         TimeSpan nextDelay;
+
+        ScheduledJob? intervalJobToProbe = null;
+        AppSettings? settingsSnapshot = null;
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -338,9 +353,25 @@ public sealed class ScheduleManager : IAsyncDisposable
             for (var i = 0; i < _jobs.Count; i++)
             {
                 var job = _jobs[i];
-                if (job.Enabled && job.Status == ScheduleStatus.Pending && job.ScheduledAt <= now)
+                if (!job.Enabled || job.Status != ScheduleStatus.Pending)
                 {
-                    // 只有真的有東西到期時才配置清單，閒置掃描是零配置的。
+                    continue;
+                }
+
+                if (job.Recurrence == ScheduleRecurrence.Interval && _usageReader is not null && intervalJobToProbe is null)
+                {
+                    var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
+                    var localNow = now.LocalDateTime;
+                    var todayInitial = localNow.Date.Add(new TimeSpan(initialTime.Hours, initialTime.Minutes, 0));
+                    if (localNow >= todayInitial)
+                    {
+                        intervalJobToProbe = job.Clone();
+                        continue;
+                    }
+                }
+
+                if (job.ScheduledAt <= now)
+                {
                     (overdue ??= []).Add(job);
                 }
             }
@@ -364,7 +395,7 @@ public sealed class ScheduleManager : IAsyncDisposable
                     var job = overdue[i];
                     if (ReferenceEquals(job, primary))
                     {
-                        (dueJobs ??= []).Add(job.Clone());
+                        (dueJobs ??= []).Add((job.Clone(), job.Targets));
                         job.Status = ScheduleStatus.Running;
                         job.StartedAt = now;
                     }
@@ -383,6 +414,11 @@ public sealed class ScheduleManager : IAsyncDisposable
                 await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
             }
 
+            if (intervalJobToProbe is not null)
+            {
+                settingsSnapshot = _settingsProvider().Clone();
+            }
+
             nextDelay = CalculateNextDelay(now);
         }
         finally
@@ -390,15 +426,111 @@ public sealed class ScheduleManager : IAsyncDisposable
             _gate.Release();
         }
 
-        if (dueJobs is null)
+        if (dueJobs is not null)
         {
+            RaiseJobsChanged();
+            for (var i = 0; i < dueJobs.Count; i++)
+            {
+                var entry = dueJobs[i];
+                var now = Now;
+                for (var t = 0; t < entry.Targets.Count; t++)
+                {
+                    _lastQuotaWakeupByCli[entry.Targets[t]] = now;
+                }
+                StartExecution(entry.Job, entry.Targets, cancellationToken);
+            }
             return nextDelay;
         }
 
-        RaiseJobsChanged();
-        for (var i = 0; i < dueJobs.Count; i++)
+        // 自動模式「流量未倒數立即執行」：在當日首次呼叫時間之後，針對有被啟用的 CLI 中未倒數者立即執行
+        if (intervalJobToProbe is not null && _usageReader is not null && settingsSnapshot is not null)
         {
-            StartExecution(dueJobs[i], cancellationToken);
+            var now = Now;
+            var nonCountingDown = new List<CliKind>();
+
+            for (var i = 0; i < intervalJobToProbe.Targets.Count; i++)
+            {
+                var kind = intervalJobToProbe.Targets[i];
+                if (_lastQuotaWakeupByCli.TryGetValue(kind, out var lastWake) && now - lastWake < QuotaWakeupCooldown)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var profile = settingsSnapshot.CliProfiles.TryGetValue(kind, out var p) ? p.Clone() : new CliProfile();
+                    var snapshot = await _usageReader.ReadAsync(
+                        kind,
+                        profile,
+                        intervalJobToProbe.WorkingDirectory,
+                        cancellationToken).ConfigureAwait(false);
+
+                    if (snapshot.Availability == CliUsageAvailability.Available)
+                    {
+                        if (!CliUsageReader.IsCountingDown(snapshot, now))
+                        {
+                            nonCountingDown.Add(kind);
+                        }
+                    }
+                }
+                catch
+                {
+                    // 忽略個別 CLI 額度探測異常
+                }
+            }
+
+            if (nonCountingDown.Count > 0)
+            {
+                ScheduledJob? jobToStart = null;
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var stored = _jobs.SingleOrDefault(j => j.Id == intervalJobToProbe.Id);
+                    if (stored is { Enabled: true, Status: ScheduleStatus.Pending })
+                    {
+                        stored.Status = ScheduleStatus.Running;
+                        stored.StartedAt = now;
+                        jobToStart = stored.Clone();
+                        await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+
+                if (jobToStart is not null)
+                {
+                    for (var i = 0; i < nonCountingDown.Count; i++)
+                    {
+                        _lastQuotaWakeupByCli[nonCountingDown[i]] = now;
+                    }
+
+                    RaiseJobsChanged();
+                    StartExecution(jobToStart, nonCountingDown, cancellationToken);
+                }
+            }
+            else if (intervalJobToProbe.ScheduledAt <= now)
+            {
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    var stored = _jobs.SingleOrDefault(j => j.Id == intervalJobToProbe.Id);
+                    if (stored is { Enabled: true, Status: ScheduleStatus.Pending } && stored.ScheduledAt <= now)
+                    {
+                        var initialTime = stored.InitialTimeOfDay ?? stored.ScheduledAt.LocalDateTime.TimeOfDay;
+                        stored.ScheduledAt = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialTime, now);
+                        stored.FinishedAt = now;
+                        await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+
+                RaiseJobsChanged();
+            }
         }
 
         return nextDelay;
@@ -425,10 +557,10 @@ public sealed class ScheduleManager : IAsyncDisposable
         return shortest;
     }
 
-    private void StartExecution(ScheduledJob job, CancellationToken cancellationToken)
+    private void StartExecution(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken)
     {
         var id = job.Id;
-        var task = ExecuteJobAsync(job, cancellationToken);
+        var task = ExecuteJobAsync(job, targets, cancellationToken);
         _executions[id] = task;
         _ = task.ContinueWith(
             _ => _executions.TryRemove(id, out Task? _),
@@ -437,7 +569,7 @@ public sealed class ScheduleManager : IAsyncDisposable
             TaskScheduler.Default);
     }
 
-    private async Task ExecuteJobAsync(ScheduledJob job, CancellationToken cancellationToken)
+    private async Task ExecuteJobAsync(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken)
     {
         try
         {
@@ -447,10 +579,10 @@ public sealed class ScheduleManager : IAsyncDisposable
 
             // 先把所有 Task 具現化，確保每個選定的 CLI 都獨立啟動；
             // Task.WhenAll 只負責等待完成，不會讓程序變成循序執行。
-            var runs = new Task<CliRunResult>[job.Targets.Count];
-            for (var i = 0; i < job.Targets.Count; i++)
+            var runs = new Task<CliRunResult>[targets.Count];
+            for (var i = 0; i < targets.Count; i++)
             {
-                var target = job.Targets[i];
+                var target = targets[i];
                 runs[i] = _cliRunner.RunAsync(
                     target,
                     settings.CliProfiles[target].Clone(),
@@ -462,13 +594,13 @@ public sealed class ScheduleManager : IAsyncDisposable
             }
 
             var results = await Task.WhenAll(runs).ConfigureAwait(false);
-            await CompleteJobAsync(job.Id, results).ConfigureAwait(false);
+            await CompleteJobAsync(job.Id, results, targets).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             try
             {
-                await CompleteJobAsync(job.Id, results: null).ConfigureAwait(false);
+                await CompleteJobAsync(job.Id, results: null, targets).ConfigureAwait(false);
             }
             catch
             {
@@ -483,7 +615,7 @@ public sealed class ScheduleManager : IAsyncDisposable
     /// 收尾一次執行：寫回結果並排到下一個每日時點。
     /// <paramref name="results"/> 為 null 代表執行過程擲出例外。
     /// </summary>
-    private async Task CompleteJobAsync(Guid jobId, CliRunResult[]? results)
+    private async Task CompleteJobAsync(Guid jobId, CliRunResult[]? results, IReadOnlyList<CliKind> targets)
     {
         await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
@@ -501,9 +633,16 @@ public sealed class ScheduleManager : IAsyncDisposable
 
             var now = Now;
             stored.FinishedAt = now;
+
             if (results is not null)
             {
-                stored.LastResults = [.. results];
+                var existingResults = new List<CliRunResult>(stored.LastResults);
+                foreach (var result in results)
+                {
+                    existingResults.RemoveAll(r => r.Cli == result.Cli);
+                    existingResults.Add(result);
+                }
+                stored.LastResults = existingResults;
             }
 
             if (stored.Enabled)
