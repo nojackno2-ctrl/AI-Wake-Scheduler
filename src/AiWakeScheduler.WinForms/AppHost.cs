@@ -46,7 +46,7 @@ internal sealed class AppHost : IAsyncDisposable
         var jobStore = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, static () => []);
         var runner = new CliRunner(paths);
         var usageReader = new CliUsageReader();
-        var manager = new ScheduleManager(jobStore, runner, () => settings);
+        var manager = new ScheduleManager(jobStore, runner, () => settings, usageReader);
 
         var host = new AppHost(paths, settingsStore, jobStore, settings, runner, usageReader, manager);
         await manager.InitializeAsync(cancellationToken).ConfigureAwait(false);

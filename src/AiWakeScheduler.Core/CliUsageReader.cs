@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -17,7 +19,8 @@ public sealed record CliUsageWindow(
     string Name,
     int UsedPercent,
     TimeSpan? Duration,
-    DateTimeOffset? ResetsAt)
+    DateTimeOffset? ResetsAt,
+    bool IsActiveCountdown = false)
 {
     public int RemainingPercent => Math.Clamp(100 - UsedPercent, 0, 100);
 }
@@ -32,12 +35,37 @@ public sealed record CliUsageSnapshot(
 
 /// <summary>
 /// 讀取 CLI 帳戶額度。Codex 使用官方 app-server 的
-/// account/rateLimits/read；其他 CLI 若沒有公開、可機器解析的介面，
-/// 明確回傳 Unsupported，絕不以排程時間推測帳戶額度。
+/// account/rateLimits/read；Claude 使用 Claude Code 本身查詢 /api/oauth/usage
+/// 時採用的本機 OAuth 憑證；絕不以排程時間推測帳戶額度。
 /// </summary>
-public sealed class CliUsageReader
+public sealed class CliUsageReader : ICliUsageReader
 {
     private static readonly TimeSpan QueryTimeout = TimeSpan.FromSeconds(15);
+    private const string ClaudeUsageEndpoint = "https://api.anthropic.com/api/oauth/usage";
+    private const string ClaudeOAuthBeta = "oauth-2025-04-20";
+
+    /// <summary>
+    /// 判斷指定 CLI 的用量快照是否正處於有效的額度重置倒數中。
+    /// 若額度未處於倒數狀態、倒數時間已過或無有效倒數時間戳記，傳回 false。
+    /// </summary>
+    public static bool IsCountingDown(CliUsageSnapshot? snapshot, DateTimeOffset now)
+    {
+        if (snapshot is null || snapshot.Availability != CliUsageAvailability.Available || snapshot.Windows.Count == 0)
+        {
+            return false;
+        }
+
+        // 對於 Claude，優先檢查 5 小時短週期額度視窗；其餘 CLI 取主要視窗
+        var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
+            ?? snapshot.Windows[0];
+
+        if (targetWindow.IsActiveCountdown && targetWindow.ResetsAt is { } resetsAt)
+        {
+            return resetsAt > now;
+        }
+
+        return false;
+    }
 
     public Task<CliUsageSnapshot> ReadAsync(
         CliKind kind,
@@ -51,6 +79,7 @@ public sealed class CliUsageReader
         {
             CliKind.Codex => ReadCodexAsync(profile, workingDirectory, cancellationToken),
             CliKind.Antigravity or CliKind.AntigravityClaude => ReadAntigravityAsync(kind, cancellationToken),
+            CliKind.Claude => ReadClaudeAsync(cancellationToken),
             _ => Task.FromResult(new CliUsageSnapshot(
                 kind,
                 CliUsageAvailability.Unsupported,
@@ -107,7 +136,7 @@ public sealed class CliUsageReader
                         return Unavailable(kind, "無法偵測到 Antigravity Language Server 監聽連接埠。", observedAt);
                     }
 
-                    // 3. 透過 HttpClient 呼叫 RPC
+                    // 3. 透過 HttpClient 呼叫 RPC（進行連續採樣驗證以確認倒數是否真實存在）
                     using var handler = new HttpClientHandler
                     {
                         ServerCertificateCustomValidationCallback = (_, _, _, _) => true
@@ -117,32 +146,41 @@ public sealed class CliUsageReader
                         Timeout = TimeSpan.FromSeconds(5)
                     };
 
-                    using var requestMessage = new HttpRequestMessage(
-                        HttpMethod.Post,
-                        $"https://127.0.0.1:{ports[0]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
-                    {
-                        Content = new StringContent("{}", Encoding.UTF8, "application/json")
-                    };
-                    requestMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
+                    var sample1 = await QueryAntigravityRpcAsync(client, ports, csrfToken, cancellationToken).ConfigureAwait(false);
+                    var snapshot1 = ParseAntigravityModelConfigs(sample1, kind, observedAt);
 
-                    try
+                    // 若第一次採樣判定處於倒數中（UsedPercent > 0 且 resetsAt > now），間隔 5 秒進行第二次採樣比對是否為固定時間戳記
+                    if (snapshot1.Availability == CliUsageAvailability.Available &&
+                        snapshot1.Windows.Count > 0 &&
+                        snapshot1.Windows[0].IsActiveCountdown &&
+                        snapshot1.Windows[0].ResetsAt is { } reset1)
                     {
-                        using var response = await client.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
-                        responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (Exception) when (ports.Count > 1)
-                    {
-                        using var retryMessage = new HttpRequestMessage(
-                            HttpMethod.Post,
-                            $"https://127.0.0.1:{ports[1]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
+                        try
                         {
-                            Content = new StringContent("{}", Encoding.UTF8, "application/json")
-                        };
-                        retryMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
-                        using var response = await client.SendAsync(retryMessage, cancellationToken).ConfigureAwait(false);
-                        responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                            await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                            var sample2 = await QueryAntigravityRpcAsync(client, ports, csrfToken, cancellationToken).ConfigureAwait(false);
+                            var snapshot2 = ParseAntigravityModelConfigs(sample2, kind, DateTimeOffset.Now);
+                            if (snapshot2.Availability == CliUsageAvailability.Available && snapshot2.Windows.Count > 0)
+                            {
+                                var w2 = snapshot2.Windows[0];
+                                var isFixed = w2.ResetsAt is { } reset2 &&
+                                    Math.Abs((reset2 - reset1).TotalSeconds) < 2.0;
+
+                                var finalWindows = new List<CliUsageWindow>
+                                {
+                                    new(w2.Name, w2.UsedPercent, w2.Duration, isFixed ? w2.ResetsAt : null, isFixed && w2.UsedPercent > 0 && w2.ResetsAt > DateTimeOffset.Now)
+                                };
+                                responseJson = sample2;
+                                _cachedAgyResponse = (responseJson, DateTimeOffset.Now);
+                                return new CliUsageSnapshot(kind, CliUsageAvailability.Available, finalWindows, "讀取成功", DateTimeOffset.Now);
+                            }
+                        }
+                        catch
+                        {
+                        }
                     }
 
+                    responseJson = sample1;
                     _cachedAgyResponse = (responseJson, DateTimeOffset.Now);
                 }
             }
@@ -164,6 +202,39 @@ public sealed class CliUsageReader
         catch (Exception ex)
         {
             return Unavailable(kind, $"Antigravity 額度查詢失敗：{ex.Message}", observedAt);
+        }
+    }
+
+    private static async Task<string> QueryAntigravityRpcAsync(
+        HttpClient client,
+        IReadOnlyList<int> ports,
+        string csrfToken,
+        CancellationToken cancellationToken)
+    {
+        using var requestMessage = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"https://127.0.0.1:{ports[0]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
+        {
+            Content = new StringContent("{}", Encoding.UTF8, "application/json")
+        };
+        requestMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
+
+        try
+        {
+            using var response = await client.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception) when (ports.Count > 1)
+        {
+            using var retryMessage = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"https://127.0.0.1:{ports[1]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
+            {
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            };
+            retryMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
+            using var response = await client.SendAsync(retryMessage, cancellationToken).ConfigureAwait(false);
+            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -396,7 +467,9 @@ public sealed class CliUsageReader
                         }
                     }
 
-                    var window = new CliUsageWindow(windowName, Math.Clamp(usedPercent, 0, 100), null, resetsAt);
+                    var clampedUsed = Math.Clamp(usedPercent, 0, 100);
+                    var isActiveCountdown = clampedUsed > 0 && resetsAt.HasValue && resetsAt.Value > observedAt;
+                    var window = new CliUsageWindow(windowName, clampedUsed, null, resetsAt, isActiveCountdown);
                     return new CliUsageSnapshot(kind, CliUsageAvailability.Available, [window], "讀取成功", observedAt);
                 }
             }
@@ -407,6 +480,187 @@ public sealed class CliUsageReader
         {
             return Unavailable(kind, $"Antigravity 回應 JSON 解析失敗：{ex.Message}", observedAt);
         }
+    }
+
+    private static async Task<CliUsageSnapshot> ReadClaudeAsync(CancellationToken cancellationToken)
+    {
+        var observedAt = DateTimeOffset.Now;
+
+        try
+        {
+            var credentialsPath = GetClaudeCredentialsPath();
+            if (credentialsPath is null || !File.Exists(credentialsPath))
+            {
+                return Unavailable(
+                    CliKind.Claude,
+                    "找不到 Claude Code 登入憑證，請先執行 claude auth login。",
+                    observedAt);
+            }
+
+            var accessToken = await ReadClaudeAccessTokenAsync(credentialsPath, cancellationToken).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                return Unavailable(
+                    CliKind.Claude,
+                    "Claude Code 尚未以 Claude 訂閱帳號登入，請先執行 claude auth login。",
+                    observedAt);
+            }
+
+            using var client = new HttpClient { Timeout = QueryTimeout };
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, ClaudeUsageEndpoint);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+                request.Headers.TryAddWithoutValidation("anthropic-beta", ClaudeOAuthBeta);
+                request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.4.0");
+
+                using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                var responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    return ParseClaudeUsage(responseJson, observedAt);
+                }
+
+                // Claude Code 可能剛好在另一個程序輪替短效 access token；重新讀檔後重試一次。
+                if (response.StatusCode == HttpStatusCode.Unauthorized && attempt == 0)
+                {
+                    var refreshedToken = await ReadClaudeAccessTokenAsync(credentialsPath, cancellationToken).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(refreshedToken) &&
+                        !string.Equals(refreshedToken, accessToken, StringComparison.Ordinal))
+                    {
+                        accessToken = refreshedToken;
+                        continue;
+                    }
+
+                    return Unavailable(
+                        CliKind.Claude,
+                        "Claude Code 登入憑證已過期；請先開啟 Claude Code 或重新執行 claude auth login。",
+                        observedAt);
+                }
+
+                return Unavailable(
+                    CliKind.Claude,
+                    $"Claude 額度查詢失敗（HTTP {(int)response.StatusCode}）。",
+                    observedAt);
+            }
+
+            return Unavailable(CliKind.Claude, "Claude 額度查詢失敗。", observedAt);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Unavailable(CliKind.Claude, "讀取 Claude 額度逾時。", observedAt);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (JsonException ex)
+        {
+            return Unavailable(CliKind.Claude, $"Claude 額度 JSON 解析失敗：{ex.Message}", observedAt);
+        }
+        catch (HttpRequestException ex)
+        {
+            return Unavailable(CliKind.Claude, $"無法連線至 Claude 額度服務：{ex.Message}", observedAt);
+        }
+        catch (Exception ex)
+        {
+            return Unavailable(CliKind.Claude, ex.Message, observedAt);
+        }
+    }
+
+    private static string? GetClaudeCredentialsPath()
+    {
+        var configuredDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        if (!string.IsNullOrWhiteSpace(configuredDirectory))
+        {
+            return Path.Combine(Environment.ExpandEnvironmentVariables(configuredDirectory), ".credentials.json");
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrWhiteSpace(userProfile)
+            ? null
+            : Path.Combine(userProfile, ".claude", ".credentials.json");
+    }
+
+    private static async Task<string?> ReadClaudeAccessTokenAsync(
+        string credentialsPath,
+        CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(
+            credentialsPath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4096,
+            useAsync: true);
+        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("claudeAiOauth", out var oauth) || oauth.ValueKind != JsonValueKind.Object ||
+            !oauth.TryGetProperty("accessToken", out var token) || token.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        return token.GetString();
+    }
+
+    /// <summary>解析 Claude Code /api/oauth/usage 的 JSON 回應，供測試與協定更新驗證。</summary>
+    public static CliUsageSnapshot ParseClaudeUsage(string json, DateTimeOffset observedAt)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        if (root.TryGetProperty("error", out var error))
+        {
+            var message = error.ValueKind == JsonValueKind.Object &&
+                          error.TryGetProperty("message", out var errorMessage)
+                ? errorMessage.GetString()
+                : error.GetRawText();
+            return Unavailable(CliKind.Claude, $"Claude 額度查詢失敗：{message}", observedAt);
+        }
+
+        var windows = new List<CliUsageWindow>();
+        AddClaudeWindow(windows, root, "five_hour", "Claude（5 小時）", TimeSpan.FromHours(5), observedAt);
+        AddClaudeWindow(windows, root, "seven_day", "Claude（7 天）", TimeSpan.FromDays(7), observedAt);
+        AddClaudeWindow(windows, root, "seven_day_opus", "Claude Opus（7 天）", TimeSpan.FromDays(7), observedAt);
+        AddClaudeWindow(windows, root, "seven_day_sonnet", "Claude Sonnet（7 天）", TimeSpan.FromDays(7), observedAt);
+        AddClaudeWindow(windows, root, "seven_day_oauth_apps", "Claude OAuth Apps（7 天）", TimeSpan.FromDays(7), observedAt);
+        AddClaudeWindow(windows, root, "seven_day_cowork", "Claude Cowork（7 天）", TimeSpan.FromDays(7), observedAt);
+
+        return windows.Count == 0
+            ? Unavailable(CliKind.Claude, "Claude 已回應，但目前沒有可顯示的額度視窗。", observedAt)
+            : new CliUsageSnapshot(CliKind.Claude, CliUsageAvailability.Available, windows, "讀取成功", observedAt);
+    }
+
+    private static void AddClaudeWindow(
+        List<CliUsageWindow> destination,
+        JsonElement root,
+        string propertyName,
+        string displayName,
+        TimeSpan duration,
+        DateTimeOffset observedAt)
+    {
+        if (!root.TryGetProperty(propertyName, out var window) || window.ValueKind != JsonValueKind.Object ||
+            !window.TryGetProperty("utilization", out var utilizationElement) ||
+            !utilizationElement.TryGetDouble(out var utilization))
+        {
+            return;
+        }
+
+        DateTimeOffset? resetsAt = null;
+        if (window.TryGetProperty("resets_at", out var resetElement) &&
+            resetElement.ValueKind == JsonValueKind.String &&
+            DateTimeOffset.TryParse(resetElement.GetString(), out var parsedReset))
+        {
+            resetsAt = parsedReset;
+        }
+
+        var usedPercent = (int)Math.Round(utilization, MidpointRounding.AwayFromZero);
+        var clampedUsed = Math.Clamp(usedPercent, 0, 100);
+        var isActiveCountdown = clampedUsed > 0 && resetsAt.HasValue && resetsAt.Value > observedAt;
+        destination.Add(new CliUsageWindow(displayName, clampedUsed, duration, resetsAt, isActiveCountdown));
     }
 
     private static async Task<CliUsageSnapshot> ReadCodexAsync(
@@ -464,7 +718,7 @@ public sealed class CliUsageReader
             var token = timeoutSource.Token;
 
             await process.StandardInput.WriteLineAsync(
-                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.3.1\"}}}")
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.4.0\"}}}")
                 .ConfigureAwait(false);
             await process.StandardInput.FlushAsync(token).ConfigureAwait(false);
 
@@ -534,13 +788,13 @@ public sealed class CliUsageReader
         {
             foreach (var bucket in byId.EnumerateObject())
             {
-                AddBucketWindows(windows, bucket.Value, bucket.Name);
+                AddBucketWindows(windows, bucket.Value, bucket.Name, observedAt);
             }
         }
 
         if (windows.Count == 0 && result.TryGetProperty("rateLimits", out var legacy) && legacy.ValueKind == JsonValueKind.Object)
         {
-            AddBucketWindows(windows, legacy, "Codex");
+            AddBucketWindows(windows, legacy, "Codex", observedAt);
         }
 
         return windows.Count == 0
@@ -548,14 +802,14 @@ public sealed class CliUsageReader
             : new CliUsageSnapshot(CliKind.Codex, CliUsageAvailability.Available, windows, "讀取成功", observedAt);
     }
 
-    private static void AddBucketWindows(List<CliUsageWindow> destination, JsonElement bucket, string fallbackName)
+    private static void AddBucketWindows(List<CliUsageWindow> destination, JsonElement bucket, string fallbackName, DateTimeOffset observedAt)
     {
         var bucketName = GetString(bucket, "limitName") ?? GetString(bucket, "limitId") ?? fallbackName;
-        AddWindow(destination, bucket, "primary", bucketName);
-        AddWindow(destination, bucket, "secondary", $"{bucketName}（次要）");
+        AddWindow(destination, bucket, "primary", bucketName, observedAt);
+        AddWindow(destination, bucket, "secondary", $"{bucketName}（次要）", observedAt);
     }
 
-    private static void AddWindow(List<CliUsageWindow> destination, JsonElement bucket, string propertyName, string name)
+    private static void AddWindow(List<CliUsageWindow> destination, JsonElement bucket, string propertyName, string name, DateTimeOffset observedAt)
     {
         if (!bucket.TryGetProperty(propertyName, out var window) || window.ValueKind != JsonValueKind.Object ||
             !window.TryGetProperty("usedPercent", out var usedElement) || !usedElement.TryGetInt32(out var usedPercent))
@@ -584,7 +838,9 @@ public sealed class CliUsageReader
             }
         }
 
-        destination.Add(new CliUsageWindow(name, Math.Clamp(usedPercent, 0, 100), duration, resetsAt));
+        var clampedUsed = Math.Clamp(usedPercent, 0, 100);
+        var isActiveCountdown = clampedUsed > 0 && resetsAt.HasValue && resetsAt.Value > observedAt;
+        destination.Add(new CliUsageWindow(name, clampedUsed, duration, resetsAt, isActiveCountdown));
     }
 
     private static string? GetString(JsonElement element, string propertyName) =>

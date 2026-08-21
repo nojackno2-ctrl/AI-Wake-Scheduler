@@ -41,6 +41,7 @@ internal sealed class MainForm : Form
     private int _refreshRequested;
     private bool _refreshDeferred;
     private string _lastClockText = string.Empty;
+    private DateTimeOffset _lastUsageRefreshTime = DateTimeOffset.MinValue;
 
     public MainForm(AppHost host, bool startMinimized)
     {
@@ -377,10 +378,18 @@ internal sealed class MainForm : Form
             Text = "剩餘流量與重置倒數",
             Dock = DockStyle.Fill,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Margin = new Padding(0, 8, 0, 8)
         };
         AppTheme.StyleGroup(group);
-        var table = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2 };
+        var table = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            RowCount = CliCatalog.All.Count + 1
+        };
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
@@ -408,8 +417,9 @@ internal sealed class MainForm : Form
             row++;
         }
 
-        _refreshUsageButton = ActionButton("重新讀取額度", RefreshUsageOnClick);
-        _refreshUsageButton.Margin = new Padding(0, 7, 0, 0);
+        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _refreshUsageButton = ActionButton("重新讀取倒數", RefreshUsageOnClick);
+        _refreshUsageButton.Margin = new Padding(0, 8, 0, 4);
         table.Controls.Add(_refreshUsageButton, 0, row);
         table.SetColumnSpan(_refreshUsageButton, 2);
         group.Controls.Add(table);
@@ -572,7 +582,7 @@ internal sealed class MainForm : Form
 
                 SetCell(row, ColumnName, job.Name);
                 SetCell(row, ColumnTime, JobPresenter.Time(job));
-                SetCell(row, ColumnCountdown, JobPresenter.Countdown(job, now));
+                SetCell(row, ColumnCountdown, JobPresenter.Countdown(job, now, _usageSnapshots));
                 SetCell(row, ColumnTargets, JobPresenter.Targets(job.Targets));
                 SetCell(row, ColumnStatus, JobPresenter.Status(job.Status));
 
@@ -651,6 +661,7 @@ internal sealed class MainForm : Form
             {
                 _usageSnapshots[snapshots[i].Cli] = snapshots[i];
             }
+            _lastUsageRefreshTime = DateTimeOffset.Now;
             UpdateUsageLabels(DateTimeOffset.Now);
 
             if (showStatus)
@@ -682,7 +693,7 @@ internal sealed class MainForm : Form
                 if (!IsDisposed && _refreshUsageButton is not null)
                 {
                     _refreshUsageButton.Enabled = true;
-                    _refreshUsageButton.Text = "重新讀取額度";
+                    _refreshUsageButton.Text = "重新讀取倒數";
                 }
             }
         }
@@ -717,9 +728,12 @@ internal sealed class MainForm : Form
 
         return string.Join("；", snapshot.Windows.Select(window =>
         {
-            var resetText = window.ResetsAt is { } resetsAt
-                ? FormatResetCountdown(resetsAt, now)
-                : "重置時間未提供";
+            if (!window.IsActiveCountdown || window.ResetsAt is not { } resetsAt)
+            {
+                return $"{window.Name}：剩餘 {window.RemainingPercent}%（未倒數 / 額度充足）";
+            }
+
+            var resetText = FormatResetCountdown(resetsAt, now);
             return $"{window.Name}：剩餘 {window.RemainingPercent}%（{resetText}）";
         }));
     }
@@ -945,10 +959,18 @@ internal sealed class MainForm : Form
             var row = rows[i];
             if (row.Tag is ScheduledJob job)
             {
-                SetCell(row, ColumnCountdown, JobPresenter.Countdown(job, now));
+                SetCell(row, ColumnCountdown, JobPresenter.Countdown(job, now, _usageSnapshots));
             }
         }
         UpdateUsageLabels(now);
+
+        if (_host.Settings.QuotaAutoRefreshMinutes > 0 &&
+            _lastUsageRefreshTime != DateTimeOffset.MinValue &&
+            now - _lastUsageRefreshTime >= TimeSpan.FromMinutes(_host.Settings.QuotaAutoRefreshMinutes))
+        {
+            _lastUsageRefreshTime = now;
+            _ = RefreshUsageAsync(showStatus: false);
+        }
     }
 
     private void MainFormOnFormClosing(object? sender, FormClosingEventArgs e)

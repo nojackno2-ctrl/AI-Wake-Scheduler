@@ -23,6 +23,7 @@ internal sealed class SettingsForm : Form
         AutoSize = true
     };
     private readonly NumericUpDown _timeoutInput = new() { Minimum = 1, Maximum = 120, Width = 70 };
+    private readonly NumericUpDown _quotaAutoRefreshInput = new() { Minimum = 0, Maximum = 1440, Width = 70 };
     private readonly Label _probeStatus = new()
     {
         AutoSize = true,
@@ -256,6 +257,12 @@ internal sealed class SettingsForm : Form
         AppTheme.StyleInput(_timeoutInput);
         timeoutRow.Controls.Add(_timeoutInput);
         options.Controls.Add(timeoutRow);
+
+        var refreshRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+        refreshRow.Controls.Add(new Label { Text = "背景自動讀取配額間隔（分鐘，0 表示關閉）：", AutoSize = true, Margin = new Padding(0, 7, 5, 0) });
+        AppTheme.StyleInput(_quotaAutoRefreshInput);
+        refreshRow.Controls.Add(_quotaAutoRefreshInput);
+        options.Controls.Add(refreshRow);
         return options;
     }
 
@@ -310,6 +317,7 @@ internal sealed class SettingsForm : Form
         _trayCheck.Checked = ResultSettings.MinimizeToTray;
         _tokenSaverCheck.Checked = ResultSettings.TokenSaverMode;
         _timeoutInput.Value = Math.Clamp(ResultSettings.ExecutionTimeoutMinutes, _timeoutInput.Minimum, _timeoutInput.Maximum);
+        _quotaAutoRefreshInput.Value = Math.Clamp(ResultSettings.QuotaAutoRefreshMinutes, _quotaAutoRefreshInput.Minimum, _quotaAutoRefreshInput.Maximum);
     }
 
     private void RefreshEffortOptions(CliKind kind, ThinkingEffort? preferredEffort = null)
@@ -380,6 +388,7 @@ internal sealed class SettingsForm : Form
         ResultSettings.MinimizeToTray = _trayCheck.Checked;
         ResultSettings.TokenSaverMode = _tokenSaverCheck.Checked;
         ResultSettings.ExecutionTimeoutMinutes = (int)_timeoutInput.Value;
+        ResultSettings.QuotaAutoRefreshMinutes = (int)_quotaAutoRefreshInput.Value;
     }
 
     private void RejectSave(string message)

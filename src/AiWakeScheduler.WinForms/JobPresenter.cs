@@ -15,18 +15,64 @@ internal static class JobPresenter
         _ => job.ScheduledAt.LocalDateTime.ToString("HH:mm")
     };
 
-    public static string Countdown(ScheduledJob job, DateTimeOffset now)
+    public static string Countdown(
+        ScheduledJob job,
+        DateTimeOffset now,
+        IReadOnlyDictionary<CliKind, CliUsageSnapshot>? usageSnapshots = null)
     {
         if (job.Status == ScheduleStatus.Running) return "執行中";
         if (job.Status is ScheduleStatus.Completed or ScheduleStatus.Failed) return "已執行";
         if (!job.Enabled) return "已停用";
 
-        var remaining = job.ScheduledAt - now;
-        if (remaining <= TimeSpan.Zero) return "即將執行";
+        if (job.Recurrence == ScheduleRecurrence.Interval && usageSnapshots is not null && job.Targets.Count > 0)
+        {
+            var parts = new List<string>(job.Targets.Count);
+            for (var i = 0; i < job.Targets.Count; i++)
+            {
+                var target = job.Targets[i];
+                var name = CliDisplayNames.GetShort(target);
+                if (usageSnapshots.TryGetValue(target, out var snapshot) &&
+                    snapshot.Availability == CliUsageAvailability.Available &&
+                    snapshot.Windows.Count > 0)
+                {
+                    var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
+                        ?? snapshot.Windows[0];
 
-        return remaining.TotalDays >= 1
-            ? $"{(int)remaining.TotalDays}天 {remaining:hh\\:mm\\:ss}"
-            : remaining.ToString(@"hh\:mm\:ss");
+                    if (targetWindow.IsActiveCountdown && targetWindow.ResetsAt is { } resetsAt)
+                    {
+                        var remaining = resetsAt - now;
+                        if (remaining <= TimeSpan.Zero)
+                        {
+                            parts.Add($"{name} 即將重置");
+                        }
+                        else
+                        {
+                            var countdown = remaining.TotalDays >= 1
+                                ? $"{(int)remaining.TotalDays}天 {remaining:hh\\:mm\\:ss}"
+                                : remaining.ToString(@"hh\:mm\:ss");
+                            parts.Add($"{name} {countdown}");
+                        }
+                    }
+                    else
+                    {
+                        parts.Add($"{name} 未倒數");
+                    }
+                }
+                else
+                {
+                    parts.Add($"{name} 尚未讀取");
+                }
+            }
+
+            return string.Join("；", parts);
+        }
+
+        var generalRemaining = job.ScheduledAt - now;
+        if (generalRemaining <= TimeSpan.Zero) return "即將執行";
+
+        return generalRemaining.TotalDays >= 1
+            ? $"{(int)generalRemaining.TotalDays}天 {generalRemaining:hh\\:mm\\:ss}"
+            : generalRemaining.ToString(@"hh\:mm\:ss");
     }
 
     public static string Status(ScheduleStatus status) => status switch

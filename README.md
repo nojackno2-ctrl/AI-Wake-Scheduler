@@ -16,7 +16,7 @@
 
 - ⏰ **極簡每日排程**：直接設定每天固定觸發時分（`HH:mm`），支援多組排程管理，主畫面即時顯示距離下一次執行的倒數計時。
 - 🚀 **四大多模型目標平行喚醒**：同時支援 **Google Antigravity (`agy`) Gemini 額度池**、**Antigravity Claude / GPT 額度池**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
-- 📊 **真實額度與重置倒數**：透過 Codex 官方 app-server 唯讀讀取剩餘百分比與重置時間；AGY／Claude CLI 未提供可機器解析介面時會明確標示「不支援」，不以推測值冒充帳戶資料。
+- 📊 **真實額度與重置倒數**：透過 Codex 官方 app-server、Claude Code OAuth usage 端點與 Antigravity 本機 Language Server，唯讀取得剩餘百分比及重置時間；不以排程時間推測帳戶資料。
 - 💡 **極致 Token 節省模式 (Token Saver)**：
   - 自動套用最低推理與簡短模式（`--effort low`、`model_reasoning_effort=low`）。
   - 禁用 Claude 所有 Tool 呼叫（`--tools ""`）。
@@ -51,7 +51,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.3.1_x64.exe`**。
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.4.0_x64.exe`**。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
@@ -78,7 +78,7 @@
 
 ### 4. 測試與常駐
 - 可選取排程並點擊 **「立即執行」** 進行手動測試（不會跳過或影響原定的下一次每日排程時間）。
-- 主畫面「剩餘流量與重置倒數」支援 Codex、Antigravity (Gemini) 與 Antigravity (Claude / GPT) 即時額度查詢，在開啟時自動讀取，也可按 **「重新讀取額度」** 手動更新；本地每秒精準倒數。
+- 主畫面「剩餘流量與重置倒數」支援 Codex、Claude CLI、Antigravity (Gemini) 與 Antigravity (Claude / GPT) 即時額度查詢，在開啟時自動讀取，也可按 **「重新讀取額度」** 手動更新；本地每秒精準倒數。Claude CLI 必須先以 `claude auth login` 登入 Claude 訂閱帳號，程式只讀取本機短效 access token，不會輸出或記錄權杖，也不會為了查額度建立模型回合。
 - 點擊視窗右上角關閉按鈕，程式會自動最小化並縮至 Windows 右下角系統匣持續監控。
 - 雙擊系統匣圖示或右鍵選擇「開啟主視窗」即可還原主畫面。
 
@@ -128,7 +128,7 @@ dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.3.1_x64.exe`。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.4.0_x64.exe`。
 
 ---
 
