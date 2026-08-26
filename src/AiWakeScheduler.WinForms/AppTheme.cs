@@ -11,11 +11,16 @@ internal static class AppTheme
 {
     private const string FamilyName = "Microsoft JhengHei UI";
 
+    // 靜態欄位依宣告順序初始化，這份候選清單必須排在 Mono 之前。
+    private static readonly string[] MonoFamilies = ["Consolas", "Cascadia Mono", "Courier New"];
+
     public static readonly Font Body = Create(9.5F, FontStyle.Regular);
     public static readonly Font Caption = Create(8.5F, FontStyle.Regular);
     public static readonly Font SectionTitle = Create(12.5F, FontStyle.Bold);
     public static readonly Font HeaderTitle = Create(20F, FontStyle.Bold);
     public static readonly Font TableHeader = Create(9.5F, FontStyle.Bold);
+    /// <summary>倒數專用的等寬字型：每秒重畫時數字不會左右跳動。</summary>
+    public static readonly Font Mono = CreateMono(9.5F);
 
     // 單一冷色中性色盤，僅以藍色作為互動重點。紅、綠只表達語意狀態。
     public static readonly Color WindowBackground = Color.FromArgb(245, 247, 250);
@@ -34,6 +39,8 @@ internal static class AppTheme
     public static readonly Color Danger = Color.FromArgb(176, 45, 45);
     public static readonly Color DangerSubtle = Color.FromArgb(252, 235, 235);
     public static readonly Color Muted = Color.FromArgb(76, 91, 112);
+    public static readonly Color Warning = Color.FromArgb(173, 108, 12);
+    public static readonly Color MeterTrackFill = Color.FromArgb(226, 232, 240);
 
     public static Color Canvas => SystemInformation.HighContrast ? SystemColors.Control : WindowBackground;
     public static Color Panel => SystemInformation.HighContrast ? SystemColors.Window : Surface;
@@ -46,6 +53,10 @@ internal static class AppTheme
     public static Color Banner => SystemInformation.HighContrast ? SystemColors.Highlight : HeaderBackground;
     public static Color BannerText => SystemInformation.HighContrast ? SystemColors.HighlightText : Color.White;
     public static Color BannerSubtitle => SystemInformation.HighContrast ? SystemColors.HighlightText : HeaderSubtitle;
+    /// <summary>額度水位介於安全與危險之間時的提醒色。</summary>
+    public static Color Caution => SystemInformation.HighContrast ? SystemColors.WindowText : Warning;
+    /// <summary>額度長條的底槽色。</summary>
+    public static Color MeterTrack => SystemInformation.HighContrast ? SystemColors.ControlDark : MeterTrackFill;
 
     public enum ButtonVariant
     {
@@ -136,6 +147,34 @@ internal static class AppTheme
         SectionTitle.Dispose();
         HeaderTitle.Dispose();
         TableHeader.Dispose();
+        Mono.Dispose();
+    }
+
+    /// <summary>
+    /// 建立等寬字型。找不到字族時 GDI+ 會靜默換成預設字族，
+    /// 所以要比對實際取得的字族名稱，確認拿到的真的是等寬字。
+    /// </summary>
+    private static Font CreateMono(float size)
+    {
+        foreach (var family in MonoFamilies)
+        {
+            try
+            {
+                var font = new Font(family, size, FontStyle.Regular);
+                if (string.Equals(font.FontFamily.Name, family, StringComparison.OrdinalIgnoreCase))
+                {
+                    return font;
+                }
+
+                font.Dispose();
+            }
+            catch
+            {
+                // 換下一個候選字族
+            }
+        }
+
+        return new Font(FontFamily.GenericMonospace, size, FontStyle.Regular);
     }
 
     private static Font Create(float size, FontStyle style)

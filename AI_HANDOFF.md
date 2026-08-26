@@ -1,5 +1,140 @@
 # AI HANDOFF
 
+## 2026-08-26 v1.6.0 發布與 GitHub Release 完成（已提交並推送）
+
+- **使用者授權**：「commit後push到github發布執行檔」。
+- **核心功能升級**：
+  1. **剩餘流量與重置倒數全新自繪看板（`UsageBoard.cs`）**：
+     - 每個 CLI 獨立區塊，顯示名稱與資料新鮮度（「剛更新／N 分鐘前更新」）。
+     - 每個額度視窗獨立一列：`視窗名稱 ─ 水位色彩量化長條圖 ─ 百分比 ─ 等寬字型重置倒數 ─ 重置時刻`。
+     - 顏色依水位即時表達（≥50% 綠、≥20% 琥珀、其餘紅）；等寬字型（Consolas/Cascadia Mono）保證倒數跳動平穩不抖動。
+  2. **自動模式 5 小時倒數到即啟動呼叫**：
+     - 精準判定 5 小時視窗（`Duration <= 6h`），倒數歸零立即探測並單獨喚醒已到期之 CLI。
+     - 排程自適應睡眠將 5 小時結束時刻納入計算，零延遲喚醒。
+  3. **連線重用、GC 零震盪與核心效能最佳化**：
+     - `SharedAgyHttpClient` / `SharedClaudeHttpClient` 與 SocketsHttpHandler 連線池化，消除 Socket TIME_WAIT。
+     - CLI 串流讀取採用 `ArrayPool<char>.Shared`。
+     - 每秒計時器熱路徑消除 LINQ 與中間字串配置，改用自繪雙緩衝控制項渲染。
+- **發布流程與產物**：
+  1. 版本號全面升級為 `v1.6.0`（`AiWakeScheduler.WinForms.csproj`、`installer/AI倒數喚醒.iss`、`build-installer.ps1`、`CliUsageReader.cs`、`README.md`）。
+  2. 執行 `build-installer.ps1`：Deterministic 測試 15/15 全數通過、Self-Contained win-x64 發布完成、Inno Setup 成功編譯出 `dist\AI倒數喚醒_Setup_v1.6.0_x64.exe`（48,624,083 bytes，SHA256: `5E8C9273088F224DD7C7DA757F55F546DF8EFFB28581838D020A9C4CD1F54B44`）。
+  3. Git 提交並推送到遠端 `origin/main`，建立並推送 Tag `v1.6.0`。
+  4. 透過 GitHub CLI 建立官方 Release `v1.6.0`，並成功上傳安裝包與校驗檔。
+
+## 2026-08-26 「剩餘流量與重置倒數」區塊改版（已完成並驗證）
+
+- **使用者需求**：「把這個介面重作，很難讀」（附上舊版截圖：每個 CLI 一行長字串，
+  多個額度視窗以「；」串接後自動換行，整段同色）。
+- **問題診斷**：舊版把一個 CLI 的所有額度視窗串成單一 Label 文字
+  （`MainForm.FormatUsage`），造成四個可讀性缺陷：
+  1. 視窗名稱重複帶著 CLI 全名（`Antigravity (Gemini)（Five Hour Limit Remaining）`）；
+  2. 多個視窗擠在同一段落，換行後看不出哪個百分比對應哪個倒數；
+  3. 百分比與倒數沒有欄位對齊，也沒有任何視覺量值；
+  4. 整段依「可用／不可用」上色，所以額度只剩 5% 時仍是綠色。
+- **新版實作**：
+  1. **新增 `src/AiWakeScheduler.WinForms/UsageBoard.cs`（自繪 `Control`）**：
+     每個 CLI 一段標題（短名 + 右側「剛更新／N 分鐘前更新」新鮮度），
+     每個額度視窗獨立一列：`視窗名稱 ─ 剩餘量長條 ─ 百分比 ─ 重置倒數 ─ 重置時刻`。
+     欄寬由實際文字量測決定並隨 DPI 縮放；量測與繪製共用同一段版面計算
+     （`Render(Graphics?, int)`，傳 null 時只回傳所需高度）。
+  2. **視窗名稱正規化**：優先由 `CliUsageWindow.Duration` 推出「5 小時／每日／每週／N 天」，
+     期間相同而分不出來時（例如 Claude 的多個 7 天額度）才回退到清理過的原始名稱
+     （去掉與 CLI 重複的前綴、拆掉括號、把 `Five Hour / Weekly / Daily` 譯成中文）。
+  3. **顏色改為表達水位**：剩餘 ≥50% 綠、≥20% 琥珀（新增 `AppTheme.Caution`）、
+     其餘紅色，長條底槽用新增的 `AppTheme.MeterTrack`。不可用狀態才顯示紅色錯誤訊息。
+  4. **倒數改用等寬字型**（新增 `AppTheme.Mono`，Consolas → Cascadia Mono → Courier New，
+     並比對實際取得的字族名稱以避免 GDI+ 靜默回退），每秒重畫時數字不會左右跳動；
+     超過一天只顯示到分鐘（`6天 19:00`），一天內才顯示秒。
+  5. **`MainForm`**：`BuildUsagePanel` 改為「GroupBox（固定高度）+ 看板 + 重新讀取按鈕」的容器；
+     看板以 `PreferredHeightChanged` 回報所需高度，`SyncUsageGroupHeight` 依
+     `Height - DisplayRectangle.Height` 算出外框佔用高度後指定 GroupBox 高度。
+     `UpdateUsageLabels` 縮為一行委派給 `UsageBoard.Apply`，刪除 `FormatUsage`
+     與 `FormatResetCountdown`（連同不再需要的 `using System.Text;`）。
+     每秒只重繪一塊雙緩衝控制項，取代原本更新 4 個 Label 的 `WM_SETTEXT`。
+- **過程中修掉的真實缺陷**：`AppTheme.MonoFamilies` 起初宣告在 `Mono` 之後，
+  靜態欄位依宣告順序初始化，`CreateMono` 會讀到 null 而擲出 `NullReferenceException`
+  （型別初始化失敗 = 主視窗開不起來）。已把候選清單移到 `Mono` 之前並加註說明。
+- **驗證成果**：
+  - Debug 與 Release 建置皆成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - **實際畫面驗證**：在 scratchpad 建立臨時預覽專案，以反射建立 `UsageBoard`、
+    複刻 `BuildUsagePanel` 的容器結構，餵入四種 CLI 的假快照（含倒數中、額度充足、
+    低水位、多個 7 天視窗、查詢失敗、尚未讀取），以 `DrawToBitmap` 產出 PNG 檢視：
+    欄位對齊正確、GroupBox 高度同步後無裁切、錯誤訊息正確換行。
+    此為離屏渲染證據，未啟動正式安裝版主程式。
+- **未做**：未 commit、未推送、未改版本號、未重新打包安裝檔。
+
+## 2026-08-26 程式效能、記憶體與連線全方位最佳化（已完成並驗證）
+
+- **使用者需求**：「最佳化程式」。
+- **核心最佳化項目**：
+  1. **連線重用與 Socket 防護（`CliUsageReader.cs`）**：
+     - 引入 `SharedAgyHttpClient` 與 `SharedClaudeHttpClient`，採用 `SocketsHttpHandler`（設定 `PooledConnectionLifetime` 與 `ConnectTimeout`），徹底消除每次查詢配額時重複配置 `HttpClient` 與 `HttpClientHandler` 所引起的本機 Socket `TIME_WAIT` 與 TLS 握手開銷。
+     - 修復 `Process.GetProcessesByName("language_server")` 回傳陣列未釋放之問題，在 `finally` 區塊中安全釋放所有 `Process` 物件，根除作業系統 Handle 洩漏。
+  2. **串流緩衝池化與取消鏈動（`ProcessRunner.cs`）**：
+     - 在 CLI 標準輸出與錯誤串流讀取（`ReadBoundedAsync`）中引入 `System.Buffers.ArrayPool<char>.Shared`，消除每次 CLI 執行時反覆配置 4KB `char[]` 緩衝區的 GC Gen0 負擔。
+     - 串流讀取 Task 直接連結 `timeoutSource.Token`，確保程序逾時或被終止時串流讀取 Task 能立即中斷。
+  3. **WinForms 每秒計時器零 GC 震盪與渲染最佳化（`MainForm.cs` / `JobPresenter.cs`）**：
+     - `JobPresenter.Countdown`：改用容量預估的 `StringBuilder` 與直接索引迴圈，消除每秒為排程目標配置 `List<string>` 與 `string.Join` 的記憶體負擔。
+     - `MainForm.UpdateUsageLabels` 與 `FormatUsage`：改以直接索引遍歷視窗陣列，消除每秒 LINQ `Select` 與中間集合配置。
+     - 實作 `SetLabelState` 進行等值過濾更新（`label.Text` 與 `label.ForeColor`），在文字或色彩無變動時避免觸發 Win32 `WM_SETTEXT` 與強制重繪訊息，提升 UI 平滑度。
+     - `UiTimerOnTick`：使用 `GetShortWindowOrFirst` 取代每秒 LINQ `FirstOrDefault` 委派配置。
+  4. **排程引擎熱路徑精簡（`ScheduleManager.cs`）**：
+     - 在 `ScanAndStartDueJobsAsync` 與 `CalculateNextDelay` 引入 `GetShortWindowOrFirst` 輔助方法，以高效迴圈取代熱點路徑中的 LINQ 查詢，降低背景掃描時的委派與列舉器配置。
+- **驗證成果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過（含 4 個假 CLI 平行完成）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - 使用者明確指示「再次檢查後commit」，已完成程式檢查與測試驗證並執行 Commit。
+
+
+
+## 2026-08-26 自動模式改為「5 小時倒數到即啟動呼叫」（已完成並驗證）
+
+- **使用者需求**：「自動模式改成，超過設定的時間後，只要檢測到5小時倒數時間到及立刻啟動呼叫」。
+- **核心實作與邏輯**：
+  1. **精準 5 小時視窗判定（`ScheduleManager.cs`）**：
+     - `ScanAndStartDueJobsAsync` 檢查到期目標時，優先匹配 `Duration <= 6h` 之 5 小時額度視窗（`targetWindow`），當該視窗倒數歸零（`targetWindow.ResetsAt <= now`）時立即納入 `dueTargets`。
+     - 立即發起額度探測，確認額度已重置（未倒數）後，精準單獨啟動已到期之 CLI（不影響其他仍處於倒數中之 CLI）。
+  2. **自適應睡眠校準**：
+     - `CalculateNextDelay` 維持精準將各啟用 CLI 之 5 小時倒數結束時間戳記納入推算，倒數歸零時背景迴圈立即甦醒執行。
+  3. **模型與 UI 文字同步（`Models.cs` / `JobPresenter.cs` / `MainForm.cs`）**：
+     - `ScheduleRecurrenceNames.Get(Interval)` 改為「自動模式（5 小時倒數喚醒）」。
+     - `JobPresenter.Time()` 改為「`5h倒數 (HH:mm)`」。
+     - `MainForm.cs` 的排程模式選單、橫幅標題與說明標籤同步更新為 5 小時倒數自動喚醒說明。
+- **驗證成果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過（含 `ScheduleManagerAutoInterval` 與 `ScheduleManagerQuotaAwareInterval`）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - 未 commit、push、發布（遵守 AGENTS.md 規則）。
+
+## 2026-08-26 AGY 五小時額度讀取修正（進行中）
+
+- **問題證據**：`CliUsageReader` 原本只呼叫 `GetCascadeModelConfigData`，只取第一個符合模型池的 `clientModelConfigs`，且 `Duration` 永遠為 `null`；新版 AGY 的五小時／每週額度位於 `RetrieveUserQuotaSummary` 的 `groups[].buckets[]`，因此五小時視窗可能遺失或無法分類。
+- **環境證據**：本機即時 probe 目前回報無法取得 AGY CSRF Token；`agy models` 也回報未登入。這是即時整合環境阻擋，不把它誤報為程式解析成功。
+- **預定修正**：新版 `RetrieveUserQuotaSummary` 優先、`GetUserStatus`／`GetCommandModelConfigs`／舊 `GetCascadeModelConfigData` fallback；解析 Gemini 與 Claude/GPT 的 5 小時及每週 buckets，未知 `remainingFraction` 不猜測；擴充 CSRF 旗標格式。
+- **已完成程式修正**：新版 summary 優先、舊端點 fallback；多模型列合併挑最受限視窗；Duration 正確標示 5 小時／每週；支援 `--csrf_token`、`--extension_server_csrf_token` 的等號／空白格式；無 CSRF 時允許 tokenless `agy` CLI RPC。
+- **驗收**：固定 JSON 的新版 summary、多視窗、舊包裝格式回歸案例已在 `CliUsageReader` 測試段落通過；Debug build 0 警告、0 錯誤；完整 `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過；完整 deterministic suite 前 6/16 通過後在既有排程測試段落超過 3 分鐘無輸出而中止，未宣稱全套通過；opt-in integration 因 Codex 未登入在前置檢查失敗，未取得新的 AGY live 成功證據。
+- **尚未完成**：本機 AGY 即時整合仍受目前登入／CSRF 狀態阻擋（`agy models` 回報未登入），需在 AGY 登入且 language server 可讀時重跑 `--integration`；`MainForm.cs` 的既有未提交 UI 變更保留未動。
+
+## 2026-08-26 剩餘流量面板 UI 重新設計（兩區段分類表格）
+
+- **觸發**：使用者反映「看得很亂，倒數5小時跟每周倒數要分開」、「Codex 也有倒數5小時的額度」。
+- **變更檔案**：`src/AiWakeScheduler.WinForms/MainForm.cs`
+- **第二版改動**（取代第一版卡片式佈局）：
+  1. 改為兩區段表格佈局：「⏱ 倒數喚醒（≤ 6 小時）」與「📅 每周 / 長期額度」。
+  2. 每個區段為簡潔兩欄表格（CLI 名稱 | 狀態），不再使用卡片邊框。
+  3. 區段標題使用淺灰底條 `BuildSectionHeader()`。
+  4. `UpdateUsageLabels()` 改為依 `Window.Duration` 動態分類：Duration ≤ 6h → 短週期，其餘 → 長週期。
+  5. 單一視窗且無 Duration 的 CLI（AGY 等）顯示在短週期區段。
+  6. Codex 的 `primary` 與 `secondary` 兩個視窗會依其 `windowDurationMins` 正確分到對應區段。
+  7. 長週期區段若有多個視窗，以「│」分隔精簡顯示 (`FormatWindowBrief`)。
+  8. 刪除 `BuildCliCard`、`GetExpectedWindowDefs`；新增 `UsageSection` enum、`BuildSectionHeader`、`BuildUsageTable`、`AddUsageRow`、`WindowColor`、`FormatWindowBrief`。
+
+- **建置結果**：0 警告、0 錯誤（`dotnet build`，net8.0-windows，Debug）。
+- **未 commit**：使用者尚未授權提交。
+
 ## 2026-08-22 v1.5.0 發布與 GitHub Release 完成（已提交並推送）
 
 - **使用者授權**：「上傳github並發布執行檔」。

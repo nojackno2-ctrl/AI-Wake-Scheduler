@@ -394,15 +394,23 @@ public sealed class ScheduleManager : IAsyncDisposable
                             var snapshot = _usageReader.GetLatestSnapshot(target);
                             var isCountingDown = snapshot is not null && CliUsageReader.IsCountingDown(snapshot, now);
 
-                            if (snapshot is not null && !isCountingDown && snapshot.Windows.Count > 0 &&
-                                snapshot.Windows[0].ResetsAt is { } reset && reset <= now)
+                            if (snapshot is not null && !isCountingDown && snapshot.Windows.Count > 0)
                             {
-                                // 倒數剛結束
-                                dueTargets.Add(target);
+                                var targetWindow = GetShortWindowOrFirst(snapshot);
+                                if (targetWindow.ResetsAt is { } reset && reset <= now)
+                                {
+                                    // 5 小時倒數剛結束
+                                    dueTargets.Add(target);
+                                }
+                                else if (quotaProbeDue)
+                                {
+                                    // 沒抓到倒數，依設定間隔探測
+                                    dueTargets.Add(target);
+                                }
                             }
                             else if (!isCountingDown && quotaProbeDue)
                             {
-                                // 沒抓到倒數，依設定間隔探測
+                                // 沒抓到倒數或尚無快照，依設定間隔探測
                                 dueTargets.Add(target);
                             }
                         }
@@ -620,8 +628,7 @@ public sealed class ScheduleManager : IAsyncDisposable
                     var snapshot = _usageReader.GetLatestSnapshot(target);
                     if (snapshot is not null && CliUsageReader.IsCountingDown(snapshot, now))
                     {
-                        var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
-                            ?? snapshot.Windows[0];
+                        var targetWindow = GetShortWindowOrFirst(snapshot);
                         if (targetWindow.ResetsAt is { } resetsAt)
                         {
                             var untilReset = resetsAt - now;
@@ -635,6 +642,20 @@ public sealed class ScheduleManager : IAsyncDisposable
             }
         }
         return shortest;
+    }
+
+    private static CliUsageWindow GetShortWindowOrFirst(CliUsageSnapshot snapshot)
+    {
+        var windows = snapshot.Windows;
+        for (var i = 0; i < windows.Count; i++)
+        {
+            var w = windows[i];
+            if (w.Duration is { } d && d <= TimeSpan.FromHours(6))
+            {
+                return w;
+            }
+        }
+        return windows[0];
     }
 
     private void StartExecution(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken)
