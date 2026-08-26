@@ -1706,7 +1706,8 @@ internal sealed class CountingCliRunner : ICliRunner
         string workingDirectory,
         TimeSpan timeout,
         bool tokenSaverMode = true,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<bool, string>? onOutput = null)
     {
         lock (ExecutedClis)
         {

@@ -28,9 +28,11 @@ internal sealed class MainForm : Form
     private readonly Dictionary<CliKind, CheckBox> _targetChecks = [];
     private readonly UsageBoard _usageBoard = new();
     private readonly Dictionary<CliKind, CliUsageSnapshot> _usageSnapshots = [];
+    private readonly TerminalPanel _terminalPanel = new();
     private readonly NotifyIcon _notifyIcon;
 
     private SplitContainer? _mainSplit;
+    private SplitContainer? _outerSplit;
     private Button? _saveButton;
     private Button? _refreshUsageButton;
     private GroupBox? _usageGroup;
@@ -70,6 +72,7 @@ internal sealed class MainForm : Form
 
         _host.Manager.JobsChanged += ManagerOnJobsChanged;
         _host.Manager.BackgroundError += ManagerOnBackgroundError;
+        _host.Manager.ActivityLogged += ManagerOnActivityLogged;
         _uiTimer.Tick += UiTimerOnTick;
 
         Shown += MainFormOnShown;
@@ -88,6 +91,7 @@ internal sealed class MainForm : Form
 
             Manager.JobsChanged -= ManagerOnJobsChanged;
             Manager.BackgroundError -= ManagerOnBackgroundError;
+            Manager.ActivityLogged -= ManagerOnActivityLogged;
 
             _usageRefreshCancellation?.Cancel();
             _usageRefreshCancellation?.Dispose();
@@ -147,7 +151,17 @@ internal sealed class MainForm : Form
         _mainSplit = split;
         BuildScheduleList(split.Panel1);
         BuildEditor(split.Panel2);
-        root.Controls.Add(split, 0, 1);
+
+        var outerSplit = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal
+        };
+        _outerSplit = outerSplit;
+        outerSplit.Panel1.Controls.Add(split);
+        outerSplit.Panel2.Padding = new Padding(12, 0, 12, 8);
+        outerSplit.Panel2.Controls.Add(_terminalPanel);
+        root.Controls.Add(outerSplit, 0, 1);
 
         var status = new StatusStrip
         {
@@ -457,32 +471,51 @@ internal sealed class MainForm : Form
 
     private void ApplySplitterLayout()
     {
-        if (_mainSplit is null)
+        if (_mainSplit is not null)
         {
-            return;
+            var available = _mainSplit.ClientSize.Width - _mainSplit.SplitterWidth;
+            // 視窗較窄時硬套最小寬度會擲出例外，先確認空間夠再設定。
+            var panel1Min = Math.Min(520, Math.Max(120, available / 2));
+            var panel2Min = Math.Min(360, Math.Max(120, available - panel1Min - 1));
+            if (available > panel1Min + panel2Min)
+            {
+                try
+                {
+                    _mainSplit.Panel1MinSize = panel1Min;
+                    _mainSplit.Panel2MinSize = panel2Min;
+                    _mainSplit.SplitterDistance = Math.Clamp((int)(available * 0.62), panel1Min, available - panel2Min);
+                }
+                catch (InvalidOperationException)
+                {
+                    // 版面尚未穩定時交給預設分割位置
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                }
+            }
         }
 
-        var available = _mainSplit.ClientSize.Width - _mainSplit.SplitterWidth;
-        // 視窗較窄時硬套最小寬度會擲出例外，先確認空間夠再設定。
-        var panel1Min = Math.Min(520, Math.Max(120, available / 2));
-        var panel2Min = Math.Min(360, Math.Max(120, available - panel1Min - 1));
-        if (available <= panel1Min + panel2Min)
+        if (_outerSplit is not null)
         {
-            return;
-        }
-
-        try
-        {
-            _mainSplit.Panel1MinSize = panel1Min;
-            _mainSplit.Panel2MinSize = panel2Min;
-            _mainSplit.SplitterDistance = Math.Clamp((int)(available * 0.62), panel1Min, available - panel2Min);
-        }
-        catch (InvalidOperationException)
-        {
-            // 版面尚未穩定時交給預設分割位置
-        }
-        catch (ArgumentOutOfRangeException)
-        {
+            var availableHeight = _outerSplit.ClientSize.Height - _outerSplit.SplitterWidth;
+            // 終端機面板常駐在下方，預設給它三分之一高度（120～220px 之間）。
+            var terminalHeight = Math.Min(220, Math.Max(120, availableHeight / 3));
+            var topMin = Math.Min(260, Math.Max(120, availableHeight - terminalHeight - 1));
+            if (availableHeight > topMin + terminalHeight)
+            {
+                try
+                {
+                    _outerSplit.Panel1MinSize = topMin;
+                    _outerSplit.Panel2MinSize = terminalHeight;
+                    _outerSplit.SplitterDistance = Math.Clamp(availableHeight - terminalHeight, topMin, availableHeight - terminalHeight);
+                }
+                catch (InvalidOperationException)
+                {
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                }
+            }
         }
     }
 
@@ -1013,6 +1046,7 @@ internal sealed class MainForm : Form
         _uiTimer.Stop();
         Manager.JobsChanged -= ManagerOnJobsChanged;
         Manager.BackgroundError -= ManagerOnBackgroundError;
+        Manager.ActivityLogged -= ManagerOnActivityLogged;
         _notifyIcon.Visible = false;
     }
 
@@ -1207,6 +1241,12 @@ internal sealed class MainForm : Form
         }
         SetStatus($"等待中：{pending}　失敗：{failed}", failed > 0 ? AppTheme.Danger : SystemColors.ControlText);
     }
+
+    /// <summary>
+    /// 事件可能來自背景執行緒（子程序輸出讀取迴圈）；TerminalPanel.LogActivity 只做
+    /// 執行緒安全的排隊，實際畫面更新交給它內部的計時器在 UI 執行緒批次處理。
+    /// </summary>
+    private void ManagerOnActivityLogged(object? sender, CliActivityEvent e) => _terminalPanel.LogActivity(e);
 
     private void ManagerOnBackgroundError(object? sender, Exception e)
     {

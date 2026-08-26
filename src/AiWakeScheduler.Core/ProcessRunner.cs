@@ -32,7 +32,8 @@ public static class ProcessRunner
         IReadOnlyList<string> arguments,
         string workingDirectory,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<bool, string>? onOutput = null)
     {
         // .cmd / .bat 沒有辦法在不開視窗的情況下重導向，只能交給 Shell 執行。
         var shellScript = OperatingSystem.IsWindows() &&
@@ -76,10 +77,10 @@ public static class ProcessRunner
         // 超過上限的內容會被丟棄，不會累積在記憶體裡。
         var outputTask = shellScript
             ? Task.FromResult(string.Empty)
-            : ReadBoundedAsync(process.StandardOutput, timeoutSource.Token);
+            : ReadBoundedAsync(process.StandardOutput, timeoutSource.Token, chunk => onOutput?.Invoke(false, chunk));
         var errorTask = shellScript
             ? Task.FromResult(string.Empty)
-            : ReadBoundedAsync(process.StandardError, timeoutSource.Token);
+            : ReadBoundedAsync(process.StandardError, timeoutSource.Token, chunk => onOutput?.Invoke(true, chunk));
         var timedOut = false;
 
         try
@@ -118,7 +119,7 @@ public static class ProcessRunner
         }
     }
 
-    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken)
+    private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken, Action<string>? onChunk = null)
     {
         var buffer = ArrayPool<char>.Shared.Rent(4096);
         try
@@ -129,6 +130,10 @@ public static class ProcessRunner
             int read;
             while ((read = await reader.ReadAsync(buffer.AsMemory(0, 4096), cancellationToken).ConfigureAwait(false)) > 0)
             {
+                // 即時通知用完整片段，不受下方的容量上限影響：
+                // 容量上限只是為了讓存到磁碟的日誌維持可讀大小，畫面上仍應如實顯示。
+                onChunk?.Invoke(new string(buffer, 0, read));
+
                 var remaining = MaxCapturedCharacters - builder.Length;
                 if (remaining <= 0)
                 {
