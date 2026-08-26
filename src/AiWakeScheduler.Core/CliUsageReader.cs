@@ -101,6 +101,38 @@ public sealed class CliUsageReader : ICliUsageReader
     private static readonly SemaphoreSlim _agyQueryLock = new(1, 1);
     private static (string Json, DateTimeOffset CachedAt)? _cachedAgyResponse;
     private static readonly TimeSpan AgyCacheDuration = TimeSpan.FromSeconds(3);
+    private static readonly string[] AgyQuotaRpcMethods =
+    [
+        // Antigravity 2.x：提供 Gemini／Claude+GPT 的 5 小時與每週 buckets。
+        "RetrieveUserQuotaSummary",
+        // 舊版／IDE fallback：提供模型層級的 session quota。
+        "GetUserStatus",
+        "GetCommandModelConfigs",
+        "GetCascadeModelConfigData"
+    ];
+
+    private static readonly HttpClient SharedAgyHttpClient = new(new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+        ConnectTimeout = TimeSpan.FromSeconds(5),
+        SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+        {
+            RemoteCertificateValidationCallback = static (_, _, _, _) => true
+        }
+    })
+    {
+        Timeout = TimeSpan.FromSeconds(5)
+    };
+
+    private static readonly HttpClient SharedClaudeHttpClient = new(new SocketsHttpHandler
+    {
+        PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+        ConnectTimeout = TimeSpan.FromSeconds(10)
+    })
+    {
+        Timeout = QueryTimeout
+    };
+
     private readonly SemaphoreSlim _claudeQueryLock = new(1, 1);
     private static readonly TimeSpan ClaudeCacheDuration = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan ClaudeDefaultRateLimitBackoff = TimeSpan.FromMinutes(5);
@@ -113,10 +145,10 @@ public sealed class CliUsageReader : ICliUsageReader
         CancellationToken cancellationToken)
     {
         var observedAt = DateTimeOffset.Now;
+        var lsProcesses = Process.GetProcessesByName("language_server");
 
         try
         {
-            var lsProcesses = Process.GetProcessesByName("language_server");
             if (lsProcesses.Length == 0)
             {
                 return Unavailable(kind, "Antigravity 尚未啟動，請先開啟 Antigravity 以讀取即時額度。", observedAt);
@@ -138,11 +170,9 @@ public sealed class CliUsageReader : ICliUsageReader
                     var pid = targetProc.Id;
 
                     // 1. 解析 CSRF Token
-                    var csrfToken = await TryGetCsrfTokenAsync(pid, cancellationToken).ConfigureAwait(false);
-                    if (string.IsNullOrWhiteSpace(csrfToken))
-                    {
-                        return Unavailable(kind, "無法取得 Antigravity 認證權杖（CSRF Token）。", observedAt);
-                    }
+                    var csrfToken = await TryGetCsrfTokenAsync(pid, cancellationToken).ConfigureAwait(false) ?? string.Empty;
+                    // 桌面 IDE 需要 CSRF；agy CLI 的本機 language server 則是 tokenless。
+                    // 先繼續探測，讓兩種官方本機來源都能讀到同一個額度 RPC。
 
                     // 2. 尋找 HTTPS 監聽連接埠
                     var ports = GetAntigravityCandidatePorts(pid);
@@ -151,40 +181,25 @@ public sealed class CliUsageReader : ICliUsageReader
                         return Unavailable(kind, "無法偵測到 Antigravity Language Server 監聽連接埠。", observedAt);
                     }
 
-                    // 3. 透過 HttpClient 呼叫 RPC（進行連續採樣驗證以確認倒數是否真實存在）
-                    using var handler = new HttpClientHandler
-                    {
-                        ServerCertificateCustomValidationCallback = (_, _, _, _) => true
-                    };
-                    using var client = new HttpClient(handler)
-                    {
-                        Timeout = TimeSpan.FromSeconds(5)
-                    };
-
-                    var sample1 = await QueryAntigravityRpcAsync(client, ports, csrfToken, cancellationToken).ConfigureAwait(false);
+                    // 3. 透過共用 HttpClient 呼叫 RPC（進行連續採樣驗證以確認倒數是否真實存在）
+                    var sample1 = await QueryAntigravityRpcAsync(SharedAgyHttpClient, ports, csrfToken, cancellationToken).ConfigureAwait(false);
                     var snapshot1 = ParseAntigravityModelConfigs(sample1, kind, observedAt);
 
                     // 若第一次採樣判定處於倒數中（UsedPercent > 0 且 resetsAt > now），間隔 5 秒進行第二次採樣比對是否為固定時間戳記
                     if (snapshot1.Availability == CliUsageAvailability.Available &&
-                        snapshot1.Windows.Count > 0 &&
-                        snapshot1.Windows[0].IsActiveCountdown &&
-                        snapshot1.Windows[0].ResetsAt is { } reset1)
+                        snapshot1.Windows.Any(window => window.IsActiveCountdown))
                     {
                         try
                         {
                             await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
-                            var sample2 = await QueryAntigravityRpcAsync(client, ports, csrfToken, cancellationToken).ConfigureAwait(false);
+                            var sample2 = await QueryAntigravityRpcAsync(SharedAgyHttpClient, ports, csrfToken, cancellationToken).ConfigureAwait(false);
                             var snapshot2 = ParseAntigravityModelConfigs(sample2, kind, DateTimeOffset.Now);
                             if (snapshot2.Availability == CliUsageAvailability.Available && snapshot2.Windows.Count > 0)
                             {
-                                var w2 = snapshot2.Windows[0];
-                                var isFixed = w2.ResetsAt is { } reset2 &&
-                                    Math.Abs((reset2 - reset1).TotalSeconds) < 2.0;
-
-                                var finalWindows = new List<CliUsageWindow>
-                                {
-                                    new(w2.Name, w2.UsedPercent, w2.Duration, isFixed ? w2.ResetsAt : null, isFixed && w2.UsedPercent > 0 && w2.ResetsAt > DateTimeOffset.Now)
-                                };
+                                var finalWindows = ReconcileAntigravityWindows(
+                                    snapshot1.Windows,
+                                    snapshot2.Windows,
+                                    DateTimeOffset.Now);
                                 responseJson = sample2;
                                 _cachedAgyResponse = (responseJson, DateTimeOffset.Now);
                                 return new CliUsageSnapshot(kind, CliUsageAvailability.Available, finalWindows, "讀取成功", DateTimeOffset.Now);
@@ -218,6 +233,13 @@ public sealed class CliUsageReader : ICliUsageReader
         {
             return Unavailable(kind, $"Antigravity 額度查詢失敗：{ex.Message}", observedAt);
         }
+        finally
+        {
+            for (var i = 0; i < lsProcesses.Length; i++)
+            {
+                lsProcesses[i].Dispose();
+            }
+        }
     }
 
     private static async Task<string> QueryAntigravityRpcAsync(
@@ -226,31 +248,96 @@ public sealed class CliUsageReader : ICliUsageReader
         string csrfToken,
         CancellationToken cancellationToken)
     {
-        using var requestMessage = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"https://127.0.0.1:{ports[0]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
+        Exception? lastError = null;
+        foreach (var port in ports)
         {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json")
-        };
-        requestMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
+            foreach (var method in AgyQuotaRpcMethods)
+            {
+                using var requestMessage = new HttpRequestMessage(
+                    HttpMethod.Post,
+                    $"https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{method}")
+                {
+                    Content = new StringContent(
+                        "{\"metadata\":{\"ideName\":\"antigravity\",\"extensionName\":\"antigravity\",\"ideVersion\":\"unknown\",\"locale\":\"en\"}}",
+                        Encoding.UTF8,
+                        "application/json")
+                };
 
+                if (!string.IsNullOrWhiteSpace(csrfToken))
+                {
+                    requestMessage.Headers.TryAddWithoutValidation("x-codeium-csrf-token", csrfToken);
+                }
+                requestMessage.Headers.TryAddWithoutValidation("Connect-Protocol-Version", "1");
+
+                try
+                {
+                    using var response = await client.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        if (!IsAntigravityErrorPayload(body)) return body;
+                        lastError = new InvalidOperationException($"{method} 回傳錯誤：{TrimDiagnostic(body)}");
+                        continue;
+                    }
+
+                    lastError = new HttpRequestException(
+                        $"{method} 回應 HTTP {(int)response.StatusCode}：{TrimDiagnostic(body)}");
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    lastError = new TimeoutException($"{method} 逾時。");
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex;
+                }
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("找不到可用的 Antigravity 額度 RPC。");
+    }
+
+    private static string TrimDiagnostic(string text) =>
+        string.IsNullOrWhiteSpace(text) ? "空回應" : text.Length <= 240 ? text : text[..240];
+
+    private static bool IsAntigravityErrorPayload(string json)
+    {
         try
         {
-            using var response = await client.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
-            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.TryGetProperty("error", out _)) return true;
+            return root.TryGetProperty("response", out var response) &&
+                response.ValueKind == JsonValueKind.Object && response.TryGetProperty("error", out _);
         }
-        catch (Exception) when (ports.Count > 1)
+        catch (JsonException)
         {
-            using var retryMessage = new HttpRequestMessage(
-                HttpMethod.Post,
-                $"https://127.0.0.1:{ports[1]}/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData")
-            {
-                Content = new StringContent("{}", Encoding.UTF8, "application/json")
-            };
-            retryMessage.Headers.Add("x-codeium-csrf-token", csrfToken);
-            using var response = await client.SendAsync(retryMessage, cancellationToken).ConfigureAwait(false);
-            return await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            return false;
         }
+    }
+
+    private static List<CliUsageWindow> ReconcileAntigravityWindows(
+        IReadOnlyList<CliUsageWindow> first,
+        IReadOnlyList<CliUsageWindow> second,
+        DateTimeOffset observedAt)
+    {
+        var windows = new List<CliUsageWindow>(second.Count);
+        foreach (var current in second)
+        {
+            var previous = first.FirstOrDefault(candidate =>
+                candidate.Duration == current.Duration &&
+                string.Equals(candidate.Name, current.Name, StringComparison.OrdinalIgnoreCase));
+            var isFixed = previous?.ResetsAt is { } previousReset &&
+                current.ResetsAt is { } currentReset &&
+                Math.Abs((currentReset - previousReset).TotalSeconds) < 2.0;
+            windows.Add(current with
+            {
+                ResetsAt = isFixed ? current.ResetsAt : null,
+                IsActiveCountdown = isFixed && current.UsedPercent > 0 && current.ResetsAt > observedAt
+            });
+        }
+
+        return windows;
     }
 
     private static async Task<string?> TryGetCsrfTokenAsync(int pid, CancellationToken cancellationToken)
@@ -263,11 +350,8 @@ public sealed class CliUsageReader : ICliUsageReader
                 var nativeCmd = NativeProcessHelper.GetCommandLine(pid);
                 if (!string.IsNullOrWhiteSpace(nativeCmd))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(nativeCmd, @"--csrf_token\s+([^\s]+)");
-                    if (match.Success)
-                    {
-                        return match.Groups[1].Value;
-                    }
+                    var token = ExtractAntigravityToken(nativeCmd);
+                    if (!string.IsNullOrWhiteSpace(token)) return token;
                 }
             }
             catch
@@ -300,11 +384,8 @@ public sealed class CliUsageReader : ICliUsageReader
 
                 if (!string.IsNullOrWhiteSpace(output))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(output, @"--csrf_token\s+([^\s]+)");
-                    if (match.Success)
-                    {
-                        return match.Groups[1].Value;
-                    }
+                    var token = ExtractAntigravityToken(output);
+                    if (!string.IsNullOrWhiteSpace(token)) return token;
                 }
             }
         }
@@ -337,11 +418,8 @@ public sealed class CliUsageReader : ICliUsageReader
 
                 if (!string.IsNullOrWhiteSpace(output))
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(output, @"--csrf_token\s+([^\s]+)");
-                    if (match.Success)
-                    {
-                        return match.Groups[1].Value;
-                    }
+                    var token = ExtractAntigravityToken(output);
+                    if (!string.IsNullOrWhiteSpace(token)) return token;
                 }
             }
         }
@@ -350,6 +428,21 @@ public sealed class CliUsageReader : ICliUsageReader
         }
 
         return null;
+    }
+
+    private static string? ExtractAntigravityToken(string commandLine)
+    {
+        // 新版 language_server 可能只暴露 extension server token，且旗標可用
+        // --name=value 或 --name value；兩種格式都必須支援。
+        var match = System.Text.RegularExpressions.Regex.Match(
+            commandLine,
+            @"--(?:csrf_token|extension_server_csrf_token)(?:=|\s+)(?:""([^"" ]+)""|'([^']+)'|([^\s]+))",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return match.Success
+            ? match.Groups[1].Success ? match.Groups[1].Value
+            : match.Groups[2].Success ? match.Groups[2].Value
+            : match.Groups[3].Value
+            : null;
     }
 
     private static List<int> GetAntigravityCandidatePorts(int pid)
@@ -446,55 +539,231 @@ public sealed class CliUsageReader : ICliUsageReader
                 return Unavailable(kind, $"Antigravity 額度查詢失敗：{message}", observedAt);
             }
 
-            if (!root.TryGetProperty("clientModelConfigs", out var configs) || configs.ValueKind != JsonValueKind.Array)
+            // Antigravity 2.x 的 RetrieveUserQuotaSummary 會回傳
+            // { response: { groups: [...] } }；部分版本則直接回傳 groups。
+            if (TryParseAntigravitySummary(root, kind, observedAt, out var summaryWindows))
             {
-                return Unavailable(kind, "Antigravity 回應缺少 clientModelConfigs。", observedAt);
+                return new CliUsageSnapshot(kind, CliUsageAvailability.Available, summaryWindows, "讀取成功", observedAt);
             }
 
-            var isGeminiPool = kind == CliKind.Antigravity;
-            var windowName = isGeminiPool ? "Antigravity (Gemini)" : "Antigravity (Claude / GPT)";
-
-            foreach (var config in configs.EnumerateArray())
+            // 舊版 IDE / GetUserStatus / GetCommandModelConfigs 仍提供
+            // clientModelConfigs；不要只取第一筆，否則前面的滿額模型會遮掉 5 小時倒數。
+            if (TryGetAntigravityConfigs(root, out var configs))
             {
-                var label = config.TryGetProperty("label", out var labelProp) ? labelProp.GetString() ?? "" : "";
-                var matchPool = isGeminiPool
-                    ? label.Contains("Gemini", StringComparison.OrdinalIgnoreCase)
-                    : (label.Contains("Claude", StringComparison.OrdinalIgnoreCase) || label.Contains("GPT", StringComparison.OrdinalIgnoreCase));
-
-                if (!matchPool) continue;
-
-                if (config.TryGetProperty("quotaInfo", out var quotaInfo) && quotaInfo.ValueKind == JsonValueKind.Object)
+                var modelWindows = ParseAntigravityModelConfigsArray(configs, kind, observedAt);
+                if (modelWindows.Count > 0)
                 {
-                    var remainingFraction = 1.0;
-                    if (quotaInfo.TryGetProperty("remainingFraction", out var remProp) && remProp.TryGetDouble(out var remVal))
-                    {
-                        remainingFraction = Math.Clamp(remVal, 0.0, 1.0);
-                    }
-
-                    var usedPercent = (int)Math.Round((1.0 - remainingFraction) * 100.0);
-
-                    DateTimeOffset? resetsAt = null;
-                    if (quotaInfo.TryGetProperty("resetTime", out var resetProp) && resetProp.ValueKind == JsonValueKind.String)
-                    {
-                        if (DateTimeOffset.TryParse(resetProp.GetString(), out var parsedReset))
-                        {
-                            resetsAt = parsedReset;
-                        }
-                    }
-
-                    var clampedUsed = Math.Clamp(usedPercent, 0, 100);
-                    var isActiveCountdown = clampedUsed > 0 && resetsAt.HasValue && resetsAt.Value > observedAt;
-                    var window = new CliUsageWindow(windowName, clampedUsed, null, resetsAt, isActiveCountdown);
-                    return new CliUsageSnapshot(kind, CliUsageAvailability.Available, [window], "讀取成功", observedAt);
+                    return new CliUsageSnapshot(kind, CliUsageAvailability.Available, modelWindows, "讀取成功", observedAt);
                 }
             }
 
-            return Unavailable(kind, $"Antigravity 已回應，但未找到對應的 {windowName} 配額資料。", observedAt);
+            return Unavailable(kind, "Antigravity 已回應，但未找到可解析的額度視窗。", observedAt);
         }
         catch (JsonException ex)
         {
             return Unavailable(kind, $"Antigravity 回應 JSON 解析失敗：{ex.Message}", observedAt);
         }
+    }
+
+    private static bool TryParseAntigravitySummary(
+        JsonElement root,
+        CliKind kind,
+        DateTimeOffset observedAt,
+        out List<CliUsageWindow> windows)
+    {
+        windows = [];
+        var summary = root;
+        if (TryGetObjectProperty(summary, "response", out var response)) summary = response;
+        if (TryGetObjectProperty(summary, "data", out var data)) summary = data;
+        if (!TryGetArrayProperty(summary, "groups", out var groups)) return false;
+
+        var isGeminiPool = kind == CliKind.Antigravity;
+        var poolName = isGeminiPool ? "Antigravity (Gemini)" : "Antigravity (Claude / GPT)";
+        foreach (var group in groups.EnumerateArray())
+        {
+            var groupName = GetStringAny(group, "displayName", "display_name") ?? string.Empty;
+            var matchesPool = isGeminiPool
+                ? groupName.Contains("Gemini", StringComparison.OrdinalIgnoreCase)
+                : groupName.Contains("Claude", StringComparison.OrdinalIgnoreCase) ||
+                  groupName.Contains("GPT", StringComparison.OrdinalIgnoreCase);
+            if (!matchesPool || !TryGetArrayProperty(group, "buckets", out var buckets)) continue;
+
+            foreach (var bucket in buckets.EnumerateArray())
+            {
+                var remaining = GetRemainingFraction(bucket);
+                // Protobuf JSON 省略缺省值；缺少 remainingFraction 代表未知，不是 0 或 1。
+                if (remaining is not { } fraction) continue;
+
+                var bucketLabel = GetStringAny(bucket, "displayName", "display_name", "window", "bucketId", "bucket_id") ?? "額度";
+                var duration = InferAntigravityDuration(bucket, bucketLabel);
+                var resetsAt = GetResetTime(bucket);
+                var usedPercent = Math.Clamp(
+                    (int)Math.Round((1.0 - Math.Clamp(fraction, 0.0, 1.0)) * 100.0, MidpointRounding.AwayFromZero),
+                    0,
+                    100);
+                windows.Add(new CliUsageWindow(
+                    $"{poolName}（{bucketLabel}）",
+                    usedPercent,
+                    duration,
+                    resetsAt,
+                    usedPercent > 0 && resetsAt is { } reset && reset > observedAt));
+            }
+        }
+
+        windows = SelectMostConstrainedWindows(windows);
+        return windows.Count > 0;
+    }
+
+    private static List<CliUsageWindow> ParseAntigravityModelConfigsArray(
+        JsonElement configs,
+        CliKind kind,
+        DateTimeOffset observedAt)
+    {
+        var isGeminiPool = kind == CliKind.Antigravity;
+        var poolName = isGeminiPool ? "Antigravity (Gemini)" : "Antigravity (Claude / GPT)";
+        var candidates = new List<CliUsageWindow>();
+
+        foreach (var config in configs.EnumerateArray())
+        {
+            var label = GetStringAny(config, "label", "displayName", "display_name") ?? string.Empty;
+            var matchesPool = isGeminiPool
+                ? label.Contains("Gemini", StringComparison.OrdinalIgnoreCase)
+                : label.Contains("Claude", StringComparison.OrdinalIgnoreCase) ||
+                  label.Contains("GPT", StringComparison.OrdinalIgnoreCase);
+            if (!matchesPool || !TryGetObjectProperty(config, "quotaInfo", out var quotaInfo)) continue;
+
+            var remaining = GetRemainingFraction(quotaInfo);
+            if (remaining is not { } fraction) continue;
+
+            var duration = InferAntigravityDuration(config, label) ?? TimeSpan.FromHours(5);
+            var usedPercent = Math.Clamp(
+                (int)Math.Round((1.0 - Math.Clamp(fraction, 0.0, 1.0)) * 100.0, MidpointRounding.AwayFromZero),
+                0,
+                100);
+            var resetsAt = GetResetTime(quotaInfo);
+            candidates.Add(new CliUsageWindow(
+                poolName,
+                usedPercent,
+                duration,
+                resetsAt,
+                usedPercent > 0 && resetsAt is { } reset && reset > observedAt));
+        }
+
+        return SelectMostConstrainedWindows(candidates);
+    }
+
+    private static List<CliUsageWindow> SelectMostConstrainedWindows(IEnumerable<CliUsageWindow> candidates) =>
+        candidates
+            .GroupBy(window => window.Duration)
+            .Select(group => group
+                .OrderByDescending(window => window.UsedPercent)
+                .ThenBy(window => window.ResetsAt ?? DateTimeOffset.MaxValue)
+                .First())
+            .OrderBy(window => window.Duration ?? TimeSpan.MaxValue)
+            .ToList();
+
+    private static bool TryGetAntigravityConfigs(JsonElement root, out JsonElement configs)
+    {
+        foreach (var candidate in EnumerateNestedObjects(root))
+        {
+            if (TryGetArrayProperty(candidate, "clientModelConfigs", out configs)) return true;
+        }
+
+        configs = default;
+        return false;
+    }
+
+    private static IEnumerable<JsonElement> EnumerateNestedObjects(JsonElement root)
+    {
+        yield return root;
+        if (TryGetObjectProperty(root, "response", out var response))
+        {
+            yield return response;
+            if (TryGetObjectProperty(response, "userStatus", out var responseUserStatus))
+            {
+                yield return responseUserStatus;
+                if (TryGetObjectProperty(responseUserStatus, "cascadeModelConfigData", out var responseCascade)) yield return responseCascade;
+            }
+        }
+        if (TryGetObjectProperty(root, "userStatus", out var userStatus))
+        {
+            yield return userStatus;
+            if (TryGetObjectProperty(userStatus, "cascadeModelConfigData", out var cascade)) yield return cascade;
+        }
+    }
+
+    private static bool TryGetObjectProperty(JsonElement element, string name, out JsonElement value) =>
+        element.TryGetProperty(name, out value) && value.ValueKind == JsonValueKind.Object;
+
+    private static bool TryGetArrayProperty(JsonElement element, string name, out JsonElement value) =>
+        element.TryGetProperty(name, out value) && value.ValueKind == JsonValueKind.Array;
+
+    private static string? GetStringAny(JsonElement element, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String)
+            {
+                return value.GetString();
+            }
+        }
+
+        return null;
+    }
+
+    private static double? GetRemainingFraction(JsonElement element)
+    {
+        if (TryGetNumberAny(element, out var direct, "remainingFraction", "remaining_fraction"))
+        {
+            return direct is >= 0 and <= 1 ? direct : null;
+        }
+        if (TryGetObjectProperty(element, "remaining", out var remaining) &&
+            TryGetNumberAny(remaining, out var nested, "remainingFraction", "remaining_fraction"))
+        {
+            return nested is >= 0 and <= 1 ? nested : null;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetNumberAny(JsonElement element, out double value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (element.TryGetProperty(name, out var property) && property.TryGetDouble(out value)) return true;
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static DateTimeOffset? GetResetTime(JsonElement element)
+    {
+        foreach (var name in new[] { "resetTime", "reset_time", "resetsAt", "resets_at" })
+        {
+            if (element.TryGetProperty(name, out var property))
+            {
+                if (property.ValueKind == JsonValueKind.String &&
+                    DateTimeOffset.TryParse(property.GetString(), out var parsed)) return parsed;
+                if (property.ValueKind == JsonValueKind.Number && property.TryGetInt64(out var seconds))
+                {
+                    try { return DateTimeOffset.FromUnixTimeSeconds(seconds); } catch (ArgumentOutOfRangeException) { }
+                }
+            }
+        }
+        if (TryGetObjectProperty(element, "remaining", out var remaining)) return GetResetTime(remaining);
+        return null;
+    }
+
+    private static TimeSpan? InferAntigravityDuration(JsonElement element, string label)
+    {
+        var window = GetStringAny(element, "window", "windowType", "window_type", "bucketId", "bucket_id") ?? label;
+        if (window.Contains("5h", StringComparison.OrdinalIgnoreCase) ||
+            window.Contains("five", StringComparison.OrdinalIgnoreCase) ||
+            window.Contains("session", StringComparison.OrdinalIgnoreCase)) return TimeSpan.FromHours(5);
+        if (window.Contains("week", StringComparison.OrdinalIgnoreCase) ||
+            window.Contains("7d", StringComparison.OrdinalIgnoreCase)) return TimeSpan.FromDays(7);
+        return null;
     }
 
     private async Task<CliUsageSnapshot> ReadClaudeAsync(CancellationToken cancellationToken)
@@ -540,7 +809,6 @@ public sealed class CliUsageReader : ICliUsageReader
                     observedAt);
             }
 
-            using var client = new HttpClient { Timeout = QueryTimeout };
             for (var attempt = 0; attempt < 2; attempt++)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, ClaudeUsageEndpoint);
@@ -550,7 +818,7 @@ public sealed class CliUsageReader : ICliUsageReader
                 request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
                 request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.5.0");
 
-                using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                using var response = await SharedClaudeHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
                 {

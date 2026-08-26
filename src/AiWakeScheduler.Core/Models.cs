@@ -262,7 +262,7 @@ public static class ScheduleRecurrenceNames
         ScheduleRecurrence.Once => "單次",
         ScheduleRecurrence.Daily => "每天固定時間",
         ScheduleRecurrence.Weekly => "每週",
-        ScheduleRecurrence.Interval => "自動模式（每 5 小時 1 分鐘）",
+        ScheduleRecurrence.Interval => "自動模式（5 小時倒數喚醒）",
         _ => recurrence.ToString()
     };
 }

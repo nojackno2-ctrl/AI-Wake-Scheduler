@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using AiWakeScheduler.Core;
 
 namespace AiWakeScheduler.WinForms;
@@ -717,13 +718,22 @@ internal sealed class MainForm : Form
                 continue;
             }
 
-            label.Text = FormatUsage(snapshot, now);
-            label.ForeColor = snapshot.Availability switch
+            var text = FormatUsage(snapshot, now);
+            var color = snapshot.Availability switch
             {
                 CliUsageAvailability.Available => AppTheme.Success,
                 CliUsageAvailability.Unavailable => AppTheme.Danger,
                 _ => AppTheme.SecondaryText
             };
+
+            if (!string.Equals(label.Text, text, StringComparison.Ordinal))
+            {
+                label.Text = text;
+            }
+            if (label.ForeColor != color)
+            {
+                label.ForeColor = color;
+            }
         }
     }
 
@@ -734,16 +744,44 @@ internal sealed class MainForm : Form
             return snapshot.Message;
         }
 
-        return string.Join("；", snapshot.Windows.Select(window =>
+        if (snapshot.Windows.Count == 0)
         {
-            if (!window.IsActiveCountdown || window.ResetsAt is not { } resetsAt)
+            return "無可用額度視窗";
+        }
+
+        if (snapshot.Windows.Count == 1)
+        {
+            var window = snapshot.Windows[0];
+            if (!window.IsActiveCountdown || window.ResetsAt is not { } singleReset)
             {
                 return $"{window.Name}：剩餘 {window.RemainingPercent}%（未倒數 / 額度充足）";
             }
 
-            var resetText = FormatResetCountdown(resetsAt, now);
-            return $"{window.Name}：剩餘 {window.RemainingPercent}%（{resetText}）";
-        }));
+            var singleResetText = FormatResetCountdown(singleReset, now);
+            return $"{window.Name}：剩餘 {window.RemainingPercent}%（{singleResetText}）";
+        }
+
+        var builder = new StringBuilder(snapshot.Windows.Count * 40);
+        for (var i = 0; i < snapshot.Windows.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append('；');
+            }
+
+            var window = snapshot.Windows[i];
+            builder.Append(window.Name).Append("：剩餘 ").Append(window.RemainingPercent).Append('%');
+            if (!window.IsActiveCountdown || window.ResetsAt is not { } resetsAt)
+            {
+                builder.Append("（未倒數 / 額度充足）");
+            }
+            else
+            {
+                builder.Append("（").Append(FormatResetCountdown(resetsAt, now)).Append('）');
+            }
+        }
+
+        return builder.ToString();
     }
 
     private static string FormatResetCountdown(DateTimeOffset resetsAt, DateTimeOffset now)
@@ -758,6 +796,20 @@ internal sealed class MainForm : Form
             ? $"{remaining.Days}天 {remaining.Hours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}"
             : $"{(int)remaining.TotalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}";
         return $"{countdown} 後重置，{resetsAt.LocalDateTime:MM/dd HH:mm}";
+    }
+
+    private static CliUsageWindow GetShortWindowOrFirst(CliUsageSnapshot snapshot)
+    {
+        var windows = snapshot.Windows;
+        for (var i = 0; i < windows.Count; i++)
+        {
+            var w = windows[i];
+            if (w.Duration is { } d && d <= TimeSpan.FromHours(6))
+            {
+                return w;
+            }
+        }
+        return windows[0];
     }
 
     // ── 使用者操作 ────────────────────────────────────────────────
@@ -980,8 +1032,7 @@ internal sealed class MainForm : Form
                 snapshot.Availability == CliUsageAvailability.Available &&
                 snapshot.Windows.Count > 0)
             {
-                var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
-                    ?? snapshot.Windows[0];
+                var targetWindow = GetShortWindowOrFirst(snapshot);
 
                 if (targetWindow.IsActiveCountdown && targetWindow.ResetsAt is { } resetsAt && now >= resetsAt)
                 {

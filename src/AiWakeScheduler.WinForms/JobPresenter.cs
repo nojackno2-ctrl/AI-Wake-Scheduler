@@ -11,7 +11,7 @@ internal static class JobPresenter
 {
     public static string Time(ScheduledJob job) => job.Recurrence switch
     {
-        ScheduleRecurrence.Interval => $"每5h1m ({job.ScheduledAt.LocalDateTime:HH:mm})",
+        ScheduleRecurrence.Interval => $"5h倒數 ({job.ScheduledAt.LocalDateTime:HH:mm})",
         _ => job.ScheduledAt.LocalDateTime.ToString("HH:mm")
     };
 
@@ -26,45 +26,62 @@ internal static class JobPresenter
 
         if (job.Recurrence == ScheduleRecurrence.Interval && usageSnapshots is not null && job.Targets.Count > 0)
         {
-            var parts = new List<string>(job.Targets.Count);
+            var builder = new StringBuilder(job.Targets.Count * 20);
             for (var i = 0; i < job.Targets.Count; i++)
             {
+                if (i > 0)
+                {
+                    builder.Append('；');
+                }
+
                 var target = job.Targets[i];
                 var name = CliDisplayNames.GetShort(target);
+                builder.Append(name).Append(' ');
+
                 if (usageSnapshots.TryGetValue(target, out var snapshot) &&
                     snapshot.Availability == CliUsageAvailability.Available &&
                     snapshot.Windows.Count > 0)
                 {
-                    var targetWindow = snapshot.Windows.FirstOrDefault(w => w.Duration is { } d && d <= TimeSpan.FromHours(6))
-                        ?? snapshot.Windows[0];
+                    CliUsageWindow? targetWindow = null;
+                    for (var w = 0; w < snapshot.Windows.Count; w++)
+                    {
+                        var win = snapshot.Windows[w];
+                        if (win.Duration is { } d && d <= TimeSpan.FromHours(6))
+                        {
+                            targetWindow = win;
+                            break;
+                        }
+                    }
+                    targetWindow ??= snapshot.Windows[0];
 
                     if (targetWindow.IsActiveCountdown && targetWindow.ResetsAt is { } resetsAt)
                     {
                         var remaining = resetsAt - now;
                         if (remaining <= TimeSpan.Zero)
                         {
-                            parts.Add($"{name} 即將重置");
+                            builder.Append("即將重置");
                         }
                         else
                         {
-                            var countdown = remaining.TotalDays >= 1
-                                ? $"{(int)remaining.TotalDays}天 {remaining:hh\\:mm\\:ss}"
-                                : remaining.ToString(@"hh\:mm\:ss");
-                            parts.Add($"{name} {countdown}");
+                            if (remaining.TotalDays >= 1)
+                            {
+                                builder.Append((int)remaining.TotalDays).Append("天 ");
+                            }
+                            builder.Append(remaining.ToString(@"hh\:mm\:ss"));
                         }
                     }
                     else
                     {
-                        parts.Add($"{name} 未倒數");
+                        builder.Append("未倒數");
                     }
                 }
                 else
                 {
-                    parts.Add($"{name} 尚未讀取");
+                    builder.Append("尚未讀取");
                 }
             }
 
-            return string.Join("；", parts);
+            return builder.ToString();
         }
 
         var generalRemaining = job.ScheduledAt - now;

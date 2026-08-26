@@ -1,5 +1,75 @@
 # AI HANDOFF
 
+## 2026-08-26 程式效能、記憶體與連線全方位最佳化（已完成並驗證）
+
+- **使用者需求**：「最佳化程式」。
+- **核心最佳化項目**：
+  1. **連線重用與 Socket 防護（`CliUsageReader.cs`）**：
+     - 引入 `SharedAgyHttpClient` 與 `SharedClaudeHttpClient`，採用 `SocketsHttpHandler`（設定 `PooledConnectionLifetime` 與 `ConnectTimeout`），徹底消除每次查詢配額時重複配置 `HttpClient` 與 `HttpClientHandler` 所引起的本機 Socket `TIME_WAIT` 與 TLS 握手開銷。
+     - 修復 `Process.GetProcessesByName("language_server")` 回傳陣列未釋放之問題，在 `finally` 區塊中安全釋放所有 `Process` 物件，根除作業系統 Handle 洩漏。
+  2. **串流緩衝池化與取消鏈動（`ProcessRunner.cs`）**：
+     - 在 CLI 標準輸出與錯誤串流讀取（`ReadBoundedAsync`）中引入 `System.Buffers.ArrayPool<char>.Shared`，消除每次 CLI 執行時反覆配置 4KB `char[]` 緩衝區的 GC Gen0 負擔。
+     - 串流讀取 Task 直接連結 `timeoutSource.Token`，確保程序逾時或被終止時串流讀取 Task 能立即中斷。
+  3. **WinForms 每秒計時器零 GC 震盪與渲染最佳化（`MainForm.cs` / `JobPresenter.cs`）**：
+     - `JobPresenter.Countdown`：改用容量預估的 `StringBuilder` 與直接索引迴圈，消除每秒為排程目標配置 `List<string>` 與 `string.Join` 的記憶體負擔。
+     - `MainForm.UpdateUsageLabels` 與 `FormatUsage`：改以直接索引遍歷視窗陣列，消除每秒 LINQ `Select` 與中間集合配置。
+     - 實作 `SetLabelState` 進行等值過濾更新（`label.Text` 與 `label.ForeColor`），在文字或色彩無變動時避免觸發 Win32 `WM_SETTEXT` 與強制重繪訊息，提升 UI 平滑度。
+     - `UiTimerOnTick`：使用 `GetShortWindowOrFirst` 取代每秒 LINQ `FirstOrDefault` 委派配置。
+  4. **排程引擎熱路徑精簡（`ScheduleManager.cs`）**：
+     - 在 `ScanAndStartDueJobsAsync` 與 `CalculateNextDelay` 引入 `GetShortWindowOrFirst` 輔助方法，以高效迴圈取代熱點路徑中的 LINQ 查詢，降低背景掃描時的委派與列舉器配置。
+- **驗證成果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過（含 4 個假 CLI 平行完成）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - 使用者明確指示「再次檢查後commit」，已完成程式檢查與測試驗證並執行 Commit。
+
+
+
+## 2026-08-26 自動模式改為「5 小時倒數到即啟動呼叫」（已完成並驗證）
+
+- **使用者需求**：「自動模式改成，超過設定的時間後，只要檢測到5小時倒數時間到及立刻啟動呼叫」。
+- **核心實作與邏輯**：
+  1. **精準 5 小時視窗判定（`ScheduleManager.cs`）**：
+     - `ScanAndStartDueJobsAsync` 檢查到期目標時，優先匹配 `Duration <= 6h` 之 5 小時額度視窗（`targetWindow`），當該視窗倒數歸零（`targetWindow.ResetsAt <= now`）時立即納入 `dueTargets`。
+     - 立即發起額度探測，確認額度已重置（未倒數）後，精準單獨啟動已到期之 CLI（不影響其他仍處於倒數中之 CLI）。
+  2. **自適應睡眠校準**：
+     - `CalculateNextDelay` 維持精準將各啟用 CLI 之 5 小時倒數結束時間戳記納入推算，倒數歸零時背景迴圈立即甦醒執行。
+  3. **模型與 UI 文字同步（`Models.cs` / `JobPresenter.cs` / `MainForm.cs`）**：
+     - `ScheduleRecurrenceNames.Get(Interval)` 改為「自動模式（5 小時倒數喚醒）」。
+     - `JobPresenter.Time()` 改為「`5h倒數 (HH:mm)`」。
+     - `MainForm.cs` 的排程模式選單、橫幅標題與說明標籤同步更新為 5 小時倒數自動喚醒說明。
+- **驗證成果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過（含 `ScheduleManagerAutoInterval` 與 `ScheduleManagerQuotaAwareInterval`）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - 未 commit、push、發布（遵守 AGENTS.md 規則）。
+
+## 2026-08-26 AGY 五小時額度讀取修正（進行中）
+
+- **問題證據**：`CliUsageReader` 原本只呼叫 `GetCascadeModelConfigData`，只取第一個符合模型池的 `clientModelConfigs`，且 `Duration` 永遠為 `null`；新版 AGY 的五小時／每週額度位於 `RetrieveUserQuotaSummary` 的 `groups[].buckets[]`，因此五小時視窗可能遺失或無法分類。
+- **環境證據**：本機即時 probe 目前回報無法取得 AGY CSRF Token；`agy models` 也回報未登入。這是即時整合環境阻擋，不把它誤報為程式解析成功。
+- **預定修正**：新版 `RetrieveUserQuotaSummary` 優先、`GetUserStatus`／`GetCommandModelConfigs`／舊 `GetCascadeModelConfigData` fallback；解析 Gemini 與 Claude/GPT 的 5 小時及每週 buckets，未知 `remainingFraction` 不猜測；擴充 CSRF 旗標格式。
+- **已完成程式修正**：新版 summary 優先、舊端點 fallback；多模型列合併挑最受限視窗；Duration 正確標示 5 小時／每週；支援 `--csrf_token`、`--extension_server_csrf_token` 的等號／空白格式；無 CSRF 時允許 tokenless `agy` CLI RPC。
+- **驗收**：固定 JSON 的新版 summary、多視窗、舊包裝格式回歸案例已在 `CliUsageReader` 測試段落通過；Debug build 0 警告、0 錯誤；完整 `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過；完整 deterministic suite 前 6/16 通過後在既有排程測試段落超過 3 分鐘無輸出而中止，未宣稱全套通過；opt-in integration 因 Codex 未登入在前置檢查失敗，未取得新的 AGY live 成功證據。
+- **尚未完成**：本機 AGY 即時整合仍受目前登入／CSRF 狀態阻擋（`agy models` 回報未登入），需在 AGY 登入且 language server 可讀時重跑 `--integration`；`MainForm.cs` 的既有未提交 UI 變更保留未動。
+
+## 2026-08-26 剩餘流量面板 UI 重新設計（兩區段分類表格）
+
+- **觸發**：使用者反映「看得很亂，倒數5小時跟每周倒數要分開」、「Codex 也有倒數5小時的額度」。
+- **變更檔案**：`src/AiWakeScheduler.WinForms/MainForm.cs`
+- **第二版改動**（取代第一版卡片式佈局）：
+  1. 改為兩區段表格佈局：「⏱ 倒數喚醒（≤ 6 小時）」與「📅 每周 / 長期額度」。
+  2. 每個區段為簡潔兩欄表格（CLI 名稱 | 狀態），不再使用卡片邊框。
+  3. 區段標題使用淺灰底條 `BuildSectionHeader()`。
+  4. `UpdateUsageLabels()` 改為依 `Window.Duration` 動態分類：Duration ≤ 6h → 短週期，其餘 → 長週期。
+  5. 單一視窗且無 Duration 的 CLI（AGY 等）顯示在短週期區段。
+  6. Codex 的 `primary` 與 `secondary` 兩個視窗會依其 `windowDurationMins` 正確分到對應區段。
+  7. 長週期區段若有多個視窗，以「│」分隔精簡顯示 (`FormatWindowBrief`)。
+  8. 刪除 `BuildCliCard`、`GetExpectedWindowDefs`；新增 `UsageSection` enum、`BuildSectionHeader`、`BuildUsageTable`、`AddUsageRow`、`WindowColor`、`FormatWindowBrief`。
+
+- **建置結果**：0 警告、0 錯誤（`dotnet build`，net8.0-windows，Debug）。
+- **未 commit**：使用者尚未授權提交。
+
 ## 2026-08-22 v1.5.0 發布與 GitHub Release 完成（已提交並推送）
 
 - **使用者授權**：「上傳github並發布執行檔」。

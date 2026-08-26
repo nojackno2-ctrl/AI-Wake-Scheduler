@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 
@@ -68,17 +69,17 @@ public static class ProcessRunner
             throw new InvalidOperationException("無法啟動 CLI 程序。");
         }
 
+        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutSource.CancelAfter(timeout);
+
         // 必須持續讀到 EOF，否則子程序寫滿管線時會卡住；
         // 超過上限的內容會被丟棄，不會累積在記憶體裡。
         var outputTask = shellScript
             ? Task.FromResult(string.Empty)
-            : ReadBoundedAsync(process.StandardOutput, cancellationToken);
+            : ReadBoundedAsync(process.StandardOutput, timeoutSource.Token);
         var errorTask = shellScript
             ? Task.FromResult(string.Empty)
-            : ReadBoundedAsync(process.StandardError, cancellationToken);
-
-        using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutSource.CancelAfter(timeout);
+            : ReadBoundedAsync(process.StandardError, timeoutSource.Token);
         var timedOut = false;
 
         try
@@ -119,34 +120,41 @@ public static class ProcessRunner
 
     private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken)
     {
-        var buffer = new char[4096];
-        var builder = new StringBuilder();
-        var truncated = false;
-
-        int read;
-        while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) > 0)
+        var buffer = ArrayPool<char>.Shared.Rent(4096);
+        try
         {
-            var remaining = MaxCapturedCharacters - builder.Length;
-            if (remaining <= 0)
+            var builder = new StringBuilder();
+            var truncated = false;
+
+            int read;
+            while ((read = await reader.ReadAsync(buffer.AsMemory(0, 4096), cancellationToken).ConfigureAwait(false)) > 0)
             {
-                truncated = true;
-                continue;
+                var remaining = MaxCapturedCharacters - builder.Length;
+                if (remaining <= 0)
+                {
+                    truncated = true;
+                    continue;
+                }
+
+                var take = Math.Min(read, remaining);
+                builder.Append(buffer, 0, take);
+                if (take < read)
+                {
+                    truncated = true;
+                }
             }
 
-            var take = Math.Min(read, remaining);
-            builder.Append(buffer, 0, take);
-            if (take < read)
+            if (truncated)
             {
-                truncated = true;
+                builder.Append(Environment.NewLine).Append("…（輸出過長，其餘內容已捨棄）");
             }
-        }
 
-        if (truncated)
+            return builder.ToString();
+        }
+        finally
         {
-            builder.Append(Environment.NewLine).Append("…（輸出過長，其餘內容已捨棄）");
+            ArrayPool<char>.Shared.Return(buffer);
         }
-
-        return builder.ToString();
     }
 
     private static void TryKill(Process process)
