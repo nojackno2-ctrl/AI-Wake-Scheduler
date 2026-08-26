@@ -816,7 +816,7 @@ public sealed class CliUsageReader : ICliUsageReader
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.TryAddWithoutValidation("anthropic-beta", ClaudeOAuthBeta);
                 request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.5.0");
+                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.6.0");
 
                 using var response = await SharedClaudeHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -1090,7 +1090,7 @@ public sealed class CliUsageReader : ICliUsageReader
             var token = timeoutSource.Token;
 
             await process.StandardInput.WriteLineAsync(
-                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.5.0\"}}}")
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.6.0\"}}}")
                 .ConfigureAwait(false);
             await process.StandardInput.FlushAsync(token).ConfigureAwait(false);
 

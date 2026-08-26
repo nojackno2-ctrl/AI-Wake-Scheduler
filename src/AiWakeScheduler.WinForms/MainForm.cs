@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using AiWakeScheduler.Core;
 
 namespace AiWakeScheduler.WinForms;
@@ -27,13 +26,14 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _uiTimer = new() { Interval = 1000 };
     private Label? _timeLabel;
     private readonly Dictionary<CliKind, CheckBox> _targetChecks = [];
-    private readonly Dictionary<CliKind, Label> _usageLabels = [];
+    private readonly UsageBoard _usageBoard = new();
     private readonly Dictionary<CliKind, CliUsageSnapshot> _usageSnapshots = [];
     private readonly NotifyIcon _notifyIcon;
 
     private SplitContainer? _mainSplit;
     private Button? _saveButton;
     private Button? _refreshUsageButton;
+    private GroupBox? _usageGroup;
     private Label? _emptyStateLabel;
     private CancellationTokenSource? _usageRefreshCancellation;
     private Guid? _editingId;
@@ -375,57 +375,68 @@ internal sealed class MainForm : Form
 
     private Control BuildUsagePanel()
     {
-        var group = new GroupBox
-        {
-            Text = "剩餘流量與重置倒數",
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Margin = new Padding(0, 8, 0, 8)
-        };
-        AppTheme.StyleGroup(group);
-        var table = new TableLayoutPanel
+        var container = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = 2,
-            RowCount = CliCatalog.All.Count + 1
+            ColumnCount = 1,
+            RowCount = 2,
+            Margin = new Padding(0, 10, 0, 4),
+            BackColor = Color.Transparent
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        container.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        container.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var row = 0;
-        foreach (var descriptor in CliCatalog.All)
+        // 看板高度由內容決定，所以 GroupBox 不用 AutoSize，
+        // 改由 UsageBoard 回報所需高度後直接指定，量測只做一次。
+        var group = new GroupBox
         {
-            table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.Controls.Add(new Label
-            {
-                Text = descriptor.ShortName,
-                AutoSize = true,
-                Font = AppTheme.TableHeader,
-                Margin = new Padding(0, 7, 14, 7)
-            }, 0, row);
-            var value = new Label
-            {
-                Text = "尚未讀取",
-                AutoSize = true,
-                MaximumSize = new Size(430, 0),
-                ForeColor = AppTheme.SecondaryText,
-                Margin = new Padding(0, 7, 0, 7)
-            };
-            _usageLabels[descriptor.Kind] = value;
-            table.Controls.Add(value, 1, row);
-            row++;
+            Text = "剩餘流量與重置倒數",
+            Dock = DockStyle.Top,
+            AutoSize = false,
+            Height = 220,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+        AppTheme.StyleGroup(group);
+        _usageGroup = group;
+
+        _usageBoard.Dock = DockStyle.Fill;
+        _usageBoard.BackColor = AppTheme.Panel;
+        _usageBoard.PreferredHeightChanged += (_, _) => SyncUsageGroupHeight();
+        group.Controls.Add(_usageBoard);
+        container.Controls.Add(group, 0, 0);
+
+        var actions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0)
+        };
+        _refreshUsageButton = ActionButton("重新讀取倒數", RefreshUsageOnClick);
+        _refreshUsageButton.Margin = new Padding(0, 2, 8, 2);
+        actions.Controls.Add(_refreshUsageButton);
+        container.Controls.Add(actions, 0, 1);
+        return container;
+    }
+
+    /// <summary>把 GroupBox 撐到剛好容納看板內容的高度。</summary>
+    private void SyncUsageGroupHeight()
+    {
+        if (_usageGroup is null || _usageGroup.IsDisposed)
+        {
+            return;
         }
 
-        table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        _refreshUsageButton = ActionButton("重新讀取倒數", RefreshUsageOnClick);
-        _refreshUsageButton.Margin = new Padding(0, 8, 0, 4);
-        table.Controls.Add(_refreshUsageButton, 0, row);
-        table.SetColumnSpan(_refreshUsageButton, 2);
-        group.Controls.Add(table);
-        return group;
+        // GroupBox 的標題與框線不算在 DisplayRectangle 內，兩者的差就是外框佔掉的高度。
+        var chrome = _usageGroup.Height - _usageGroup.DisplayRectangle.Height;
+        var target = _usageBoard.PreferredHeight + chrome;
+        if (Math.Abs(_usageGroup.Height - target) > 1)
+        {
+            _usageGroup.Height = target;
+        }
     }
 
     private async void MainFormOnShown(object? sender, EventArgs e)
@@ -708,95 +719,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void UpdateUsageLabels(DateTimeOffset now)
-    {
-        foreach (var descriptor in CliCatalog.All)
-        {
-            if (!_usageLabels.TryGetValue(descriptor.Kind, out var label) ||
-                !_usageSnapshots.TryGetValue(descriptor.Kind, out var snapshot))
-            {
-                continue;
-            }
-
-            var text = FormatUsage(snapshot, now);
-            var color = snapshot.Availability switch
-            {
-                CliUsageAvailability.Available => AppTheme.Success,
-                CliUsageAvailability.Unavailable => AppTheme.Danger,
-                _ => AppTheme.SecondaryText
-            };
-
-            if (!string.Equals(label.Text, text, StringComparison.Ordinal))
-            {
-                label.Text = text;
-            }
-            if (label.ForeColor != color)
-            {
-                label.ForeColor = color;
-            }
-        }
-    }
-
-    private static string FormatUsage(CliUsageSnapshot snapshot, DateTimeOffset now)
-    {
-        if (snapshot.Availability != CliUsageAvailability.Available)
-        {
-            return snapshot.Message;
-        }
-
-        if (snapshot.Windows.Count == 0)
-        {
-            return "無可用額度視窗";
-        }
-
-        if (snapshot.Windows.Count == 1)
-        {
-            var window = snapshot.Windows[0];
-            if (!window.IsActiveCountdown || window.ResetsAt is not { } singleReset)
-            {
-                return $"{window.Name}：剩餘 {window.RemainingPercent}%（未倒數 / 額度充足）";
-            }
-
-            var singleResetText = FormatResetCountdown(singleReset, now);
-            return $"{window.Name}：剩餘 {window.RemainingPercent}%（{singleResetText}）";
-        }
-
-        var builder = new StringBuilder(snapshot.Windows.Count * 40);
-        for (var i = 0; i < snapshot.Windows.Count; i++)
-        {
-            if (i > 0)
-            {
-                builder.Append('；');
-            }
-
-            var window = snapshot.Windows[i];
-            builder.Append(window.Name).Append("：剩餘 ").Append(window.RemainingPercent).Append('%');
-            if (!window.IsActiveCountdown || window.ResetsAt is not { } resetsAt)
-            {
-                builder.Append("（未倒數 / 額度充足）");
-            }
-            else
-            {
-                builder.Append("（").Append(FormatResetCountdown(resetsAt, now)).Append('）');
-            }
-        }
-
-        return builder.ToString();
-    }
-
-    private static string FormatResetCountdown(DateTimeOffset resetsAt, DateTimeOffset now)
-    {
-        var remaining = resetsAt - now;
-        if (remaining <= TimeSpan.Zero)
-        {
-            return "等待伺服器更新";
-        }
-
-        var countdown = remaining.Days > 0
-            ? $"{remaining.Days}天 {remaining.Hours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}"
-            : $"{(int)remaining.TotalHours:00}:{remaining.Minutes:00}:{remaining.Seconds:00}";
-        return $"{countdown} 後重置，{resetsAt.LocalDateTime:MM/dd HH:mm}";
-    }
+    private void UpdateUsageLabels(DateTimeOffset now) => _usageBoard.Apply(_usageSnapshots, now);
 
     private static CliUsageWindow GetShortWindowOrFirst(CliUsageSnapshot snapshot)
     {

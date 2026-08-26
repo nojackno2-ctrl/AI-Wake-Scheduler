@@ -1,5 +1,70 @@
 # AI HANDOFF
 
+## 2026-08-26 v1.6.0 發布與 GitHub Release 完成（已提交並推送）
+
+- **使用者授權**：「commit後push到github發布執行檔」。
+- **核心功能升級**：
+  1. **剩餘流量與重置倒數全新自繪看板（`UsageBoard.cs`）**：
+     - 每個 CLI 獨立區塊，顯示名稱與資料新鮮度（「剛更新／N 分鐘前更新」）。
+     - 每個額度視窗獨立一列：`視窗名稱 ─ 水位色彩量化長條圖 ─ 百分比 ─ 等寬字型重置倒數 ─ 重置時刻`。
+     - 顏色依水位即時表達（≥50% 綠、≥20% 琥珀、其餘紅）；等寬字型（Consolas/Cascadia Mono）保證倒數跳動平穩不抖動。
+  2. **自動模式 5 小時倒數到即啟動呼叫**：
+     - 精準判定 5 小時視窗（`Duration <= 6h`），倒數歸零立即探測並單獨喚醒已到期之 CLI。
+     - 排程自適應睡眠將 5 小時結束時刻納入計算，零延遲喚醒。
+  3. **連線重用、GC 零震盪與核心效能最佳化**：
+     - `SharedAgyHttpClient` / `SharedClaudeHttpClient` 與 SocketsHttpHandler 連線池化，消除 Socket TIME_WAIT。
+     - CLI 串流讀取採用 `ArrayPool<char>.Shared`。
+     - 每秒計時器熱路徑消除 LINQ 與中間字串配置，改用自繪雙緩衝控制項渲染。
+- **發布流程與產物**：
+  1. 版本號全面升級為 `v1.6.0`（`AiWakeScheduler.WinForms.csproj`、`installer/AI倒數喚醒.iss`、`build-installer.ps1`、`CliUsageReader.cs`、`README.md`）。
+  2. 執行 `build-installer.ps1`：Deterministic 測試 15/15 全數通過、Self-Contained win-x64 發布完成、Inno Setup 成功編譯出 `dist\AI倒數喚醒_Setup_v1.6.0_x64.exe`（48,624,083 bytes，SHA256: `5E8C9273088F224DD7C7DA757F55F546DF8EFFB28581838D020A9C4CD1F54B44`）。
+  3. Git 提交並推送到遠端 `origin/main`，建立並推送 Tag `v1.6.0`。
+  4. 透過 GitHub CLI 建立官方 Release `v1.6.0`，並成功上傳安裝包與校驗檔。
+
+## 2026-08-26 「剩餘流量與重置倒數」區塊改版（已完成並驗證）
+
+- **使用者需求**：「把這個介面重作，很難讀」（附上舊版截圖：每個 CLI 一行長字串，
+  多個額度視窗以「；」串接後自動換行，整段同色）。
+- **問題診斷**：舊版把一個 CLI 的所有額度視窗串成單一 Label 文字
+  （`MainForm.FormatUsage`），造成四個可讀性缺陷：
+  1. 視窗名稱重複帶著 CLI 全名（`Antigravity (Gemini)（Five Hour Limit Remaining）`）；
+  2. 多個視窗擠在同一段落，換行後看不出哪個百分比對應哪個倒數；
+  3. 百分比與倒數沒有欄位對齊，也沒有任何視覺量值；
+  4. 整段依「可用／不可用」上色，所以額度只剩 5% 時仍是綠色。
+- **新版實作**：
+  1. **新增 `src/AiWakeScheduler.WinForms/UsageBoard.cs`（自繪 `Control`）**：
+     每個 CLI 一段標題（短名 + 右側「剛更新／N 分鐘前更新」新鮮度），
+     每個額度視窗獨立一列：`視窗名稱 ─ 剩餘量長條 ─ 百分比 ─ 重置倒數 ─ 重置時刻`。
+     欄寬由實際文字量測決定並隨 DPI 縮放；量測與繪製共用同一段版面計算
+     （`Render(Graphics?, int)`，傳 null 時只回傳所需高度）。
+  2. **視窗名稱正規化**：優先由 `CliUsageWindow.Duration` 推出「5 小時／每日／每週／N 天」，
+     期間相同而分不出來時（例如 Claude 的多個 7 天額度）才回退到清理過的原始名稱
+     （去掉與 CLI 重複的前綴、拆掉括號、把 `Five Hour / Weekly / Daily` 譯成中文）。
+  3. **顏色改為表達水位**：剩餘 ≥50% 綠、≥20% 琥珀（新增 `AppTheme.Caution`）、
+     其餘紅色，長條底槽用新增的 `AppTheme.MeterTrack`。不可用狀態才顯示紅色錯誤訊息。
+  4. **倒數改用等寬字型**（新增 `AppTheme.Mono`，Consolas → Cascadia Mono → Courier New，
+     並比對實際取得的字族名稱以避免 GDI+ 靜默回退），每秒重畫時數字不會左右跳動；
+     超過一天只顯示到分鐘（`6天 19:00`），一天內才顯示秒。
+  5. **`MainForm`**：`BuildUsagePanel` 改為「GroupBox（固定高度）+ 看板 + 重新讀取按鈕」的容器；
+     看板以 `PreferredHeightChanged` 回報所需高度，`SyncUsageGroupHeight` 依
+     `Height - DisplayRectangle.Height` 算出外框佔用高度後指定 GroupBox 高度。
+     `UpdateUsageLabels` 縮為一行委派給 `UsageBoard.Apply`，刪除 `FormatUsage`
+     與 `FormatResetCountdown`（連同不再需要的 `using System.Text;`）。
+     每秒只重繪一塊雙緩衝控制項，取代原本更新 4 個 Label 的 `WM_SETTEXT`。
+- **過程中修掉的真實缺陷**：`AppTheme.MonoFamilies` 起初宣告在 `Mono` 之後，
+  靜態欄位依宣告順序初始化，`CreateMono` 會讀到 null 而擲出 `NullReferenceException`
+  （型別初始化失敗 = 主視窗開不起來）。已把候選清單移到 `Mono` 之前並加註說明。
+- **驗證成果**：
+  - Debug 與 Release 建置皆成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+  - **實際畫面驗證**：在 scratchpad 建立臨時預覽專案，以反射建立 `UsageBoard`、
+    複刻 `BuildUsagePanel` 的容器結構，餵入四種 CLI 的假快照（含倒數中、額度充足、
+    低水位、多個 7 天視窗、查詢失敗、尚未讀取），以 `DrawToBitmap` 產出 PNG 檢視：
+    欄位對齊正確、GroupBox 高度同步後無裁切、錯誤訊息正確換行。
+    此為離屏渲染證據，未啟動正式安裝版主程式。
+- **未做**：未 commit、未推送、未改版本號、未重新打包安裝檔。
+
 ## 2026-08-26 程式效能、記憶體與連線全方位最佳化（已完成並驗證）
 
 - **使用者需求**：「最佳化程式」。
