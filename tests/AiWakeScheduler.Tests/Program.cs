@@ -415,6 +415,63 @@ static Task TestCliUsageReaderAsync()
     Assert(!CliUsageReader.IsCountingDown(null, observedAt), "null snapshot 應判定為未倒數。");
     Assert(!CliUsageReader.IsCountingDown(claudeError, observedAt), "Unavailable snapshot 應判定為未倒數。");
 
+    // Antigravity CSRF Token 擷取：--name=value、--name value、加引號與
+    // extension server 變體都要能取出，不相關的日誌行則不可誤判。
+    Assert(
+        CliUsageReader.ExtractAntigravityToken("language_server.exe --csrf_token=abc123 --port 6370") == "abc123",
+        "--csrf_token=value 形式應取出 Token。");
+    Assert(
+        CliUsageReader.ExtractAntigravityToken("language_server.exe --csrf_token def456 --port 6370") == "def456",
+        "--csrf_token value 形式應取出 Token。");
+    Assert(
+        CliUsageReader.ExtractAntigravityToken("language_server.exe --csrf_token \"ghi789\"") == "ghi789",
+        "加雙引號的 Token 應去掉引號。");
+    Assert(
+        CliUsageReader.ExtractAntigravityToken("--extension_server_csrf_token=jkl012") == "jkl012",
+        "extension server 變體也應取出 Token。");
+    Assert(
+        CliUsageReader.ExtractAntigravityToken("listening on random port at 6370 for HTTPS") is null,
+        "不含 Token 的日誌行不應誤判。");
+
+    // 連接埠與 Token 都是最近一次啟動寫入的，必須從日誌尾端讀；
+    // 從檔頭讀會拿到 Antigravity 重啟前的失效連接埠。
+    var agyLogPath = Path.Combine(Path.GetTempPath(), $"aiwake-agy-{Guid.NewGuid():N}.log");
+    try
+    {
+        var logLines = new List<string> { "listening on random port at 1111 for HTTPS" };
+        for (var i = 0; i < 500; i++)
+        {
+            logLines.Add($"noise line {i}");
+        }
+        logLines.Add("listening on random port at 6370 for HTTPS");
+        File.WriteAllLines(agyLogPath, logLines);
+
+        var tail = CliUsageReader.ReadTailLines(agyLogPath, 300);
+        Assert(tail.Count == 300, "應只讀取尾端指定行數。");
+        Assert(
+            tail[^1].Contains("6370", StringComparison.Ordinal),
+            "尾端最後一行應是最新一次啟動寫入的連接埠。");
+        Assert(
+            !tail.Any(line => line.Contains("1111", StringComparison.Ordinal)),
+            "Antigravity 重啟前的失效連接埠不應出現在尾端視窗中。");
+    }
+    finally
+    {
+        try
+        {
+            File.Delete(agyLogPath);
+        }
+        catch
+        {
+        }
+    }
+
+    Assert(
+        CliUsageReader.ReadTailLines(
+            Path.Combine(Path.GetTempPath(), $"aiwake-missing-{Guid.NewGuid():N}.log"),
+            300).Count == 0,
+        "日誌檔不存在時應回傳空清單而非丟出例外。");
+
     return Task.CompletedTask;
 }
 
@@ -882,6 +939,63 @@ static async Task TestCliRunnerAsync()
         Assert(!invalidExeResult.Succeeded, "非法的可執行檔應執行失敗。");
         Assert(invalidExeResult.LogPath.EndsWith("-error.log", StringComparison.OrdinalIgnoreCase), "執行失敗應建立 -error.log 日誌檔案。");
         Assert(File.Exists(invalidExeResult.LogPath), "錯誤日誌檔案應存在於磁碟。");
+
+        // .cmd / .bat 必須經由 cmd.exe 執行，而且不能開視窗、輸出要抓得到。
+        // 舊做法走 ShellExecute，會跳出主控台視窗且完全擷取不到輸出。
+        if (OperatingSystem.IsWindows())
+        {
+            var shimPath = Path.Combine(directory, "echo-args.cmd");
+            await File.WriteAllTextAsync(
+                shimPath,
+                // %2 保留原本的引號：批次檔內若把 & 展開成裸字元，
+                // 會被 cmd 當成命令分隔符，那是批次檔自身的語法問題而非參數傳遞問題。
+                "@echo off\r\necho ARG1=%~1\r\necho ARG2=%2\r\n",
+                new System.Text.UTF8Encoding(false));
+
+            var shimResult = await ProcessRunner.ExecuteAsync(
+                shimPath,
+                ["hello world", "a&b"],
+                directory,
+                TimeSpan.FromSeconds(20),
+                CancellationToken.None);
+
+            Assert(shimResult.ExitCode == 0, $".cmd 應正常結束：{shimResult.StandardError}");
+            Assert(
+                shimResult.StandardOutput.Contains("ARG1=hello world", StringComparison.Ordinal),
+                ".cmd 執行的輸出必須擷取得到，且含空白的參數要完整傳入。");
+            Assert(
+                shimResult.StandardOutput.Contains("ARG2=\"a&b\"", StringComparison.Ordinal),
+                "含 cmd 保留字元的參數必須以單一參數送達，不可在外層命令列被切開。");
+        }
+
+        // cmd.exe 的引號規則：空白與引號要包起來，結尾反斜線要加倍。
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("C:\\tools\\run.cmd", []) == "/d /s /c \"C:\\tools\\run.cmd\"",
+            "沒有特殊字元的路徑不應被多加引號。");
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("C:\\my tools\\run.cmd", ["早安 & whoami"]) ==
+                "/d /s /c \"\"C:\\my tools\\run.cmd\" \"早安 & whoami\"\"",
+            "含空白的路徑與參數都必須各自加引號。");
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("run.cmd", ["say \"hi\""]) ==
+                "/d /s /c \"run.cmd \"say \\\"hi\\\"\"\"",
+            "參數內的雙引號必須以反斜線跳脫。");
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("run.cmd", ["C:\\path with space\\"]) ==
+                "/d /s /c \"run.cmd \"C:\\path with space\\\\\"\"",
+            "結尾反斜線必須加倍，否則會把收尾引號跳脫掉。");
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("run.cmd", [string.Empty]) == "/d /s /c \"run.cmd \"\"\"",
+            "空字串參數必須保留為一對引號。");
+        // 迴歸測試：a&b 沒有空白也沒有引號，只依 argv 規則不會加引號，
+        // 但 cmd 會把它切成兩個命令並嘗試執行 b。
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("run.cmd", ["a&b"]) == "/d /s /c \"run.cmd \"a&b\"\"",
+            "含 cmd 運算子的參數即使沒有空白也必須加引號。");
+        Assert(
+            ProcessRunner.BuildCommandShellArguments("run.cmd", ["a|b", "c>d", "e^f"]) ==
+                "/d /s /c \"run.cmd \"a|b\" \"c>d\" \"e^f\"\"",
+            "其餘 cmd 運算子同樣必須加引號。");
     }
     finally
     {
@@ -1592,9 +1706,16 @@ static async Task TestExecutableLocatorAsync()
         Console.WriteLine($"  Antigravity (Gemini) Usage: Availability={agyUsage.Availability}, Windows={agyUsage.Windows.Count}, Message={agyUsage.Message}");
         if (agyUsage.Availability == CliUsageAvailability.Available)
         {
-            Assert(agyUsage.Windows.Count == 1, "Antigravity (Gemini) 應回傳 1 個額度視窗。");
-            Assert(agyUsage.Windows[0].RemainingPercent is >= 0 and <= 100, "Gemini 剩餘百分比應落在 0 到 100。");
-            Console.WriteLine($"  -> Gemini: 剩餘 {agyUsage.Windows[0].RemainingPercent}%, 重置時間: {agyUsage.Windows[0].ResetsAt?.LocalDateTime}");
+            // 視窗數量取決於 language server 回應哪一支 RPC：
+            // RetrieveUserQuotaSummary 會一併帶出每週額度，舊的
+            // GetCascadeModelConfigData 則只有短週期，所以不能寫死數量。
+            Assert(agyUsage.Windows.Count > 0, "Antigravity (Gemini) 應至少回傳 1 個額度視窗。");
+            Assert(agyUsage.Windows.All(window => window.RemainingPercent is >= 0 and <= 100),
+                "Gemini 剩餘百分比應落在 0 到 100。");
+            foreach (var window in agyUsage.Windows)
+            {
+                Console.WriteLine($"  -> {window.Name}: 剩餘 {window.RemainingPercent}%, 視窗 {window.Duration?.ToString() ?? "未知"}, 重置時間: {window.ResetsAt?.LocalDateTime}");
+            }
         }
 
         var agyClaudeUsage = await new CliUsageReader().ReadAsync(
@@ -1604,10 +1725,45 @@ static async Task TestExecutableLocatorAsync()
         Console.WriteLine($"  Antigravity (Claude / GPT) Usage: Availability={agyClaudeUsage.Availability}, Windows={agyClaudeUsage.Windows.Count}, Message={agyClaudeUsage.Message}");
         if (agyClaudeUsage.Availability == CliUsageAvailability.Available)
         {
-            Assert(agyClaudeUsage.Windows.Count == 1, "Antigravity (Claude / GPT) 應回傳 1 個額度視窗。");
-            Assert(agyClaudeUsage.Windows[0].RemainingPercent is >= 0 and <= 100, "Claude/GPT 剩餘百分比應落在 0 到 100。");
-            Console.WriteLine($"  -> Claude/GPT: 剩餘 {agyClaudeUsage.Windows[0].RemainingPercent}%, 重置時間: {agyClaudeUsage.Windows[0].ResetsAt?.LocalDateTime}");
+            Assert(agyClaudeUsage.Windows.Count > 0, "Antigravity (Claude / GPT) 應至少回傳 1 個額度視窗。");
+            Assert(agyClaudeUsage.Windows.All(window => window.RemainingPercent is >= 0 and <= 100),
+                "Claude/GPT 剩餘百分比應落在 0 到 100。");
+            foreach (var window in agyClaudeUsage.Windows)
+            {
+                Console.WriteLine($"  -> {window.Name}: 剩餘 {window.RemainingPercent}%, 視窗 {window.Duration?.ToString() ?? "未知"}, 重置時間: {window.ResetsAt?.LocalDateTime}");
+            }
         }
+
+        // Antigravity 沒開時的自動啟動路徑：直接啟動一個隱藏的 agy language server，
+        // 對它查詢額度，再確認程序有被收乾淨。
+        var agyExecutable = ExecutableLocator.Resolve(CliKind.Antigravity, "agy", workingDir);
+        Assert(agyExecutable is not null, "應能解析 agy 可執行檔路徑。");
+
+        var launchStopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var launchedPort = 0;
+        var launchedWindows = 0;
+        using (var host = await AntigravityLauncher.StartAsync(agyExecutable!, workingDir, CancellationToken.None))
+        {
+            Assert(host is not null, "應能在背景啟動 Antigravity language server。");
+            launchedPort = host!.Port;
+            Console.WriteLine($"  自動啟動的 language server: 連接埠 {launchedPort}（耗時 {launchStopwatch.ElapsedMilliseconds} ms）");
+
+            var launchedSnapshot = await CliUsageReader.ReadLaunchedAntigravityForTestAsync(
+                host,
+                CliKind.Antigravity,
+                CancellationToken.None);
+            Assert(
+                launchedSnapshot.Availability == CliUsageAvailability.Available,
+                $"自動啟動的 language server 應可讀取額度：{launchedSnapshot.Message}");
+            launchedWindows = launchedSnapshot.Windows.Count;
+            foreach (var window in launchedSnapshot.Windows)
+            {
+                Console.WriteLine($"  -> {window.Name}: 剩餘 {window.RemainingPercent}%, 視窗 {window.Duration?.ToString() ?? "未知"}");
+            }
+        }
+
+        Assert(launchedPort > 0, "自動啟動應回傳有效連接埠。");
+        Assert(launchedWindows > 0, "自動啟動應至少讀到一個額度視窗。");
 
         var probeClaude = await runner.ProbeAsync(CliKind.Claude, new CliProfile { Executable = "claude" }, workingDir);
         Assert(probeClaude.Succeeded, $"Claude Probe 應成功：{probeClaude.Summary}");

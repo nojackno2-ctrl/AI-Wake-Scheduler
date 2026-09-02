@@ -1,5 +1,117 @@
 # AI HANDOFF
 
+## 2026-09-02 Antigravity 未啟動時自動於背景無視窗拉起服務、CLI 主控台視窗閃現修正（已完成並實測）
+
+- **使用者需求**：「我想要加入一個如果發現程式沒開，他要自己開終端機啟動程式，
+  但是我不要看到任何的視窗」，並確認「程式」指 Antigravity 的 language server，
+  同時一併修掉既有的 `.cmd`/`.bat` 主控台視窗閃現。
+
+### A. Antigravity 自動啟動（`AntigravityLauncher.cs`，新檔）
+
+- **不可行的方案（都已實測）**：
+  1. `language_server.exe` 預設模式：要求 IDE 從 stdin 餵入私有 metadata，
+     否則 `Failed to read initial metadata from stdin` 直接結束。
+  2. `language_server.exe -standalone=true`：會進入互動式 OAuth，
+     在主控台印出 Google 授權網址並等人貼回 redirect URL，無法無人值守。
+  3. `agy` 互動模式（stdin 用管線撐開）：不會初始化 language server，日誌是空的。
+  4. 「重導 stdout 但不讀取、靠管線緩衝區撐住程序」：`agy changelog` 輸出 87 KB
+     足以塞爆 4 KB 緩衝區，但它是純本地命令、根本不啟動 language server；
+     會啟動服務的 `agy models` 只輸出約 500 B，撐不住。
+- **採用的方案**：啟動隱藏的 `agy models`。它是子命令而非提示詞，
+  不建立模型回合、不消耗 Token，但因為要向後端查詢可用模型，
+  一定會啟動行程內的 language server（認證沿用使用者既有登入狀態）。
+  `UseShellExecute=false` + `CreateNoWindow=true` + `WindowStyle=Hidden`
+  且三個標準串流全部重導，因此完全沒有視窗。
+- **兩個必須等待的階段（實測得知，各自都會造成失敗）**：
+  1. 監聽連接埠出現後，服務還不能接受請求 → 第一版整合測試「沒有任何回應」。
+  2. 服務能接受請求後，額度仍在非同步載入（`doRefreshQuota` 是背景工作），
+     會先回一份沒有額度的空殼 → 第二版整合測試「已回應，但未找到可解析的額度視窗」。
+  因此重試條件是「解析得出額度視窗」（`ContainsAntigravityQuota` 同時試兩個額度池），
+  不是「HTTP 有回應」；重試到成功、agy 程序結束、或 30 秒時限為止，整體再重試兩輪。
+- **連接埠取得**：比對啟動前後的 `~/.gemini/antigravity-cli/log/cli-*.log`，
+  只掃這次新增的那一份，找 `listening on ... port at N for HTTPS`。
+  agy 的行程內 language server 是 tokenless，不需要 CSRF Token。
+- **生命週期**：`AntigravityHost` 實作 `IDisposable`，釋放時
+  `Kill(entireProcessTree: true)`，讀完即收，不留背景程序。
+- **快取**：自行啟動的結果快取 20 秒（一般探測仍是 3 秒），
+  因為 Gemini 與 Claude/GPT 兩個額度池是分開讀的，快取太短會各啟動一次 agy。
+- **設定**：新增 `AppSettings.AutoStartAntigravity`（預設開啟）與設定視窗的勾選項
+  「Antigravity 沒開時，於背景無視窗自動啟動以讀取額度」；關閉後遇到未啟動
+  只回報訊息，不會產生任何子程序。
+
+### B. `.cmd` / `.bat` 主控台視窗閃現（`ProcessRunner.cs`）
+
+- **原本的問題**：對 `.cmd`/`.bat` 走 `UseShellExecute = true` +
+  `CreateNoWindow = false`，每次執行都會跳出黑色主控台視窗，
+  而且 stdout/stderr 完全擷取不到（日誌與終端機面板都是空的）。
+- **改法**：改用 `cmd.exe /d /s /c "..."`，全程 `UseShellExecute=false` +
+  `CreateNoWindow=true` + 重導三個串流。`/d` 跳過 AutoRun 登錄項，
+  `/s` 讓 cmd 只剝掉最外層的一對引號。`ProcessExecution.UsedShell` 仍回報 true，
+  日誌敘述維持正確。
+- **實作過程中被測試抓到的真實 bug**：`QueryArgument` 原本只依 argv 規則
+  （空白與雙引號）決定要不要加引號，但這串參數要先經過 cmd 剖析，
+  沒有空白的 `a&b` 一樣會被切成兩個命令並嘗試執行 `b`
+  （測試錯誤：`'b' 不是內部或外部命令`）。已補上 cmd 運算子集合
+  `&|<>^()!,;=` 一併納入判斷。註記：`%` 的展開發生在引號處理之前，
+  加引號救不了，這是 cmd 的固有限制，且與改動前的 ShellExecute 行為相同。
+
+### 驗證
+
+- Deterministic 測試 **15/15 通過**。新增：實際建立 `.cmd` 並經 `ProcessRunner`
+  執行，驗證輸出擷取得到、含空白與含 `&` 的參數完整送達；
+  以及 `BuildCommandShellArguments` 的七項引號規則（含上述 `a&b` 迴歸測試）。
+- `--integration` **1/1 通過**。自動啟動路徑實測：175 ms 起服務（連接埠 14717），
+  讀到 Gemini 5 小時剩餘 96%、7 天剩餘 100%，與 IDE 既有 language server
+  讀到的數字完全一致。測試結束後確認沒有殘留的 `agy.exe`，
+  IDE 原本的 `language_server.exe`（PID 26076）未受影響。
+
+## 2026-09-02 Antigravity 額度讀取比照「子代理」重寫（已完成並實測）
+
+- **使用者需求**：「AI倒數喚醒的讀取各AI流量的方式參考子代理的讀取方式，因為我覺得
+  AI倒數喚醒的流量讀取很不好」。
+- **比對結果**：Claude（`~/.claude/.credentials.json` → `/api/oauth/usage`）與
+  Codex（app-server `account/rateLimits/read`）兩條在兩個專案中做法已經一致，
+  本專案這一側甚至多了 30 秒快取、HTTP 429 退避與 access token 輪替重試，因此不動。
+  問題全部集中在 Antigravity 這條。
+- **子代理的做法**：主要來源是 `agy -p /usage` 的文字表格（同時給 Gemini 與
+  Claude/GPT 兩個池的 7 天與 5 小時視窗），Language Server RPC 只當診斷用後備；
+  取 CSRF Token 走「讀 `language_server.log` 尾端 → CIM 後備」，並快取可用連線。
+- **`agy -p /usage` 未採用的原因（實測）**：本機安裝的 agy build 沒有 `/usage`
+  斜線指令（`--output-format stream-json` 的 `expanded_commands` 只有 `plan`），
+  模型會把它當一般提示詞並嘗試 `run_command`，被權限攔下後回傳空字串，
+  等於白白消耗一個模型回合（約 17k tokens）卻拿不到任何額度。因此改為只移植
+  子代理在「連線探測」與「連線快取」上的穩定做法，不引入需要模型回合的路徑。
+- **`CliUsageReader.cs` 變更**：
+  1. **移除 `NativeProcessHelper` 整個類別**（`NtQueryInformationProcess`、
+     `ReadProcessMemory`、`SeDebugPrivilege` 提權、PEB 偏移量猜測）。取 CSRF Token
+     不再讀取其他行程的記憶體，本檔案也不再需要 `System.Runtime.InteropServices`。
+  2. **新增 `DiscoverAntigravityEndpointsAsync`**：先掃日誌尾端取得連接埠與 Token，
+     缺漏時才以「單一次」PowerShell CIM 查詢一併補齊命令列與 Listen 連接埠
+     （舊版最多會開三個 PowerShell 子程序）。
+  3. **修正日誌讀取方向**：舊的 `GetAntigravityCandidatePorts` 讀「檔頭前 200 行」，
+     會拿到 Antigravity 重啟前的失效連接埠；新的 `ReadTailLines` 只載入尾端
+     128 KB 並取最後 300 行，永遠對應最近一次啟動。
+  4. **新增連線快取 `AntigravityConnection(Port, CsrfToken, RpcMethod)`**：
+     連 RPC 方法一起記住，下一次讀取直接命中，不再每次都跑
+     「所有連接埠 × 四種 RPC 方法」的交叉列舉。連線失效時自動清除並重新探測。
+  5. **移除 5 秒雙重採樣與 `ReconcileAntigravityWindows`**：舊版偵測到倒數時會
+     `Task.Delay(5s)` 再採樣一次比對時間戳記是否固定，讓每次讀取多卡 5 秒，
+     且比對不過時會把 `ResetsAt` 直接抹成 null。
+  6. **新增 `DescribeAntigravityCoverage`**：訊息依實際解析到的視窗長度決定，
+     只拿到短週期時明講「不含每週額度」，不再讓人誤以為週額度是滿的。
+- **實測結果（`--integration`）**：Antigravity 兩個池都回傳 **2 個視窗且含每週額度**
+  （舊版只有 1 個短週期視窗）：
+  - Gemini：5 小時剩餘 96%（重置 2026/9/2 12:35:41）、7 天剩餘 100%（重置 2026/9/9 07:40:58）
+  - Claude/GPT：5 小時剩餘 100%（重置 2026/9/2 12:44:48）、7 天剩餘 100%（重置 2026/9/9 07:44:48）
+  也就是說 `RetrieveUserQuotaSummary` RPC 回的就是 `/usage` 表格的同一份資料，
+  不必開模型回合也能拿到週額度。
+- **測試**：新增 `ExtractAntigravityToken` 四種旗標格式與誤判防護、`ReadTailLines`
+  的「尾端優先且不含失效舊連接埠」迴歸測試。Deterministic 15/15 通過；
+  `--integration` 1/1 通過。整合測試中寫死「Antigravity 應回傳 1 個額度視窗」的
+  舊期望已改為「至少 1 個」並列印每個視窗的長度與重置時間。
+- **未做**：`agy -p /usage` 文字表格解析器（需要 agy 提供該斜線指令，且每次讀取
+  會消耗一個模型回合）；Claude 與 Codex 兩條讀取路徑維持原樣。
+
 ## 2026-08-26 v1.6.0 發布與 GitHub Release 完成（已提交並推送）
 
 - **使用者授權**：「commit後push到github發布執行檔」。

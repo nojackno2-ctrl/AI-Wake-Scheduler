@@ -690,6 +690,9 @@ internal sealed class MainForm : Form
 
         try
         {
+            // 設定可能在兩次讀取之間改過，每次都同步一次自動啟動開關。
+            _host.UsageReader.AutoStartAntigravity = _host.Settings.AutoStartAntigravity;
+
             var descriptors = CliCatalog.All;
             var tasks = new Task<CliUsageSnapshot>[descriptors.Count];
             for (var i = 0; i < descriptors.Count; i++)
