@@ -7,6 +7,9 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // 必須在啟動任何子程序之前設定：錯誤模式是在建立子程序時繼承下去的。
+        AiWakeScheduler.Core.ProcessRunner.SuppressChildProcessErrorDialogs();
+
         var isMinimized = args.Contains("--minimized", StringComparer.OrdinalIgnoreCase);
         using var mutex = new Mutex(true, SingleInstanceMutexName, out var ownsMutex);
         if (!ownsMutex)

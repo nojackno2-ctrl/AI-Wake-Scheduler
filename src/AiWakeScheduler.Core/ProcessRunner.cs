@@ -27,6 +27,71 @@ public static class ProcessRunner
     /// </summary>
     public const int MaxCapturedCharacters = 32 * 1024;
 
+    /// <summary>作業系統啟動子程序失敗時，回傳錯誤碼而不是彈出嚴重錯誤對話框。</summary>
+    public const uint SEM_FAILCRITICALERRORS = 0x0001;
+
+    /// <summary>子程序當掉時不要彈出 Windows 錯誤報告對話框。</summary>
+    public const uint SEM_NOGPFAULTERRORBOX = 0x0002;
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+        System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    private static extern uint SetErrorMode(uint uMode);
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+    [System.Runtime.InteropServices.DefaultDllImportSearchPaths(
+        System.Runtime.InteropServices.DllImportSearchPath.System32)]
+    private static extern uint GetErrorMode();
+
+    /// <summary>
+    /// 禁止子孫程序彈出系統層級的錯誤對話框。
+    ///
+    /// 錯誤模式是在建立子程序時繼承下去的，所以只要在啟動任何 CLI 之前設定一次，
+    /// 就同時涵蓋我們直接啟動的 CLI 以及它們自己再啟動的程序。
+    ///
+    /// 實際遇到的情況：Codex 會自行啟動 <c>git.exe</c>，而防毒軟體注入自我防護 DLL
+    /// 偶爾會失敗，讓 git.exe 以 <c>0xc0000142</c>（STATUS_DLL_INIT_FAILED）啟動失敗，
+    /// Windows 就在使用者桌面上蓋一個 modal 對話框。一個常駐系統匣、按排程在背景
+    /// 呼叫 CLI 的工具不該讓子孫程序這樣打斷使用者。
+    ///
+    /// 失敗本身不會被吞掉：結束碼與 stderr 照常記進 CLI 日誌。
+    /// 傳回設定之前的錯誤模式。
+    /// </summary>
+    public static uint SuppressChildProcessErrorDialogs()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return 0;
+        }
+
+        try
+        {
+            return SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>取得目前行程的錯誤模式；供測試驗證設定確實生效。</summary>
+    public static uint GetCurrentErrorMode()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return 0;
+        }
+
+        try
+        {
+            return GetErrorMode();
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            return 0;
+        }
+    }
+
     /// <summary>
     /// 組出 <c>cmd.exe /d /s /c "..."</c> 的參數字串。
     ///

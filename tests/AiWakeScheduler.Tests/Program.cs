@@ -968,6 +968,21 @@ static async Task TestCliRunnerAsync()
                 "含 cmd 保留字元的參數必須以單一參數送達，不可在外層命令列被切開。");
         }
 
+        // 子孫程序的系統錯誤對話框必須被抑制：排程工具在背景執行時，
+        // Codex 自行啟動的 git.exe 若被防毒攔到而以 0xc0000142 啟動失敗，
+        // 不能在使用者桌面上蓋一個 modal 對話框。
+        if (OperatingSystem.IsWindows())
+        {
+            ProcessRunner.SuppressChildProcessErrorDialogs();
+            var errorMode = ProcessRunner.GetCurrentErrorMode();
+            Assert(
+                (errorMode & ProcessRunner.SEM_FAILCRITICALERRORS) != 0,
+                "應設定 SEM_FAILCRITICALERRORS，子程序啟動失敗才不會彈出對話框。");
+            Assert(
+                (errorMode & ProcessRunner.SEM_NOGPFAULTERRORBOX) != 0,
+                "應設定 SEM_NOGPFAULTERRORBOX，子程序當掉才不會彈出錯誤報告對話框。");
+        }
+
         // cmd.exe 的引號規則：空白與引號要包起來，結尾反斜線要加倍。
         Assert(
             ProcessRunner.BuildCommandShellArguments("C:\\tools\\run.cmd", []) == "/d /s /c \"C:\\tools\\run.cmd\"",

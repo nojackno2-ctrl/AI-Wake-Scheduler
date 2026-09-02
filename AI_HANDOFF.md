@@ -1,5 +1,50 @@
 # AI HANDOFF
 
+## 2026-09-02 v1.7.0：抑制子孫程序的系統錯誤對話框（git.exe 0xc0000142 彈窗）
+
+- **使用者回報**：畫面上跳出 `git.exe - Application Error：應用程式無法正確啟動 (0xc0000142)`。
+- **診斷（事件記錄 + 日誌對照）**：
+  - 事件記錄 `System` / `Application Popup` 顯示彈窗發生於 **08:36:59（兩次）**，
+    而 `20260902-083659-Codex.log` 的開始時間是 `08:36:59.47` —— 完全吻合。
+  - 近 7 天共 **7 次**，最早是 **09/01 07:41:52**，每一次都對應到本程式的一次
+    Codex 喚醒（`20260901-074138/115016/141016/143016/161016-Codex.log`）。
+  - **本程式從未呼叫 git**；是 **Codex CLI 自行啟動 `git.exe`** 作為子程序。
+  - 機器上有 **Kaspersky**（Windows Defender 即時保護為關閉，被第三方接管）。
+    Kaspersky 對每個啟動中的行程注入自我防護 DLL，注入偶爾失敗會讓
+    `DllMain` 回傳 FALSE，即 `STATUS_DLL_INIT_FAILED (0xc0000142)`。
+    這解釋了「偶發」的特徵：Codex 每 10 分鐘跑一次，但兩天只跳 7 次。
+  - 排除的假設：PATH 上有兩套 Git（`Program Files\Git` 2.55.0 與
+    `hermes\git` 2.54.0，共四個 `git.exe`），但四個在 Git Bash 與 Windows PATH
+    兩種環境下實測全部 `exit=0`，且 `mingw64\bin` 在真實 Windows PATH 中排最後，
+    因此不是 DLL 混用造成。
+  - **與本次其他改動無關**：最早一次比當日所有程式碼變更早一整天，
+    且使用者當時執行的是 8/26 的 publish 產物（今日僅做過 `dotnet build`）。
+- **影響**：Codex 本身仍成功（結束碼 0、回傳 `OK`），喚醒功能不受影響；
+  問題只在於 Windows 在使用者桌面蓋了一個 modal 對話框。
+- **修正**：`ProcessRunner.SuppressChildProcessErrorDialogs()` 於
+  `Program.Main` 最前面（啟動任何子程序之前）呼叫
+  `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)`。
+  錯誤模式在建立子程序時會被繼承，因此同時涵蓋我們直接啟動的 CLI
+  與它們自己再啟動的程序（如 Codex → git.exe）。失敗不會被吞掉：
+  結束碼與 stderr 照常寫入 CLI 日誌。
+  - 實作放在 Core 的 `ProcessRunner`（子程序啟動機制的所在地）而非
+    WinForms 的 `NativeMethods`，否則測試專案（只參考 Core）測不到。
+  - 另提供 `GetCurrentErrorMode()` 供測試驗證設定確實生效。
+- **測試**：新增斷言呼叫後 `GetErrorMode()` 確實帶有
+  `SEM_FAILCRITICALERRORS` 與 `SEM_NOGPFAULTERRORBOX`。Deterministic 15/15 通過。
+- **版本**：1.6.0 → **1.7.0**（`csproj`、`installer/*.iss`、`build-installer.ps1`
+  的 `$expectedVersion`、README 兩處、`CliUsageReader` 的 User-Agent 與
+  Codex app-server clientInfo 共 7 處；建置腳本會強制三處一致）。
+  若不升版，打包會直接覆蓋掉已發布的 `dist\AI倒數喚醒_Setup_v1.6.0_x64.exe`。
+- **建置產物**：`build-installer.ps1` 全程通過（測試 15/15 → self-contained
+  發布 → Inno Setup），產出
+  `dist\AI倒數喚醒_Setup_v1.7.0_x64.exe`（46.38 MB / 48,636,737 bytes，
+  SHA256 `1B970DC79D0435C5432D98841D908FEDF8145992C9AC72E92D67D51F5256E331`），
+  發布執行檔 FileVersion 1.7.0.0。v1.6.0 安裝包保留未被覆蓋。
+- **仍建議使用者自行處理**：真正的根因在 Kaspersky。若要徹底消除失敗（而不只是
+  隱藏對話框），需在 Kaspersky 將 `git.exe` 與 Codex 的 bin 目錄加入信任應用程式
+  與排除項目。此處不代為修改使用者的安全軟體設定。
+
 ## 2026-09-02 Antigravity 未啟動時自動於背景無視窗拉起服務、CLI 主控台視窗閃現修正（已完成並實測）
 
 - **使用者需求**：「我想要加入一個如果發現程式沒開，他要自己開終端機啟動程式，
