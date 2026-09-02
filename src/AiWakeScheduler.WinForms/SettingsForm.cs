@@ -22,6 +22,11 @@ internal sealed class SettingsForm : Form
         Text = "節省 Token 模式（停用工具與 MCP、預設低推理、短回覆；建議保持開啟）",
         AutoSize = true
     };
+    private readonly CheckBox _autoStartAgyCheck = new()
+    {
+        Text = "Antigravity 沒開時，於背景無視窗自動啟動以讀取額度",
+        AutoSize = true
+    };
     private readonly NumericUpDown _timeoutInput = new() { Minimum = 1, Maximum = 120, Width = 70 };
     private readonly NumericUpDown _quotaAutoRefreshInput = new() { Minimum = 0, Maximum = 1440, Width = 70 };
     private readonly Label _probeStatus = new()
@@ -247,10 +252,12 @@ internal sealed class SettingsForm : Form
         options.Controls.Add(new Label { Text = "啟動與資源", Font = AppTheme.SectionTitle, AutoSize = true, Margin = new Padding(0, 0, 0, 12) });
         _startupCheck.Margin = new Padding(0, 3, 0, 6);
         _trayCheck.Margin = new Padding(0, 3, 0, 6);
-        _tokenSaverCheck.Margin = new Padding(0, 3, 0, 10);
+        _tokenSaverCheck.Margin = new Padding(0, 3, 0, 6);
+        _autoStartAgyCheck.Margin = new Padding(0, 3, 0, 10);
         options.Controls.Add(_startupCheck);
         options.Controls.Add(_trayCheck);
         options.Controls.Add(_tokenSaverCheck);
+        options.Controls.Add(_autoStartAgyCheck);
 
         var timeoutRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
         timeoutRow.Controls.Add(new Label { Text = "單一 CLI 最長執行時間（分鐘）：", AutoSize = true, Margin = new Padding(0, 7, 5, 0) });
@@ -316,6 +323,7 @@ internal sealed class SettingsForm : Form
         _startupCheck.Checked = ResultSettings.StartWithWindows;
         _trayCheck.Checked = ResultSettings.MinimizeToTray;
         _tokenSaverCheck.Checked = ResultSettings.TokenSaverMode;
+        _autoStartAgyCheck.Checked = ResultSettings.AutoStartAntigravity;
         _timeoutInput.Value = Math.Clamp(ResultSettings.ExecutionTimeoutMinutes, _timeoutInput.Minimum, _timeoutInput.Maximum);
         _quotaAutoRefreshInput.Value = Math.Clamp(ResultSettings.QuotaAutoRefreshMinutes, _quotaAutoRefreshInput.Minimum, _quotaAutoRefreshInput.Maximum);
     }
@@ -387,6 +395,7 @@ internal sealed class SettingsForm : Form
         ResultSettings.StartWithWindows = _startupCheck.Checked;
         ResultSettings.MinimizeToTray = _trayCheck.Checked;
         ResultSettings.TokenSaverMode = _tokenSaverCheck.Checked;
+        ResultSettings.AutoStartAntigravity = _autoStartAgyCheck.Checked;
         ResultSettings.ExecutionTimeoutMinutes = (int)_timeoutInput.Value;
         ResultSettings.QuotaAutoRefreshMinutes = (int)_quotaAutoRefreshInput.Value;
     }

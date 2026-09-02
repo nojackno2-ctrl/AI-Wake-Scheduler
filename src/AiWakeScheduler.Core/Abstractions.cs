@@ -24,7 +24,8 @@ public interface ICliRunner
         string workingDirectory,
         TimeSpan timeout,
         bool tokenSaverMode = true,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        Action<bool, string>? onOutput = null);
 
     Task<CliProbeResult> ProbeAsync(
         CliKind kind,

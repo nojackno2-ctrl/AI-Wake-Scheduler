@@ -32,7 +32,8 @@ public sealed class CliRunner(AppDataPaths paths) : ICliRunner
         string workingDirectory,
         TimeSpan timeout,
         bool tokenSaverMode = true,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<bool, string>? onOutput = null)
     {
         var startedAt = DateTimeOffset.Now;
         var result = new CliRunResult { Cli = kind, StartedAt = startedAt };
@@ -56,7 +57,8 @@ public sealed class CliRunner(AppDataPaths paths) : ICliRunner
                 arguments,
                 workingDirectory,
                 timeout,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                onOutput).ConfigureAwait(false);
 
             result.ExitCode = execution.ExitCode;
             result.Succeeded = execution.ExitCode == 0 && !execution.TimedOut;

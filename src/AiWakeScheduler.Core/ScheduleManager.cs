@@ -57,6 +57,9 @@ public sealed class ScheduleManager : IAsyncDisposable
     public event EventHandler? JobsChanged;
     public event EventHandler<Exception>? BackgroundError;
 
+    /// <summary>單一 CLI 呼叫的即時活動（開始、輸出片段、完成/失敗），供 UI 端的終端機面板顯示。</summary>
+    public event EventHandler<CliActivityEvent>? ActivityLogged;
+
     private DateTimeOffset Now => _time.GetLocalNow();
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -709,11 +712,10 @@ public sealed class ScheduleManager : IAsyncDisposable
             for (var i = 0; i < targets.Count; i++)
             {
                 var target = targets[i];
-                runs[i] = _cliRunner.RunAsync(
+                runs[i] = RunTargetAsync(
+                    job,
                     target,
                     settings.CliProfiles[target].Clone(),
-                    job.Message,
-                    job.WorkingDirectory,
                     timeout,
                     settings.TokenSaverMode,
                     cancellationToken);
@@ -759,6 +761,45 @@ public sealed class ScheduleManager : IAsyncDisposable
 
             RaiseBackgroundError(ex);
         }
+    }
+
+    /// <summary>
+    /// 執行單一目標 CLI，並在開始／輸出／完成三個時機廣播即時活動事件，
+    /// 供 UI 端的終端機面板即時顯示。事件廣播失敗不影響實際執行結果。
+    /// </summary>
+    private async Task<CliRunResult> RunTargetAsync(
+        ScheduledJob job,
+        CliKind target,
+        CliProfile profile,
+        TimeSpan timeout,
+        bool tokenSaverMode,
+        CancellationToken cancellationToken)
+    {
+        RaiseActivity(new CliActivityEvent(target, job.Name, CliActivityKind.Started, $"開始執行，訊息：{job.Message}", Now));
+
+        var result = await _cliRunner.RunAsync(
+            target,
+            profile,
+            job.Message,
+            job.WorkingDirectory,
+            timeout,
+            tokenSaverMode,
+            cancellationToken,
+            onOutput: (isError, text) => RaiseActivity(new CliActivityEvent(
+                target,
+                job.Name,
+                isError ? CliActivityKind.ErrorOutput : CliActivityKind.Output,
+                text,
+                Now))).ConfigureAwait(false);
+
+        RaiseActivity(new CliActivityEvent(
+            target,
+            job.Name,
+            result.Succeeded ? CliActivityKind.Completed : CliActivityKind.Failed,
+            result.Succeeded ? $"執行完成，結束碼 {result.ExitCode}" : $"執行失敗：{result.Error}",
+            Now));
+
+        return result;
     }
 
     /// <summary>
@@ -876,6 +917,18 @@ public sealed class ScheduleManager : IAsyncDisposable
         catch (Exception handlerEx)
         {
             System.Diagnostics.Debug.WriteLine($"BackgroundError event handler threw: {handlerEx}");
+        }
+    }
+
+    private void RaiseActivity(CliActivityEvent activity)
+    {
+        try
+        {
+            ActivityLogged?.Invoke(this, activity);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"ActivityLogged event handler threw: {ex}");
         }
     }
 

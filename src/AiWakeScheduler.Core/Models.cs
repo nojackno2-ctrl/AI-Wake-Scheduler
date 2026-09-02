@@ -80,6 +80,10 @@ public sealed class AppSettings
     public bool TokenSaverMode { get; set; } = true;
     public int ExecutionTimeoutMinutes { get; set; } = 3;
     public int QuotaAutoRefreshMinutes { get; set; } = 10;
+
+    /// <summary>Antigravity 沒開時，是否在背景無視窗自動啟動 language server 以讀取額度。</summary>
+    public bool AutoStartAntigravity { get; set; } = true;
+
     public Dictionary<CliKind, CliProfile> CliProfiles { get; set; } = CreateDefaultProfiles();
 
     public static AppSettings CreateDefault() => new();
@@ -95,6 +99,7 @@ public sealed class AppSettings
         destination.TokenSaverMode = TokenSaverMode;
         destination.ExecutionTimeoutMinutes = ExecutionTimeoutMinutes;
         destination.QuotaAutoRefreshMinutes = QuotaAutoRefreshMinutes;
+        destination.AutoStartAntigravity = AutoStartAntigravity;
 
         var profiles = new Dictionary<CliKind, CliProfile>(CliProfiles.Count);
         foreach (var pair in CliProfiles)

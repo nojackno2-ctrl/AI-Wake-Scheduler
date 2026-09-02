@@ -51,7 +51,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.6.0_x64.exe`**。
+1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.7.0_x64.exe`**。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
@@ -64,7 +64,11 @@
 2. 點擊 **「檢查全部 CLI」** 按鈕，程式會自動執行 `--version` 檢查本機 CLI 是否已就緒。
 3. 若你的 CLI 安裝於特殊路徑（例如透過 npm、專屬安裝目錄等），可點擊 **「瀏覽…」** 自訂 `.exe` 完整路徑。
 4. （可選）勾選 **「登入 Windows 後自動啟動」**，確保開機或重啟後仍能在背景常駐。
-5. 點擊 **「儲存」**。
+5. （可選）**「Antigravity 沒開時，於背景無視窗自動啟動以讀取額度」**（預設開啟）：
+   Antigravity 沒開時額度本來讀不到，勾選後程式會在背景無視窗地啟動一個
+   Antigravity language server 來讀取，讀完立即結束該程序。全程不會建立模型回合、
+   不消耗任何 Token，也不會出現任何視窗。
+6. 點擊 **「儲存」**。
 
 ### 3. 建立每日排程或自動模式
 1. 在右側「排程內容」區：
@@ -128,7 +132,7 @@ dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.6.0_x64.exe`。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.7.0_x64.exe`。
 
 ---
 
