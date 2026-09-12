@@ -828,3 +828,17 @@
 - 已確認登錄的版本、安裝位置、解除安裝命令、專案／問題回報／更新網址正確；開始功能表的啟動與解除安裝捷徑均存在且指向目前安裝位置，既有開機啟動選項亦由安裝器保留。
 - 從已安裝路徑以 `--minimized` 啟動後，PID `23496` 且 `Responding=True`。這是程序啟動與回應證據，不等同完整視覺或排程行為驗證。
 - 本次使用者授權範圍是更新已安裝軟體；此交接紀錄尚未提交或推送。
+
+## 2026-09-12 連線拒絕與額度查詢診斷（進行中）
+- 原始日誌：已安裝 v1.7.0 常駐 PID 9700 的 AGY/Codex/Claude 連線被拒絕（socket 10013）；尚未確認攔截來源，不能斷言為 Kaspersky。
+- 目前一般權限環境：curl IPv4/IPv6 可連 Google；agy models 成功。Windows 防火牆三條封鎖規則僅針對 CodexSandboxOffline SID，與 nojac 不同；未修改安全軟體或防火牆。
+- 22:16 初次產品 Codex 額度整合測試失敗。Claude 產品讀取另顯示登入憑證過期。
+- 22:18–22:20 分別執行 AGY、Claude 及產品 ProcessRunner/CliCommandBuilder 的 Codex 最小 OK 喚醒，三者 exit 0 且回覆 OK。之後產品 CliUsageReader 四項查詢成功：AGY Gemini 2 視窗、AGY Claude 2、Claude 2、Codex 3。Claude CLI 已正常更新本機登入憑證。未輸出憑證內容。
+- 尚未驗證既有 elevated 常駐程序恢復；使用者不記得有封鎖通知。app.manifest 仍因已移除的讀取其他程序記憶體功能而要求管理員；交由 AGY 審查多餘提權及改善錯誤摘要。這是改善項，不能宣稱已證明它造成 10013。
+- 22:21 deterministic tests 15/15 通過。AGY 委派在 300 秒 MCP 逾時，未產生程式碼修改；已停止本次委派殘留程序。多餘提權與錯誤摘要改善尚未實作，不列為已修復。
+- 本次僅更新交接文件及由正常 CLI 喚醒更新登入狀態；未改已安裝程式、排程、安全規則。需要使用者退出再重開常駐程式，按重新讀取及立即執行驗證；若仍有 10013，需取得安全軟體的具體阻擋報告再處理。
+
+## 2026-09-12 v1.7.0 重新建置與 GitHub 發布附件更新
+- 依使用者授權重新執行 `build-installer.ps1`：deterministic tests **15/15** 通過，Self-contained win-x64 publish 與 Inno Setup 均成功。
+- 新產物：`dist\AI倒數喚醒_Setup_v1.7.0_x64.exe`，48,671,581 bytes，SHA256 `8833951AEC0D8AC2D370D5FE579FE8E6E24D5C2EC86B129220A1AE06EB29ED2A`；同步產生 `dist\SHA256SUMS.txt`。
+- GitHub 已有 `v1.7.0` Latest Release；重新建置產物與既有附件大小不同，待以本次通過驗證的安裝檔更新 Release 附件。版本標籤不重建、不移動。
