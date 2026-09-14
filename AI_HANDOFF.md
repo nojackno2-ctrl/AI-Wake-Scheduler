@@ -1,5 +1,36 @@
 # AI HANDOFF
 
+## 2026-09-14 v1.8.0 發布
+
+- **使用者授權**：「升版打包並發布到 GitHub」。
+- **版本**：1.7.0 → **1.8.0**（csproj 三處、`installer/*.iss`、`build-installer.ps1`、README 兩處、
+  `CliUsageReader` User-Agent 與 Codex clientInfo）。
+- **產物**：`build-installer.ps1` 全程通過（15/15 → self-contained 發布 → Inno Setup），
+  `dist\AI倒數喚醒_Setup_v1.8.0_x64.exe`（48,682,011 bytes，
+  SHA256 `1678289AE3772743020483FF1463FC2DAE7684C88AA5F4318631CF6CB26D59BE`）。
+- Git commit、tag `v1.8.0`、推送並以 GitHub CLI 建立 Release（附安裝檔與 SHA256SUMS.txt）。
+
+## 2026-09-14 CLI 登入失效：通知＋一鍵重新登入（已完成，於 v1.8.0 發布）
+
+- **背景**：使用者回報 Claude／Codex 額度讀取失敗。實際原因是 Kaspersky 封鎖本程式對外連線
+  （`WSAEACCES`，關掉 Kaspersky 後恢復），另 Claude CLI 需重新登入。使用者要求加入 CLI 登入功能，
+  並選擇「通知＋一鍵登入」（不自動彈瀏覽器），涵蓋 Claude、Codex、Antigravity。
+- **Core**：
+  - `CliUsageSnapshot` 新增 `RequiresLogin`（預設 false）。Claude 的無憑證／未登入／401 過期三處改用
+    `LoginRequired(...)` 明確標記；Codex 與 AGY 在 `ReadAsync` 以 `CliLoginCommand.LooksLikeLoginRequired`
+    比對錯誤訊息補標記。判定刻意排除網路錯誤、連線被拒、429（有測試）。
+  - 新增 `CliLoginCommand`：登入指令 Claude `auth login`、Codex `login`、agy 無 login 子命令改為直接進互動模式；
+    以 `cmd.exe /d /s /c "<exe> <args> || pause"` 開**看得見**的主控台，失敗時暫停保留錯誤訊息。
+    本程式不讀寫憑證、不代填帳密。
+- **WinForms**：
+  - `UsageBoard` 在需要登入的 CLI 錯誤訊息下畫「重新登入 ›」連結（手形游標、hover 變色、點擊觸發
+    `LoginRequested`）；登入視窗開啟中改顯示提示文字且不可重複點。
+  - `MainForm`：CLI 轉為登入失效時跳一次系統匣通知（恢復正常前不重複），點通知即開登入視窗；
+    登入視窗關閉後自動 `RefreshUsageAsync`（AGY 另清連線快取）。
+- **驗證**：Debug 建置 0 警告 0 錯誤；Deterministic 15/15 通過（`CliUsageReader` 段新增登入判定與啟動參數斷言）；
+  實測 `cmd /d /s /c ""含空白路徑.exe" args || pause"` 引號可正確執行。**未**做畫面實機截圖驗證。
+- **未做**：未 commit、未升版、未重新打包安裝檔。
+
 ## 2026-09-02 v1.7.0：抑制子孫程序的系統錯誤對話框（git.exe 0xc0000142 彈窗）
 
 - **使用者回報**：畫面上跳出 `git.exe - Application Error：應用程式無法正確啟動 (0xc0000142)`。
@@ -828,3 +859,17 @@
 - 已確認登錄的版本、安裝位置、解除安裝命令、專案／問題回報／更新網址正確；開始功能表的啟動與解除安裝捷徑均存在且指向目前安裝位置，既有開機啟動選項亦由安裝器保留。
 - 從已安裝路徑以 `--minimized` 啟動後，PID `23496` 且 `Responding=True`。這是程序啟動與回應證據，不等同完整視覺或排程行為驗證。
 - 本次使用者授權範圍是更新已安裝軟體；此交接紀錄尚未提交或推送。
+
+## 2026-09-12 連線拒絕與額度查詢診斷（進行中）
+- 原始日誌：已安裝 v1.7.0 常駐 PID 9700 的 AGY/Codex/Claude 連線被拒絕（socket 10013）；尚未確認攔截來源，不能斷言為 Kaspersky。
+- 目前一般權限環境：curl IPv4/IPv6 可連 Google；agy models 成功。Windows 防火牆三條封鎖規則僅針對 CodexSandboxOffline SID，與 nojac 不同；未修改安全軟體或防火牆。
+- 22:16 初次產品 Codex 額度整合測試失敗。Claude 產品讀取另顯示登入憑證過期。
+- 22:18–22:20 分別執行 AGY、Claude 及產品 ProcessRunner/CliCommandBuilder 的 Codex 最小 OK 喚醒，三者 exit 0 且回覆 OK。之後產品 CliUsageReader 四項查詢成功：AGY Gemini 2 視窗、AGY Claude 2、Claude 2、Codex 3。Claude CLI 已正常更新本機登入憑證。未輸出憑證內容。
+- 尚未驗證既有 elevated 常駐程序恢復；使用者不記得有封鎖通知。app.manifest 仍因已移除的讀取其他程序記憶體功能而要求管理員；交由 AGY 審查多餘提權及改善錯誤摘要。這是改善項，不能宣稱已證明它造成 10013。
+- 22:21 deterministic tests 15/15 通過。AGY 委派在 300 秒 MCP 逾時，未產生程式碼修改；已停止本次委派殘留程序。多餘提權與錯誤摘要改善尚未實作，不列為已修復。
+- 本次僅更新交接文件及由正常 CLI 喚醒更新登入狀態；未改已安裝程式、排程、安全規則。需要使用者退出再重開常駐程式，按重新讀取及立即執行驗證；若仍有 10013，需取得安全軟體的具體阻擋報告再處理。
+
+## 2026-09-12 v1.7.0 重新建置與 GitHub 發布附件更新
+- 依使用者授權重新執行 `build-installer.ps1`：deterministic tests **15/15** 通過，Self-contained win-x64 publish 與 Inno Setup 均成功。
+- 新產物：`dist\AI倒數喚醒_Setup_v1.7.0_x64.exe`，48,671,581 bytes，SHA256 `8833951AEC0D8AC2D370D5FE579FE8E6E24D5C2EC86B129220A1AE06EB29ED2A`；同步產生 `dist\SHA256SUMS.txt`。
+- GitHub 已有 `v1.7.0` Latest Release；重新建置產物與既有附件大小不同，待以本次通過驗證的安裝檔更新 Release 附件。版本標籤不重建、不移動。

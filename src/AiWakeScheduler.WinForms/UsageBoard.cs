@@ -25,8 +25,13 @@ internal sealed class UsageBoard : Control
     private readonly Dictionary<CliKind, CliUsageSnapshot> _sources = [];
     private readonly Dictionary<CliKind, BoardGroup> _groups = [];
 
+    /// <summary>上一次繪製時「重新登入」連結的位置，供滑鼠命中測試。</summary>
+    private readonly List<(Rectangle Bounds, CliKind Kind)> _loginLinks = [];
+    private readonly HashSet<CliKind> _loginInProgress = [];
+
     private DateTimeOffset _now = DateTimeOffset.Now;
     private int _preferredHeight;
+    private CliKind? _hoveredLogin;
 
     public UsageBoard()
     {
@@ -43,6 +48,20 @@ internal sealed class UsageBoard : Control
 
     /// <summary>版面高度變動時通知外層容器調整大小。</summary>
     public event EventHandler? PreferredHeightChanged;
+
+    /// <summary>使用者點了某個 CLI 的「重新登入」。</summary>
+    public event EventHandler<CliKind>? LoginRequested;
+
+    /// <summary>標示某個 CLI 的登入視窗是否已開啟，開啟中連結改為提示文字、不可再點。</summary>
+    public void SetLoginInProgress(CliKind kind, bool inProgress)
+    {
+        var changed = inProgress ? _loginInProgress.Add(kind) : _loginInProgress.Remove(kind);
+        if (changed)
+        {
+            RecalculateHeight();
+            Invalidate();
+        }
+    }
 
     /// <summary>畫完目前資料所需要的高度。</summary>
     public int PreferredHeight => _preferredHeight;
@@ -87,7 +106,53 @@ internal sealed class UsageBoard : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.Clear(BackColor);
+        _loginLinks.Clear();
         Render(e.Graphics, ClientSize.Width);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        var hit = HitLoginLink(e.Location);
+        Cursor = hit is null ? Cursors.Default : Cursors.Hand;
+        if (hit != _hoveredLogin)
+        {
+            _hoveredLogin = hit;
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        Cursor = Cursors.Default;
+        if (_hoveredLogin is not null)
+        {
+            _hoveredLogin = null;
+            Invalidate();
+        }
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Button == MouseButtons.Left && HitLoginLink(e.Location) is { } kind)
+        {
+            LoginRequested?.Invoke(this, kind);
+        }
+    }
+
+    private CliKind? HitLoginLink(Point location)
+    {
+        foreach (var (bounds, kind) in _loginLinks)
+        {
+            if (bounds.Contains(location) && !_loginInProgress.Contains(kind))
+            {
+                return kind;
+            }
+        }
+
+        return null;
     }
 
     protected override void OnResize(EventArgs e)
@@ -170,6 +235,11 @@ internal sealed class UsageBoard : Control
                     ? AppTheme.Danger
                     : AppTheme.SecondaryText;
                 y += DrawNote(g, group.Message, color, y, width);
+                if (group.RequiresLogin)
+                {
+                    y += DrawLoginLink(g, descriptor.Kind, y, width);
+                }
+
                 continue;
             }
 
@@ -343,6 +413,32 @@ internal sealed class UsageBoard : Control
         return size.Height + Scale(8);
     }
 
+    /// <summary>畫「重新登入」連結並登記命中範圍，回傳佔用高度。</summary>
+    private int DrawLoginLink(Graphics? g, CliKind kind, int y, int width)
+    {
+        var inProgress = _loginInProgress.Contains(kind);
+        var text = inProgress ? "登入視窗已開啟，完成授權後會自動重新讀取" : "重新登入 ›";
+        var font = inProgress ? AppTheme.Caption : AppTheme.TableHeader;
+        var size = TextRenderer.MeasureText(text, font, Unbounded, MeasureFlags);
+        var height = size.Height + Scale(6);
+
+        if (g is not null)
+        {
+            var bounds = new Rectangle(0, y, Math.Min(size.Width + Scale(4), Math.Max(0, width)), height);
+            var color = inProgress
+                ? AppTheme.SecondaryText
+                : _hoveredLogin == kind ? AppTheme.AccentHover : AppTheme.Accent;
+            TextRenderer.DrawText(g, text, font, bounds, color, LineFlags | TextFormatFlags.Left);
+
+            if (!inProgress)
+            {
+                _loginLinks.Add((bounds, kind));
+            }
+        }
+
+        return height + Scale(4);
+    }
+
     private int LabelColumnWidth()
     {
         var width = Scale(44);
@@ -435,7 +531,7 @@ internal sealed class UsageBoard : Control
     {
         if (snapshot.Availability != CliUsageAvailability.Available)
         {
-            return new BoardGroup(snapshot.Availability, snapshot.Message, [], snapshot.ObservedAt);
+            return new BoardGroup(snapshot.Availability, snapshot.Message, [], snapshot.ObservedAt, snapshot.RequiresLogin);
         }
 
         if (snapshot.Windows.Count == 0)
@@ -585,5 +681,6 @@ internal sealed class UsageBoard : Control
         CliUsageAvailability Availability,
         string Message,
         BoardRow[] Rows,
-        DateTimeOffset ObservedAt);
+        DateTimeOffset ObservedAt,
+        bool RequiresLogin = false);
 }
