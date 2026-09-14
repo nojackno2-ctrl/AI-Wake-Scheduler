@@ -472,6 +472,23 @@ static Task TestCliUsageReaderAsync()
             300).Count == 0,
         "日誌檔不存在時應回傳空清單而非丟出例外。");
 
+    // 登入失效判定：只認登入相關錯誤，網路被擋或 429 不可誤判成要重新登入。
+    Assert(CliLoginCommand.LooksLikeLoginRequired("Codex 額度查詢失敗：Not logged in"), "Codex 未登入應判定為需要登入。");
+    Assert(CliLoginCommand.LooksLikeLoginRequired("HTTP 401 Unauthorized"), "401 應判定為需要登入。");
+    Assert(CliLoginCommand.LooksLikeLoginRequired("Antigravity 額度查詢失敗：user is unauthenticated"), "unauthenticated 應判定為需要登入。");
+    Assert(!CliLoginCommand.LooksLikeLoginRequired(
+            "Codex 額度查詢失敗：failed to fetch codex rate limits: error sending request for url (https://chatgpt.com/backend-api/wham/usage)"),
+        "網路錯誤不可判定為需要登入。");
+    Assert(!CliLoginCommand.LooksLikeLoginRequired("無法連線至 Claude 額度服務：嘗試存取通訊端被拒絕 (api.anthropic.com:443)"), "連線被拒不可判定為需要登入。");
+    Assert(!CliLoginCommand.LooksLikeLoginRequired("Claude 額度查詢暫時受限（HTTP 429），將於 10:00:00 後再試。"), "429 不可判定為需要登入。");
+    Assert(!CliLoginCommand.LooksLikeLoginRequired("listening on port 54012"), "數字中間出現 401 不可誤判。");
+
+    var claudeLogin = CliLoginCommand.CreateStartInfo(CliKind.Claude, "C:\\my tools\\claude.exe", string.Empty);
+    Assert(claudeLogin.FileName == "cmd.exe" && !claudeLogin.UseShellExecute && !claudeLogin.CreateNoWindow, "登入必須開啟看得見的主控台。");
+    Assert(claudeLogin.Arguments == "/d /s /c \"\"C:\\my tools\\claude.exe\" auth login || pause\"", "Claude 登入指令應為 auth login，失敗時暫停。");
+    Assert(CliLoginCommand.CreateStartInfo(CliKind.Codex, "codex.exe", string.Empty).Arguments == "/d /s /c \"codex.exe login || pause\"", "Codex 登入指令應為 login。");
+    Assert(CliLoginCommand.CreateStartInfo(CliKind.AntigravityClaude, "agy.exe", string.Empty).Arguments == "/d /s /c \"agy.exe || pause\"", "agy 沒有 login 子命令，應直接進互動模式。");
+
     return Task.CompletedTask;
 }
 

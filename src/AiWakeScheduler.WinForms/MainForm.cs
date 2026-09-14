@@ -44,6 +44,9 @@ internal sealed class MainForm : Form
     private int _refreshRequested;
     private bool _refreshDeferred;
     private readonly Dictionary<CliKind, DateTimeOffset> _lastCountdownEndRefresh = [];
+    private readonly HashSet<CliKind> _loginNotified = [];
+    private readonly HashSet<CliKind> _loginInProgress = [];
+    private CliKind? _balloonLoginKind;
     private string _lastClockText = string.Empty;
     private DateTimeOffset _lastUsageRefreshTime = DateTimeOffset.MinValue;
 
@@ -419,6 +422,7 @@ internal sealed class MainForm : Form
         _usageBoard.Dock = DockStyle.Fill;
         _usageBoard.BackColor = AppTheme.Panel;
         _usageBoard.PreferredHeightChanged += (_, _) => SyncUsageGroupHeight();
+        _usageBoard.LoginRequested += async (_, kind) => await StartLoginAsync(kind).ConfigureAwait(true);
         group.Controls.Add(_usageBoard);
         container.Controls.Add(group, 0, 0);
 
@@ -755,7 +759,115 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void UpdateUsageLabels(DateTimeOffset now) => _usageBoard.Apply(_usageSnapshots, now);
+    private void UpdateUsageLabels(DateTimeOffset now)
+    {
+        _usageBoard.Apply(_usageSnapshots, now);
+        NotifyLoginRequirements();
+    }
+
+    /// <summary>
+    /// CLI 由正常轉為登入失效時跳一次系統匣通知；恢復正常後才會再通知，
+    /// 不會因為每秒更新或背景重讀而反覆打擾。
+    /// </summary>
+    private void NotifyLoginRequirements()
+    {
+        foreach (var (kind, snapshot) in _usageSnapshots)
+        {
+            if (!snapshot.RequiresLogin)
+            {
+                _loginNotified.Remove(kind);
+                continue;
+            }
+
+            if (_loginInProgress.Contains(kind) || !_loginNotified.Add(kind))
+            {
+                continue;
+            }
+
+            _balloonLoginKind = kind;
+            _notifyIcon.ShowBalloonTip(
+                10000,
+                $"{CliCatalog.Get(kind).ShortName} 需要重新登入",
+                "點這則通知開啟登入視窗，或在「剩餘流量與重置倒數」按「重新登入」。",
+                ToolTipIcon.Warning);
+        }
+    }
+
+    private async void NotifyIconOnBalloonTipClicked(object? sender, EventArgs e)
+    {
+        if (_balloonLoginKind is not { } kind)
+        {
+            return;
+        }
+
+        _balloonLoginKind = null;
+        ShowFromTray();
+        await StartLoginAsync(kind).ConfigureAwait(true);
+    }
+
+    /// <summary>
+    /// 開一個看得見的主控台跑 CLI 自己的登入流程，視窗關閉後重新讀取額度。
+    /// 授權一定要使用者在瀏覽器確認，本程式只負責把流程叫起來。
+    /// </summary>
+    private async Task StartLoginAsync(CliKind kind)
+    {
+        var name = CliCatalog.Get(kind).ShortName;
+        if (!_loginInProgress.Add(kind))
+        {
+            SetStatus($"{name} 的登入視窗已經開啟。", SystemColors.ControlText);
+            return;
+        }
+
+        _usageBoard.SetLoginInProgress(kind, true);
+        try
+        {
+            var profile = _host.Settings.CliProfiles[kind];
+            var workingDirectory = _host.Paths.WakeupWorkspace;
+            var executable = ExecutableLocator.Resolve(kind, profile.Executable, workingDirectory);
+            if (executable is null)
+            {
+                SetStatus($"找不到 {name} CLI，請先在設定指定正確路徑。", AppTheme.Danger);
+                return;
+            }
+
+            using var process = Process.Start(CliLoginCommand.CreateStartInfo(kind, executable, workingDirectory));
+            if (process is null)
+            {
+                SetStatus($"無法開啟 {name} 登入視窗。", AppTheme.Danger);
+                return;
+            }
+
+            SetStatus($"已開啟 {name} 登入視窗，完成授權後關閉視窗即會重新讀取額度。", SystemColors.ControlText);
+            await process.WaitForExitAsync().ConfigureAwait(true);
+            if (IsDisposed)
+            {
+                return;
+            }
+
+            if (kind is CliKind.Antigravity or CliKind.AntigravityClaude)
+            {
+                // 登入後 language server 會換一輪連接埠。
+                CliUsageReader.ClearAntigravityConnectionCache();
+            }
+
+            await RefreshUsageAsync(showStatus: true).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+            {
+                SetStatus($"無法開啟 {name} 登入視窗：{ex.Message}", AppTheme.Danger);
+            }
+        }
+        finally
+        {
+            _loginInProgress.Remove(kind);
+            if (!IsDisposed)
+            {
+                _usageBoard.SetLoginInProgress(kind, false);
+            }
+        }
+    }
 
     private static CliUsageWindow GetShortWindowOrFirst(CliUsageSnapshot snapshot)
     {
@@ -1042,6 +1154,7 @@ internal sealed class MainForm : Form
         {
             e.Cancel = true;
             HideToTray();
+            _balloonLoginKind = null;
             _notifyIcon.ShowBalloonTip(2500, "AI 倒數喚醒", "程式仍在系統匣執行，排程會繼續倒數。", ToolTipIcon.Info);
             return;
         }
@@ -1095,6 +1208,8 @@ internal sealed class MainForm : Form
             Visible = true
         };
         icon.DoubleClick += (_, _) => ShowFromTray();
+        icon.BalloonTipClicked += NotifyIconOnBalloonTipClicked;
+        icon.BalloonTipClosed += (_, _) => _balloonLoginKind = null;
         return icon;
     }
 

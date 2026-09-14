@@ -24,13 +24,17 @@ public sealed record CliUsageWindow(
     public int RemainingPercent => Math.Clamp(100 - UsedPercent, 0, 100);
 }
 
-/// <summary>一次唯讀用量查詢的結果。</summary>
+/// <summary>
+/// 一次唯讀用量查詢的結果。
+/// <paramref name="RequiresLogin"/> 表示失敗原因是 CLI 登入失效，UI 據此提供一鍵登入。
+/// </summary>
 public sealed record CliUsageSnapshot(
     CliKind Cli,
     CliUsageAvailability Availability,
     IReadOnlyList<CliUsageWindow> Windows,
     string Message,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    bool RequiresLogin = false);
 
 /// <summary>
 /// 讀取 CLI 帳戶額度。Codex 使用官方 app-server 的
@@ -93,6 +97,14 @@ public sealed class CliUsageReader : ICliUsageReader
                 "目前 CLI 未提供可機器解析的剩餘額度介面。",
                 DateTimeOffset.Now))
         }).ConfigureAwait(false);
+
+        // Codex 與 Antigravity 的登入失效只會以錯誤文字呈現；Claude 已在讀取時明確標記。
+        if (snapshot.Availability == CliUsageAvailability.Unavailable &&
+            !snapshot.RequiresLogin &&
+            CliLoginCommand.LooksLikeLoginRequired(snapshot.Message))
+        {
+            snapshot = snapshot with { RequiresLogin = true };
+        }
 
         _latestSnapshots[kind] = snapshot;
         return snapshot;
@@ -983,18 +995,18 @@ public sealed class CliUsageReader : ICliUsageReader
             var credentialsPath = GetClaudeCredentialsPath();
             if (credentialsPath is null || !File.Exists(credentialsPath))
             {
-                return Unavailable(
+                return LoginRequired(
                     CliKind.Claude,
-                    "找不到 Claude Code 登入憑證，請先執行 claude auth login。",
+                    "找不到 Claude Code 登入憑證，請重新登入。",
                     observedAt);
             }
 
             var accessToken = await ReadClaudeAccessTokenAsync(credentialsPath, cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(accessToken))
             {
-                return Unavailable(
+                return LoginRequired(
                     CliKind.Claude,
-                    "Claude Code 尚未以 Claude 訂閱帳號登入，請先執行 claude auth login。",
+                    "Claude Code 尚未以 Claude 訂閱帳號登入，請重新登入。",
                     observedAt);
             }
 
@@ -1005,7 +1017,7 @@ public sealed class CliUsageReader : ICliUsageReader
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.TryAddWithoutValidation("anthropic-beta", ClaudeOAuthBeta);
                 request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.7.0");
+                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.8.0");
 
                 using var response = await SharedClaudeHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -1032,9 +1044,9 @@ public sealed class CliUsageReader : ICliUsageReader
                         continue;
                     }
 
-                    return Unavailable(
+                    return LoginRequired(
                         CliKind.Claude,
-                        "Claude Code 登入憑證已過期；請先開啟 Claude Code 或重新執行 claude auth login。",
+                        "Claude Code 登入憑證已過期，請重新登入。",
                         observedAt);
                 }
 
@@ -1279,7 +1291,7 @@ public sealed class CliUsageReader : ICliUsageReader
             var token = timeoutSource.Token;
 
             await process.StandardInput.WriteLineAsync(
-                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.7.0\"}}}")
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.8.0\"}}}")
                 .ConfigureAwait(false);
             await process.StandardInput.FlushAsync(token).ConfigureAwait(false);
 
@@ -1455,6 +1467,9 @@ public sealed class CliUsageReader : ICliUsageReader
 
     private static CliUsageSnapshot Unavailable(CliKind kind, string message, DateTimeOffset observedAt) =>
         new(kind, CliUsageAvailability.Unavailable, [], message, observedAt);
+
+    private static CliUsageSnapshot LoginRequired(CliKind kind, string message, DateTimeOffset observedAt) =>
+        new(kind, CliUsageAvailability.Unavailable, [], message, observedAt, RequiresLogin: true);
 
     private static async Task<string> ReadBoundedAsync(StreamReader reader, CancellationToken cancellationToken)
     {
