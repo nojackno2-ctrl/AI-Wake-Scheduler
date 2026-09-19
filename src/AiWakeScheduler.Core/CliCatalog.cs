@@ -193,14 +193,26 @@ public static class CliCatalog
             // 推理程度由 CliCommandBuilder 依設定或節省模式動態附加。
             TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
             // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
-            // （帶後綴的完整 ID，如 gemini-3.7-flash-high，是另一種寫法，這裡固定用前者）。
-            PresetModels = ["", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"],
+            // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
+            PresetModels = ["", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"],
             SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
             ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
             {
+                ["gemini-3.8-flash"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
+                ["gemini-3.8-flash-high"] = [ThinkingEffort.Default],
+                ["gemini-3.8-flash-medium"] = [ThinkingEffort.Default],
+                ["gemini-3.8-flash-low"] = [ThinkingEffort.Default],
                 ["gemini-3.7-flash"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
+                ["gemini-3.7-flash-high"] = [ThinkingEffort.Default],
+                ["gemini-3.7-flash-medium"] = [ThinkingEffort.Default],
+                ["gemini-3.7-flash-low"] = [ThinkingEffort.Default],
                 ["gemini-3.6-flash"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
-                ["gemini-3.1-pro"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.High]
+                ["gemini-3.6-flash-high"] = [ThinkingEffort.Default],
+                ["gemini-3.6-flash-medium"] = [ThinkingEffort.Default],
+                ["gemini-3.6-flash-low"] = [ThinkingEffort.Default],
+                ["gemini-3.1-pro"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.High],
+                ["gemini-3.1-pro-high"] = [ThinkingEffort.Default],
+                ["gemini-3.1-pro-low"] = [ThinkingEffort.Default]
             },
             TimeoutArguments = timeout => ["--print-timeout", FormatGoDuration(timeout)],
             ExecutableCandidates = AntigravityCandidates

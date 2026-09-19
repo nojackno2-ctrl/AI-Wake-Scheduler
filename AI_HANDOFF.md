@@ -1,5 +1,45 @@
 # AI HANDOFF
 
+## 2026-09-20 v1.9.0 發布
+
+- **使用者授權**：「上傳github跟發布執行檔」與明確指示「同意」。
+- **版本**：1.8.0 → **1.9.0**（csproj 三處、`installer/*.iss`、`build-installer.ps1`、README 兩處、
+  `CliUsageReader` User-Agent 與 Codex clientInfo）。
+- **功能項目**：
+  1. **Gemini 3.8 Flash 模型呼叫支援**：
+     - `CliCatalog.cs`：Antigravity 推薦模型清單 `PresetModels` 加入 `gemini-3.8-flash`（排在最新首位）。
+     - `ModelSupportedEfforts` 新增 `gemini-3.8-flash`，支援 `[Default, Low, Medium, High]` 思考程度選項。
+     - 額外防護：在 `ModelSupportedEfforts` 為完整後綴 ID（`gemini-3.8-flash-high`、`-medium`、`-low` 等）標註僅支援 `[Default]`，使手動輸入完整含後綴 ID 時自動抑制 `--effort` 旗標避免 CLI 參數衝突。
+  2. **建置腳本相容性**：
+     - `build-installer.ps1` 候選路徑納入 Antigravity IDE 內建之 Inno Setup 編譯器路徑。
+- **產物**：`build-installer.ps1` 全程通過（15/15 → self-contained 發布 → Inno Setup），
+  `dist\AI倒數喚醒_Setup_v1.9.0_x64.exe`（48,402,781 bytes，
+  SHA256 `8885534F36F00BBDD35E9CA37B63E576B5A15DFDCEF54FFC7A3980051844482E`）。
+- **發布動作**：Git commit、tag `v1.9.0`、推送並以 GitHub CLI 建立 Release（附安裝檔與 SHA256SUMS.txt）。
+
+## 2026-09-20 加入 Gemini 3.8 Flash 模型呼叫支援（已完成並納入 v1.9.0）
+
+- **使用者需求**：「加入gemini 3.8 flash的模型呼叫」。
+- **實測與環境驗證**：
+  1. 執行唯讀 `agy models` 核對可用清單：已確認包含 `gemini-3.8-flash-high`、`gemini-3.8-flash-medium`、`gemini-3.8-flash-low`。
+  2. 實測命令列旗標相容性：
+     - `agy --model gemini-3.8-flash --effort low/medium/high --print "..."`：全數 exit 0 且回傳 OK，證實基底模型名稱搭配 `--effort` 可正確喚醒。
+     - `agy --model gemini-3.8-flash-high --effort low`：回報 `conflicts with --effort=low`（exit 1），證實後綴型完整 ID 不能再加 `--effort`。
+     - `agy --model gemini-3.8-flash-high`（無 `--effort`）：exit 0 且回傳 OK。
+- **程式變更**：
+  - `CliCatalog.cs`：
+    - `Antigravity` 推薦模型清單 `PresetModels` 加入 `gemini-3.8-flash`（排在最新首位）。
+    - `ModelSupportedEfforts` 新增 `gemini-3.8-flash`，支援 `[Default, Low, Medium, High]` 思考程度選項。
+    - 額外防護：在 `ModelSupportedEfforts` 為 `gemini-3.8-flash-high`、`-medium`、`-low`（以及 3.7/3.6/3.1 對應變體）標註僅支援 `[Default]`，使手動輸入完整含後綴 ID 時自動抑制 `--effort` 旗標避免 CLI 參數衝突。
+  - `AiWakeScheduler.Tests/Program.cs`：
+    - `TestCliCommandBuilderAsync`：加入 `gemini-3.8-flash` 搭配 Medium effort，以及 `gemini-3.8-flash-high` 抑制 `--effort` 的斷言。
+    - `TestCliCatalogAsync`：加入 Antigravity 推薦清單與思考程度支援驗證。
+- **驗證成果**：
+  - Release 建置成功（0 警告、0 錯誤）。
+  - Deterministic 測試 15/15 全數通過（含假 CLI 平行排程測試 1117 ms）。
+  - `dotnet format --verify-no-changes --no-restore` 與 `git diff --check` 通過。
+- **未執行**：未 commit、push、發布（遵守 AGENTS.md 規則）。
+
 ## 2026-09-14 v1.8.0 發布
 
 - **使用者授權**：「升版打包並發布到 GitHub」。

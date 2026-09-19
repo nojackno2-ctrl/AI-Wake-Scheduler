@@ -90,6 +90,20 @@ static Task TestCliCommandBuilderAsync()
     Equal(["--print", "--model", "sonnet", "早安"], CliCommandBuilder.Build(CliKind.Claude, "早安", "--model sonnet", tokenSaverMode: false));
 
     // 自訂 Model 與 ThinkingEffort 測試（模型 ID 與 effort 合法值均以實際 CLI 行為核對）
+    var agy38Custom = CliCommandBuilder.Build(
+        CliKind.Antigravity,
+        "早安",
+        new CliProfile { Model = "gemini-3.8-flash", ThinkingEffort = ThinkingEffort.Medium },
+        tokenSaverMode: false);
+    Equal(["--model", "gemini-3.8-flash", "--effort", "medium", "--print", "早安"], agy38Custom);
+
+    var agy38FullId = CliCommandBuilder.Build(
+        CliKind.Antigravity,
+        "早安",
+        new CliProfile { Model = "gemini-3.8-flash-high", ThinkingEffort = ThinkingEffort.Low },
+        tokenSaverMode: false);
+    Equal(["--model", "gemini-3.8-flash-high", "--print", "早安"], agy38FullId);
+
     var agyCustom = CliCommandBuilder.Build(
         CliKind.Antigravity,
         "早安",
@@ -672,6 +686,11 @@ static Task TestCliCatalogAsync()
     Assert(codex.GetSupportedEfforts("gpt-5.6-sol").Contains(ThinkingEffort.Ultra), "GPT-5.6 Sol 應支援 Ultra。");
     Assert(!codex.GetSupportedEfforts("gpt-5.6-luna").Contains(ThinkingEffort.Ultra), "GPT-5.6 Luna 不支援 Ultra。");
     Assert(codex.NormalizeEffort("gpt-5.5", ThinkingEffort.Max) == ThinkingEffort.XHigh, "GPT-5.5 Max 應正規化為 XHigh。");
+
+    var agy = CliCatalog.Get(CliKind.Antigravity);
+    Assert(agy.PresetModels.Contains("gemini-3.8-flash"), "Antigravity 推薦清單應包含 gemini-3.8-flash。");
+    Assert(agy.GetSupportedEfforts("gemini-3.8-flash").Contains(ThinkingEffort.High), "gemini-3.8-flash 應支援 High。");
+    Assert(agy.GetSupportedEfforts("gemini-3.8-flash-high").SequenceEqual([ThinkingEffort.Default]), "gemini-3.8-flash-high 應抑制額外 --effort 避免衝突。");
 
     foreach (var kind in new[] { CliKind.Antigravity, CliKind.Codex, CliKind.Claude })
     {
