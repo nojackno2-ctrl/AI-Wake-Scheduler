@@ -1,13 +1,16 @@
 # AI HANDOFF
 
-## 2026-10-05 Codex：v1.10.0 發布（已授權，進行中）
+## 2026-10-05 Codex：v1.10.0 發布（完成）
 
-- 使用者已明確授權 commit、push 並發布 v1.10.0；當前 main=febe4e9，remote main 同步，所有待提交變更為前輪功能更新及本次發布準備，未發現其他代理新增修改。
+- 使用者已明確授權 commit、push 並發布 v1.10.0；開始時 main=febe4e9，remote main 同步，所有待提交變更為前輪功能更新及本次發布準備，未發現其他代理新增修改。
 - 完成：低價預設 Gemini 3.8 Flash Low、AGY Sonnet 5.5 Low、Codex GPT-6 Luna、Claude Haiku 4.5；四目標經產品 Runner 真實回覆 OK、exit 0（wake 1/1）。官方價格及 AGY 完整扣額排名未公開的限制見 docs/MODEL_PRICING.md。
 - 前輪最終 build-installer exit 0：核心 16/16、WinForms 7/7、額度整合 1/1（四目標各 2 視窗）、自包含 publish、Inno 編譯。Release 方案 0 警告／0 錯誤；格式與 diff check 通過。
 - 隔離 QA 五階段 Install／UpgradeKeepStartup／UpgradeDisableStartup／UpgradeEnableStartup／Uninstall 全 PASS，正式設定／排程／Run key baseline 不變。免安裝 ZIP 解壓後 263 個 publish 檔案 hash 相同，版本及 SHA256SUMS 通過。
 - 已解決嘗試：Claude 額度初次憑證過期，真實呼叫後重驗成功；舊 Codex 參數期望與視窗空白初值假設失敗已更新；漏加測試變數的編譯錯誤已修正；exe ProductVersion 的 commit 後綴及 Inno padding 已按 numeric version／Trim 校驗。
-- 前輪 dist/v1.10.0-final 產物尚未發布，因 exe 帶舊 HEAD 後綴不能作正式來源證據。將提交程式碼後重新建置至獨立 dist/v1.10.0-release，使用 ASCII 資產檔名與實際檔名 SHA256SUMS，驗證來源提交及 GitHub 上傳內容後發布。
+- 已完成原始碼提交 f060c30ade8a3f19207c303a0be2dce7304441a2；commit 包含模型／額度／啟動／UI 修正、測試、版本及文件，重新核心 16/16、WinForms 7/7、額度整合 1/1 與 self-contained publish 通過；exe ProductVersion 實際對應該提交，完整 build-installer exit 0，Inno 成功；push main 成功且 GitHub API 確认 remote SHA 相同。正式 ASCII 安裝包及 portable ZIP 已建置，解壓所有 263 個 publish 檔案 hash 相同，exe 來源與 setup 版本通過。GitHub 三項資產上傳完成並校驗。
+- GitHub draft id=403304641 已建立，上傳三個資產完成；API 的 target_commitish=f060c30ade8a3f19207c303a0be2dce7304441a2，exe／ZIP／SHA256SUMS 三個 digest 與本機一致。draft 的 tags API 回 404，改依確切 release id 讀取成功；gh download 大型資產長時間維持零位元組，取消已識別的自有 gh helper，未宣稱完整下載回驗成功。正式發布採 GitHub 官方 SHA256 digest 與 byte size 校驗，三項皆與本機一致。
+- 已正式發布：https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v1.10.0；API latest=v1.10.0、draft=false、prerelease=false，tag 確認為 f060c30ade8a3f19207c303a0be2dce7304441a2。正式安裝包 48,397,912 bytes／SHA256 f90d02e246970488e957d92674885dcae1fa1e5a33c90bbaa32071012b76f533；portable 66,970,495 bytes／SHA256 aebf6a834f1d5cd81d74d61059c882aa9f9d980be8f04977a44afc029cf67291；SHA256SUMS digest b858cc18a6c60cbfa5fecdf47189d187afc747c6f990b3e3a4b996ac17c98721。準備提交發布證據文件（不更動程式碼）。
+- 前輪 dist/v1.10.0-final 產物尚未發布，因 exe 帶舊 HEAD 後綴不能作正式來源證據。已提交並重新建置至 dist/v1.10.0-release，使用 ASCII 資產檔名與實際檔名 SHA256SUMS；此前測試產物保留但不作正式下載。
 - 未實測：Windows 重開機登入、已有最高權限舊工作的遷移、真實系統匣通知外觀、所有候選模型推論。保留這些限制於發布說明。
 ## 2026-10-04 Codex：全部功能更新與桌面驗證（完成，驗證限制見下）
 
@@ -58,7 +61,7 @@
 
 ## 目前狀態與限制
 
-- 最近正式發布為 v1.9.0（febe4e9）；本輪完成 QA 打包及隔離安裝／升級／卸載，尚未升版、更新正式安裝、commit 或 push。
+- 最近正式發布為 v1.10.0，tag／執行檔來源 f060c30；原始碼已 commit／push，GitHub 最新正式 Release 及三項資產 SHA256 均確認。未更新本機正式安裝。
 - 核心：.NET 8、WinForms、繁體中文、無額外 NuGet；四個目標平行喚醒，自動排程依各 CLI 的真實五小時額度倒數。
 - 一般權限 manifest／HKCU 啟動與安裝器遷移已更新，安裝／升級／解除安裝已通過；此機器無舊排程工作，尚未實測已有最高權限工作的遷移與重開機登入。
 - 舊紀錄已完整移至 [歷史交接紀錄](docs/AI_HANDOFF_HISTORY.md)，包含版本發布證據、已解決問題、失敗嘗試與 UI QA 限制。

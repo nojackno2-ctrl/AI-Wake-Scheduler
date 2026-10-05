@@ -5,7 +5,7 @@
 - 核心 16/16、WinForms 7/7；Release 方案建置 0 警告／0 錯誤；whitespace verify 及 diff check 通過。
 - 最終低價預設四目標喚醒均 exit 0 且回覆 OK（Gemini 3.8 Flash Low、AGY Sonnet 5.5 Low、Codex GPT-6 Luna、Claude Haiku 4.5），wake smoke 1/1 通過。
 - 額度整合初次因 Claude 憑證過期失敗；真實呼叫後重新檢查 1/1 通過，四個目標各 2 視窗。
-- 最終正式自包含安裝包建置成功；低價版 QA Install、UpgradeKeepStartup、UpgradeDisableStartup、UpgradeEnableStartup、Uninstall 全 PASS，正式設定／排程／Run key 不變。免安裝 ZIP 解壓後所有 publish 檔案 hash 相同；正式安裝器版本與 SHA256SUMS 校驗通過。產物位於 dist/v1.10.0-final，使用者已授權 commit／push／發布；將重新建置對應提交版本後發布。
+- 最終正式自包含安裝包建置成功；低價版 QA Install、UpgradeKeepStartup、UpgradeDisableStartup、UpgradeEnableStartup、Uninstall 全 PASS，正式設定／排程／Run key 不變。免安裝 ZIP 解壓後所有 publish 檔案 hash 相同；正式安裝器版本與 SHA256SUMS 校驗通過。產物位於 dist/v1.10.0-final，已依授權提交、推送，從 f060c30ade8a3f19207c303a0be2dce7304441a2 完整重建至 dist/v1.10.0-release，核心 16/16、WinForms 7/7、額度整合 1/1 再次通過；exe ProductVersion 含相同提交。GitHub v1.10.0 已正式發布，latest／tag／三項資產 SHA256 digest 與大小均確認。大型資產下載回驗未完成：gh helper 長時間零位元組後取消，未視為通過；校驗依據為 GitHub API 官方 SHA256 與本機解壓比對。
 
 ## 2026-10-04 歷史 QA 紀錄
 
