@@ -28,6 +28,7 @@ var deterministicTests = new (string Name, Func<Task> Run)[]
     ("CliCatalog", TestCliCatalogAsync),
     ("CliCommandBuilder", TestCliCommandBuilderAsync),
     ("CliUsageReader", TestCliUsageReaderAsync),
+    ("AntigravityUsageSourceCache", TestAntigravityUsageCacheAsync),
     ("ScheduleCalculator", TestScheduleCalculatorAsync),
     ("JsonFileStore", TestJsonFileStoreAsync),
     ("CliRunnerSafeArguments", TestCliRunnerAsync),
@@ -47,9 +48,13 @@ var integrationTests = new (string Name, Func<Task> Run)[]
 };
 
 var runIntegration = args.Contains("--integration", StringComparer.Ordinal);
-var tests = runIntegration ? integrationTests : deterministicTests;
+var runWakeSmoke = args.Contains("--wake-smoke", StringComparer.Ordinal);
+var tests = runWakeSmoke
+    ? new (string Name, Func<Task> Run)[] { ("RealCliWakeSmoke", TestRealCliWakeAsync) }
+    : runIntegration ? integrationTests : deterministicTests;
 Console.WriteLine(runIntegration
     ? "執行 opt-in 本機 CLI／登入整合測試。"
+    : runWakeSmoke ? "執行 opt-in 真實 CLI 喚醒測試（會消耗少量 Token）。"
     : "執行可重現的 deterministic 測試（不需要本機 CLI 或登入狀態）。");
 
 var failures = new List<string>();
@@ -83,10 +88,10 @@ static Task TestArgumentTokenizerAsync()
 
 static Task TestCliCommandBuilderAsync()
 {
-    Equal(["--print", "早安"], CliCommandBuilder.Build(CliKind.Antigravity, "早安", tokenSaverMode: false));
-    Equal(["--model", "claude-sonnet-4-6", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", tokenSaverMode: false));
+    Equal(["--model", "gemini-3.8-flash", "--print", "早安"], CliCommandBuilder.Build(CliKind.Antigravity, "早安", tokenSaverMode: false));
+    Equal(["--model", "claude-sonnet-5-5-low", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", tokenSaverMode: false));
     Equal(["--model", "custom-model", "--print", "早安"], CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "--model custom-model", tokenSaverMode: false));
-    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "早安"], CliCommandBuilder.Build(CliKind.Codex, "早安", tokenSaverMode: false));
+    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--model", "gpt-6-luna", "早安"], CliCommandBuilder.Build(CliKind.Codex, "早安", tokenSaverMode: false));
     Equal(["--print", "--model", "sonnet", "早安"], CliCommandBuilder.Build(CliKind.Claude, "早安", "--model sonnet", tokenSaverMode: false));
 
     // 自訂 Model 與 ThinkingEffort 測試（模型 ID 與 effort 合法值均以實際 CLI 行為核對）
@@ -123,7 +128,7 @@ static Task TestCliCommandBuilderAsync()
         "早安",
         new CliProfile { ThinkingEffort = ThinkingEffort.Minimal },
         tokenSaverMode: false);
-    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "-c", "model_reasoning_effort=\"low\"", "早安"], codexMinimal);
+    Equal(["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--model", "gpt-6-luna", "-c", "model_reasoning_effort=\"low\"", "早安"], codexMinimal);
 
     var codexLunaUltra = CliCommandBuilder.Build(
         CliKind.Codex,
@@ -146,8 +151,7 @@ static Task TestCliCommandBuilderAsync()
         tokenSaverMode: false);
     Equal(["--print", "--model", "opus", "--effort", "medium", "早安"], claudeCustom);
 
-    // AntigravityClaude 的三個模型（claude-sonnet-4-6、claude-opus-4-6-thinking、
-    // gpt-oss-120b-medium）在 agy 中皆已內建固定思考程度，一律不能帶 --effort。
+    // AntigravityClaude 使用含程度後綴的完整 ID，不另外加 --effort。
     var agyClaudeAnyModel = CliCommandBuilder.Build(
         CliKind.AntigravityClaude,
         "早安",
@@ -171,7 +175,7 @@ static Task TestCliCommandBuilderAsync()
 
     // 使用者以 -m 指定模型時，也不應再附加預設模型
     var shortModelOverride = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安", "-m custom", tokenSaverMode: false);
-    Assert(!shortModelOverride.Contains("claude-sonnet-4-6"), "使用者以 -m 指定模型時不應覆寫。");
+    Assert(!shortModelOverride.Contains("claude-sonnet-5-5-low"), "使用者以 -m 指定模型時不應覆寫。");
 
     // 使用者以額外參數指定思考程度時，不應重複附加
     var codexEffortOverride = CliCommandBuilder.Build(
@@ -197,7 +201,7 @@ static Task TestCliCommandBuilderAsync()
     Assert(saverAgy.Contains("--print-timeout") && saverAgy.Contains("180s"), "應把應用程式逾時轉為 CLI 自身的 --print-timeout。");
 
     var saverAgyClaude = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安");
-    Assert(saverAgyClaude.Contains("--model") && saverAgyClaude.Contains("claude-sonnet-4-6"), "AntigravityClaude 預設應使用 Claude Sonnet 模型 ID。");
+    Assert(saverAgyClaude.Contains("--model") && saverAgyClaude.Contains("claude-sonnet-5-5-low"), "AntigravityClaude 預設應使用 Claude Sonnet 模型 ID。");
     Assert(saverAgyClaude.Contains("--disable-slash-commands"), "AntigravityClaude 節省模式應停用技能展開。");
     Assert(saverAgyClaude.Contains("--mode") && saverAgyClaude.Contains("plan"), "AntigravityClaude 節省模式不可修改工作區。");
     // Claude 系列模型不接受 --effort，帶上去 agy 會直接拒絕整個呼叫
@@ -211,7 +215,7 @@ static Task TestCliCommandBuilderAsync()
     Assert(saverCodex.Last().Contains("只回「OK」", StringComparison.Ordinal), "節省模式應要求最短回覆。");
 
     var saverClaude = CliCommandBuilder.Build(CliKind.Claude, "早安");
-    Assert(saverClaude.Contains("--effort") && saverClaude.Contains("low"), "Claude 節省模式應包含 low effort。");
+    Assert(saverClaude.Contains("claude-haiku-4-5-20251001") && !saverClaude.Contains("--effort"), "Claude 預設應使用低價 Haiku 並省略不支援的 effort。");
     Assert(saverClaude.Contains("--tools") && saverClaude.Contains(string.Empty), "節省模式應停用 Claude 內建工具。");
     Assert(saverClaude.Contains("--safe-mode"), "節省模式應停用 CLAUDE.md、技能、外掛與 MCP 伺服器。");
     Assert(saverClaude.Contains("--strict-mcp-config"), "節省模式應確保不載入任何 MCP 工具結構描述。");
@@ -282,6 +286,53 @@ static Task TestInstallerContractAsync()
     Assert(startupTask.Contains("Flags: unchecked", StringComparison.Ordinal), "開機啟動必須預設不勾選。");
 
     return Task.CompletedTask;
+}
+
+static async Task TestAntigravityUsageCacheAsync()
+{
+    if (!OperatingSystem.IsWindows()) return;
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        async Task<string> CreateUsageCli(string folder, double remaining)
+        {
+            Directory.CreateDirectory(folder);
+            var path = Path.Combine(folder, "usage.cmd");
+            var json = JsonSerializer.Serialize(new
+            {
+                command = new
+                {
+                    name = "usage",
+                    data = new
+                    {
+                        groups = new[] {
+                    new { name = "Gemini models", buckets = new[] {
+                        new { name = "5h", window = "5h", remaining_fraction = remaining,
+                            reset_time = DateTimeOffset.Now.AddHours(2).ToString("O") }
+                    } }
+                }
+                    }
+                }
+            });
+            await File.WriteAllTextAsync(path, $"@echo off\r\necho call>>\"{Path.Combine(folder, "calls.txt")}\"\r\necho {json}\r\n");
+            return path;
+        }
+        var firstFolder = Path.Combine(directory, "first");
+        var secondFolder = Path.Combine(directory, "second");
+        var firstPath = await CreateUsageCli(firstFolder, 0.7);
+        var secondPath = await CreateUsageCli(secondFolder, 0.2);
+        var reader = new CliUsageReader();
+        var first = await reader.ReadAsync(CliKind.Antigravity, new() { Executable = firstPath }, firstFolder);
+        Assert(first.Availability == CliUsageAvailability.Available && first.Windows.Single().RemainingPercent == 70,
+            $"Initial CLI quota must be read: {first.Message}");
+        await reader.ReadAsync(CliKind.Antigravity, new() { Executable = firstPath }, firstFolder);
+        Assert(File.ReadAllLines(Path.Combine(firstFolder, "calls.txt")).Length == 1,
+            "Repeated source must reuse its short-lived quota cache.");
+        var second = await reader.ReadAsync(CliKind.Antigravity, new() { Executable = secondPath }, secondFolder);
+        Assert(second.Availability == CliUsageAvailability.Available && second.Windows.Single().RemainingPercent == 20,
+            $"Changed CLI source must not reuse the old quota: {second.Message}");
+    }
+    finally { Directory.Delete(directory, true); }
 }
 
 static Task TestCliUsageReaderAsync()
@@ -380,6 +431,28 @@ static Task TestCliUsageReaderAsync()
     Assert(agyClaudeSnapshot.Windows[0].RemainingPercent == 100, "剩餘百分比應為 100。");
     Assert(agyClaudeSnapshot.Windows[0].UsedPercent == 0, "已使用百分比應為 0。");
     Assert(agyClaudeSnapshot.Windows[0].ResetsAt?.UtcDateTime.Hour == 9, "應精確解析 UTC 重置時分。");
+
+    // 新版內建 /usage 的 command.data 結構，含低於 UI 四捨五入精度的用量。
+    var usageData = $$"""
+        {"groups":[
+          {"name":"Gemini Models","buckets":[
+            {"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.999,"reset_time":"{{observedAt.AddHours(2):O}}"},
+            {"name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8,"reset_time":"{{observedAt.AddDays(3):O}}"}]},
+          {"name":"Claude and GPT models","buckets":[
+            {"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"{{observedAt.AddHours(5):O}}"}]}]}
+        """;
+    var usageGemini = CliUsageReader.ParseAntigravityModelConfigs(usageData, CliKind.Antigravity, observedAt);
+    Assert(usageGemini.Windows.Count == 2 && usageGemini.Windows[1].Duration == TimeSpan.FromDays(7), "新版 usage 應解析 5h 與 weekly。");
+    Assert(usageGemini.Windows[0].UsedPercent == 0 && CliUsageReader.IsCountingDown(usageGemini, observedAt), "微量使用即使顯示為 0% 仍應倒數。");
+    var usageClaude = CliUsageReader.ParseAntigravityModelConfigs(usageData, CliKind.AntigravityClaude, observedAt);
+    Assert(usageClaude.Windows.Count == 1 && !CliUsageReader.IsCountingDown(usageClaude, observedAt), "滿額滑動時間不可當成真正倒數。");
+    var tinyClaude = CliUsageReader.ParseClaudeUsage(
+        $$$"""{"five_hour":{"utilization":0.1,"resets_at":"{{{observedAt.AddHours(2):O}}}"}}""", observedAt);
+    Assert(CliUsageReader.IsCountingDown(tinyClaude, observedAt), "Claude 微量使用亦應立即啟動倒數。");
+    var refreshClaude = typeof(CliUsageReader).GetMethod("RefreshClaudeSnapshot", BindingFlags.Static | BindingFlags.NonPublic)!;
+    var cachedTinyClaude = (CliUsageSnapshot)refreshClaude.Invoke(null, [tinyClaude, observedAt.AddSeconds(10), "cached"])!;
+    Assert(CliUsageReader.IsCountingDown(cachedTinyClaude, observedAt.AddSeconds(10)),
+        "Claude 微量使用的快取更新亦應保留有效倒數。");
 
     var agyError = CliUsageReader.ParseAntigravityModelConfigs("{\"error\":{\"message\":\"invalid CSRF token\"}}", CliKind.Antigravity, observedAt);
     Assert(agyError.Availability == CliUsageAvailability.Unavailable, "Antigravity 錯誤回應不可標示為可用。");
@@ -673,19 +746,48 @@ static Task TestCliCatalogAsync()
         Assert(descriptor.SupportedEfforts.Contains(ThinkingEffort.Default), "每個 CLI 都應允許使用 CLI 自身預設思考程度。");
     }
 
-    // AntigravityClaude 的三個模型都已內建固定思考程度，agy 會直接拒絕 --effort，
-    // 因此這個設定檔刻意只提供「預設」一個選項（詳見 CliCommandBuilder 的實測註解）。
+    // AntigravityClaude 的程度已在完整模型 ID 中，此處僅提供預設。
     Assert(CliCatalog.Get(CliKind.AntigravityClaude).SupportedEfforts.Count == 1, "AntigravityClaude 不應提供無法生效的思考程度選項。");
 
     var codex = CliCatalog.Get(CliKind.Codex);
     Equal(
-        ["", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+        ["", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
         codex.PresetModels);
     Assert(!codex.PresetModels.Any(model => model.Contains("gpt-5.2", StringComparison.OrdinalIgnoreCase) || model.Contains("gpt-5.1", StringComparison.OrdinalIgnoreCase)),
         "Codex 推薦清單不應再包含 deprecated 的 GPT-5.2/5.1 Codex 模型。");
     Assert(codex.GetSupportedEfforts("gpt-5.6-sol").Contains(ThinkingEffort.Ultra), "GPT-5.6 Sol 應支援 Ultra。");
     Assert(!codex.GetSupportedEfforts("gpt-5.6-luna").Contains(ThinkingEffort.Ultra), "GPT-5.6 Luna 不支援 Ultra。");
     Assert(codex.NormalizeEffort("gpt-5.5", ThinkingEffort.Max) == ThinkingEffort.XHigh, "GPT-5.5 Max 應正規化為 XHigh。");
+    foreach (var model in new[] { "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol" })
+    {
+        var built = CliCommandBuilder.Build(CliKind.Codex, "OK",
+            new CliProfile { Model = model, ThinkingEffort = ThinkingEffort.Ultra }, tokenSaverMode: false);
+        Assert(built.Contains(model) && built.Contains("model_reasoning_effort=\"ultra\""), "新 Sol/Astra 應可使用 Ultra。");
+    }
+    var luna = CliCommandBuilder.Build(CliKind.Codex, "OK",
+        new CliProfile { Model = "gpt-6-luna", ThinkingEffort = ThinkingEffort.Ultra }, tokenSaverMode: false);
+    Assert(luna.Contains("model_reasoning_effort=\"max\""), "GPT-6 Luna 的 Ultra 應降為 Max。");
+
+    var agyClaude = CliCatalog.Get(CliKind.AntigravityClaude);
+    Assert(agyClaude.DefaultModel == "claude-sonnet-5-5-low", "AGY Claude 預設應使用目前的 Sonnet 5.5 Low。");
+    var legacySettings = AppSettings.CreateDefault();
+    legacySettings.CliProfiles[CliKind.AntigravityClaude].Model = "claude-opus-4-6-thinking";
+    legacySettings.CliProfiles[CliKind.Codex].Model = "gpt-5.4-mini";
+    legacySettings.CliProfiles[CliKind.Claude].Model = "custom-model";
+    legacySettings.EnsureDefaults();
+    Assert(legacySettings.CliProfiles[CliKind.AntigravityClaude].Model == "claude-opus-5-5-high", "已移除 Opus 設定應轉換到新完整 ID。");
+    Assert(legacySettings.CliProfiles[CliKind.Codex].Model == "gpt-6-luna", "已移除 mini 設定應轉換到 Luna。");
+    Assert(legacySettings.CliProfiles[CliKind.Claude].Model == "custom-model", "自訂模型不可被轉換。");
+    foreach (var model in agyClaude.PresetModels)
+    {
+        var built = CliCommandBuilder.Build(CliKind.AntigravityClaude, "OK",
+            new CliProfile { Model = model, ThinkingEffort = ThinkingEffort.High });
+        Assert(built.Contains(model) && !built.Contains("--effort"), "AGY 完整 ID 不應再加 --effort。");
+    }
+    foreach (var model in new[] { "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1" })
+    {
+        Assert(CliCatalog.Get(CliKind.Claude).PresetModels.Contains(model), "Claude 應提供目前的固定版本模型。");
+    }
 
     var agy = CliCatalog.Get(CliKind.Antigravity);
     Assert(agy.PresetModels.Contains("gemini-3.8-flash"), "Antigravity 推薦清單應包含 gemini-3.8-flash。");
@@ -1746,6 +1848,11 @@ static async Task TestExecutableLocatorAsync()
         Assert(codexUsage.Availability == CliUsageAvailability.Available,
             $"Codex 額度應可由 app-server 讀取：{codexUsage.Message}");
         Assert(codexUsage.Windows.Count > 0, "Codex 額度回應應至少有一個視窗。");
+        Console.WriteLine($"  Codex Usage: Windows={codexUsage.Windows.Count}, Message={codexUsage.Message}");
+
+        var claudeUsage = await new CliUsageReader().ReadAsync(
+            CliKind.Claude, new CliProfile { Executable = "claude" }, workingDir);
+        Console.WriteLine($"  Claude Usage: Availability={claudeUsage.Availability}, Windows={claudeUsage.Windows.Count}, Message={claudeUsage.Message}");
         Assert(codexUsage.Windows.All(window => window.RemainingPercent is >= 0 and <= 100),
             "Codex 剩餘百分比應落在 0 到 100。");
 
@@ -1755,6 +1862,7 @@ static async Task TestExecutableLocatorAsync()
             new CliProfile { Executable = "agy" },
             workingDir);
         Console.WriteLine($"  Antigravity (Gemini) Usage: Availability={agyUsage.Availability}, Windows={agyUsage.Windows.Count}, Message={agyUsage.Message}");
+        Assert(agyUsage.Availability == CliUsageAvailability.Available, $"AGY Gemini 即時額度應可讀取：{agyUsage.Message}");
         if (agyUsage.Availability == CliUsageAvailability.Available)
         {
             // 視窗數量取決於 language server 回應哪一支 RPC：
@@ -1774,6 +1882,7 @@ static async Task TestExecutableLocatorAsync()
             new CliProfile { Executable = "agy" },
             workingDir);
         Console.WriteLine($"  Antigravity (Claude / GPT) Usage: Availability={agyClaudeUsage.Availability}, Windows={agyClaudeUsage.Windows.Count}, Message={agyClaudeUsage.Message}");
+        Assert(agyClaudeUsage.Availability == CliUsageAvailability.Available, $"AGY Claude/GPT 即時額度應可讀取：{agyClaudeUsage.Message}");
         if (agyClaudeUsage.Availability == CliUsageAvailability.Available)
         {
             Assert(agyClaudeUsage.Windows.Count > 0, "Antigravity (Claude / GPT) 應至少回傳 1 個額度視窗。");
@@ -1785,43 +1894,51 @@ static async Task TestExecutableLocatorAsync()
             }
         }
 
-        // Antigravity 沒開時的自動啟動路徑：直接啟動一個隱藏的 agy language server，
-        // 對它查詢額度，再確認程序有被收乾淨。
-        var agyExecutable = ExecutableLocator.Resolve(CliKind.Antigravity, "agy", workingDir);
-        Assert(agyExecutable is not null, "應能解析 agy 可執行檔路徑。");
-
-        var launchStopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var launchedPort = 0;
-        var launchedWindows = 0;
-        using (var host = await AntigravityLauncher.StartAsync(agyExecutable!, workingDir, CancellationToken.None))
-        {
-            Assert(host is not null, "應能在背景啟動 Antigravity language server。");
-            launchedPort = host!.Port;
-            Console.WriteLine($"  自動啟動的 language server: 連接埠 {launchedPort}（耗時 {launchStopwatch.ElapsedMilliseconds} ms）");
-
-            var launchedSnapshot = await CliUsageReader.ReadLaunchedAntigravityForTestAsync(
-                host,
-                CliKind.Antigravity,
-                CancellationToken.None);
-            Assert(
-                launchedSnapshot.Availability == CliUsageAvailability.Available,
-                $"自動啟動的 language server 應可讀取額度：{launchedSnapshot.Message}");
-            launchedWindows = launchedSnapshot.Windows.Count;
-            foreach (var window in launchedSnapshot.Windows)
-            {
-                Console.WriteLine($"  -> {window.Name}: 剩餘 {window.RemainingPercent}%, 視窗 {window.Duration?.ToString() ?? "未知"}");
-            }
-        }
-
-        Assert(launchedPort > 0, "自動啟動應回傳有效連接埠。");
-        Assert(launchedWindows > 0, "自動啟動應至少讀到一個額度視窗。");
-
         var probeClaude = await runner.ProbeAsync(CliKind.Claude, new CliProfile { Executable = "claude" }, workingDir);
         Assert(probeClaude.Succeeded, $"Claude Probe 應成功：{probeClaude.Summary}");
+        Assert(claudeUsage.Availability == CliUsageAvailability.Available, $"Claude 即時額度應可讀取：{claudeUsage.Message}");
     }
     finally
     {
         Directory.Delete(tempDir, true);
+    }
+}
+
+// 明確 opt-in：會真的建立四個最小模型回合，使用產品 Runner／參數／日誌路徑。
+static async Task TestRealCliWakeAsync()
+{
+    var directory = CreateTemporaryDirectory();
+    try
+    {
+        var runner = new CliRunner(new AppDataPaths(Path.Combine(directory, "data")));
+        var cases = new (CliKind Kind, string Model)[]
+        {
+            (CliKind.Antigravity, "gemini-3.8-flash"),
+            (CliKind.AntigravityClaude, "claude-sonnet-5-5-low"),
+            (CliKind.Codex, "gpt-6-luna"),
+            (CliKind.Claude, "claude-haiku-4-5-20251001")
+        };
+        foreach (var item in cases)
+            Assert(CliCatalog.Get(item.Kind).DefaultModel == item.Model, $"{item.Kind} 應測試真正的預設模型。");
+        var results = await Task.WhenAll(cases.Select(async item =>
+        {
+            var output = new System.Text.StringBuilder();
+            var result = await runner.RunAsync(item.Kind,
+                new CliProfile(),
+                "只回 OK", directory, TimeSpan.FromMinutes(2),
+                onOutput: (isError, chunk) => { if (!isError) output.Append(chunk); });
+            Console.WriteLine($"  {item.Kind} / {item.Model}: Exit={result.ExitCode}, Success={result.Succeeded}");
+            return (item, result, Output: output.ToString());
+        }));
+        foreach (var (item, result, output) in results)
+        {
+            Assert(result.Succeeded, $"{item.Kind} 實際喚醒失敗：{result.Error}");
+            Assert(output.Contains("OK", StringComparison.Ordinal), $"{item.Kind} 應回覆 OK。");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
     }
 }
 

@@ -81,7 +81,7 @@ public sealed class AppSettings
     public int ExecutionTimeoutMinutes { get; set; } = 3;
     public int QuotaAutoRefreshMinutes { get; set; } = 10;
 
-    /// <summary>Antigravity 沒開時，是否在背景無視窗自動啟動 language server 以讀取額度。</summary>
+    /// <summary>是否允許背景無視窗執行 agy 內建 /usage；關閉時僅查詢已開啟的 IDE。</summary>
     public bool AutoStartAntigravity { get; set; } = true;
 
     public Dictionary<CliKind, CliProfile> CliProfiles { get; set; } = CreateDefaultProfiles();
@@ -130,8 +130,19 @@ public sealed class AppSettings
             var descriptor = descriptors[i];
             if (!CliProfiles.TryGetValue(descriptor.Kind, out var profile) || profile is null)
             {
-                CliProfiles[descriptor.Kind] = new CliProfile { Executable = descriptor.DefaultCommand };
+                profile = new CliProfile { Executable = descriptor.DefaultCommand, Model = descriptor.DefaultModel ?? string.Empty };
+                CliProfiles[descriptor.Kind] = profile;
             }
+
+            // 已從 CLI 清單移除的內建模型設定移到現行替代模型；自訂模型保留。
+            profile.Model = (descriptor.Kind, profile.Model?.Trim()) switch
+            {
+                (CliKind.AntigravityClaude, "claude-sonnet-4-6") => "claude-sonnet-5-5-low",
+                (CliKind.AntigravityClaude, "claude-opus-4-6-thinking") => "claude-opus-5-5-high",
+                (CliKind.Codex, "gpt-5.4") => "gpt-6.1-sol",
+                (CliKind.Codex, "gpt-5.4-mini") => "gpt-6-luna",
+                _ => profile.Model ?? string.Empty
+            };
         }
 
         ExecutionTimeoutMinutes = Math.Clamp(ExecutionTimeoutMinutes, 1, 120);
@@ -144,7 +155,7 @@ public sealed class AppSettings
         var profiles = new Dictionary<CliKind, CliProfile>(descriptors.Count);
         for (var i = 0; i < descriptors.Count; i++)
         {
-            profiles[descriptors[i].Kind] = new CliProfile { Executable = descriptors[i].DefaultCommand };
+            profiles[descriptors[i].Kind] = new CliProfile { Executable = descriptors[i].DefaultCommand, Model = descriptors[i].DefaultModel ?? string.Empty };
         }
         return profiles;
     }

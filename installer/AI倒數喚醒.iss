@@ -1,14 +1,34 @@
 ; AI 倒數喚醒 (AI Wake Scheduler) Inno Setup 6 腳本
 #define MyAppName "AI 倒數喚醒"
-#define MyAppVersion "1.9.0"
+#define MyAppVersion "1.10.0"
 #define MyAppPublisher "AI Wake Scheduler"
 #define MyAppURL "https://github.com/nojackno2-ctrl/AI-Wake-Scheduler"
 #define MyAppExeName "AI倒數喚醒.exe"
 #define MyAppUserModelId "nojackno2.AIWakeScheduler"
+#ifdef VerificationBuild
+  #undef MyAppName
+  #define MyAppName "AI 倒數喚醒 QA"
+  #undef MyAppUserModelId
+  #define MyAppUserModelId "nojackno2.AIWakeScheduler.QA"
+  #define MyAppId "{{59A78022-7C7F-4CEE-B6B2-9B6D5588A57B}"
+  #define StartupValueName "AI倒數喚醒-QA"
+  #define LegacyTaskName "AI倒數喚醒-QA"
+  #define StartupArguments "--minimized --verify-ui"
+  #define ShortcutArguments "--verify-ui"
+#else
+  #define MyAppId "{{5B2F4E2D-31C4-4CA5-87A9-6E2BB049DFE7}"
+  #define StartupValueName "AI倒數喚醒"
+  #define LegacyTaskName "AI倒數喚醒"
+  #define StartupArguments "--minimized"
+  #define ShortcutArguments ""
+#endif
+#ifndef PublishDir
+  #define PublishDir "..\bin\publish-selfcontained"
+#endif
 
 [Setup]
 ; 應用程式全域唯一識別碼
-AppId={{5B2F4E2D-31C4-4CA5-87A9-6E2BB049DFE7}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} v{#MyAppVersion}
@@ -61,30 +81,41 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupicon"; Description: "登入 Windows 時自動在背景啟動 (常駐系統匣)"; GroupDescription: "系統啟動選項:"; Flags: unchecked
 
 [Files]
-Source: "..\bin\publish-selfcontained\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\assets\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#ShortcutArguments}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "{#ShortcutArguments}"; WorkingDir: "{app}"; AppUserModelID: "{#MyAppUserModelId}"; Tasks: desktopicon
 
 [Registry]
-; 程式內建「開機時自動啟動」開關會自行寫入此機碼(StartupManager.cs),
-; 安裝程式本身不建立它，僅在解除安裝時一併清除，避免殘留指向已移除路徑的啟動項。
-; v1.3.0 起主程式改用 requireAdministrator 資訊清單，這把舊登錄機碼機制留給升級中的舊使用者做清除用。
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "AI倒數喚醒"; ValueType: none; Flags: uninsdeletevalue
+; 與一般使用者權限主程式一致，啟動項目只寫入目前使用者。
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#StartupValueName}"; ValueType: string; ValueData: """{app}\{#MyAppExeName}"" {#StartupArguments}"; Flags: uninsdeletevalue; Tasks: startupicon
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: "{#StartupValueName}"; ValueType: none; Flags: deletevalue; Check: not WizardIsTaskSelected('startupicon')
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
-; 主程式現在需要系統管理員權限執行（見 app.manifest），啟動資料夾捷徑每次登入都會跳 UAC，
-; 改用工作排程器建立「以最高權限執行」+「登入時觸發」的工作，才能維持靜默背景啟動。
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /SC ONLOGON /RL HIGHEST /TN ""AI倒數喚醒"" /TR ""\""{app}\{#MyAppExeName}\"" --minimized"""; Flags: runhidden; Tasks: startupicon
+; 安裝器有權限時清理舊版最高權限工作，避免與 Run key 重複啟動。
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#LegacyTaskName}"" /F"; Flags: runhidden
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 
 [UninstallRun]
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""AI倒數喚醒"" /F"; Flags: runhidden
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#LegacyTaskName}"" /F"; Flags: runhidden
 
 [UninstallDelete]
 Type: files; Name: "{app}\*.log"
+
+[Code]
+procedure InitializeWizard;
+var
+  StartupCommand: String;
+  ExitCode: Integer;
+begin
+  { Preserve startup selected in the app or an older installer before removing the legacy task. }
+  if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', '{#StartupValueName}', StartupCommand) then
+    WizardSelectTasks('startupicon')
+  else if Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "{#LegacyTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and (ExitCode = 0) then
+    WizardSelectTasks('startupicon');
+end;

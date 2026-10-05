@@ -33,22 +33,27 @@ internal sealed class AppHost : IAsyncDisposable
     public CliRunner Runner { get; }
     public CliUsageReader UsageReader { get; }
     public ScheduleManager Manager { get; }
+    public bool IsIsolated { get; private init; }
 
-    public static async Task<AppHost> CreateAsync(CancellationToken cancellationToken = default)
+    public static async Task<AppHost> CreateAsync(CancellationToken cancellationToken = default, string? rootDirectory = null)
     {
-        var paths = new AppDataPaths();
+        var paths = new AppDataPaths(rootDirectory);
         paths.EnsureCreated();
 
         var settingsStore = new JsonFileStore<AppSettings>(paths.SettingsFile, AppSettings.CreateDefault);
         var settings = await settingsStore.LoadAsync(cancellationToken).ConfigureAwait(false);
         settings.EnsureDefaults();
+        if (rootDirectory is null) settings.StartWithWindows = StartupManager.IsEnabled();
 
         var jobStore = new JsonFileStore<List<ScheduledJob>>(paths.JobsFile, static () => []);
         var runner = new CliRunner(paths);
         var usageReader = new CliUsageReader { AutoStartAntigravity = settings.AutoStartAntigravity };
         var manager = new ScheduleManager(jobStore, runner, () => settings, usageReader);
 
-        var host = new AppHost(paths, settingsStore, jobStore, settings, runner, usageReader, manager);
+        var host = new AppHost(paths, settingsStore, jobStore, settings, runner, usageReader, manager)
+        {
+            IsIsolated = rootDirectory is not null
+        };
         await manager.InitializeAsync(cancellationToken).ConfigureAwait(false);
         return host;
     }

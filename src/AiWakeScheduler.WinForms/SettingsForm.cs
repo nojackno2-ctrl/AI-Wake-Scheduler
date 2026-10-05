@@ -24,7 +24,7 @@ internal sealed class SettingsForm : Form
     };
     private readonly CheckBox _autoStartAgyCheck = new()
     {
-        Text = "Antigravity 沒開時，於背景無視窗自動啟動以讀取額度",
+        Text = "允許在背景無視窗查詢 Antigravity 額度（不需開啟 IDE）",
         AutoSize = true
     };
     private readonly NumericUpDown _timeoutInput = new() { Minimum = 1, Maximum = 120, Width = 70 };
@@ -91,7 +91,7 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             Padding = new Padding(24, 20, 24, 20),
             ColumnCount = 1,
-            RowCount = 6,
+            RowCount = 5,
             AutoScroll = true,
             BackColor = AppTheme.Canvas
         };
@@ -104,8 +104,6 @@ internal sealed class SettingsForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
         root.Controls.Add(new Label
         {
             Text = "CLI 與程式設定",
@@ -117,7 +115,7 @@ internal sealed class SettingsForm : Form
 
         root.Controls.Add(new Label
         {
-            Text = "可為各 CLI 指定最新模型（支援下拉選取或直接輸入任意自訂模型 ID）與思考程度（Reasoning Effort）。"
+            Text = "預設使用低價喚醒模型；可為各 CLI 指定其他模型（支援下拉選取或直接輸入任意自訂模型 ID）與思考程度（Reasoning Effort）。"
                  + "可執行檔可填命令名稱（agy / codex / claude）或完整 .exe 路徑。",
             AutoSize = true,
             ForeColor = AppTheme.SecondaryText,
@@ -128,9 +126,10 @@ internal sealed class SettingsForm : Form
         root.Controls.Add(BuildCliTable(), 0, 2);
         root.Controls.Add(BuildOptions(), 0, 3);
         root.Controls.Add(BuildProbeRow(), 0, 4);
-        root.Controls.Add(BuildButtons(), 0, 5);
-
         Controls.Add(root);
+        // Keep actions outside the scrolling content so narrow/high-DPI windows
+        // and growing probe results cannot push Save/Cancel out of reach.
+        Controls.Add(BuildButtons());
         ResumeLayout(performLayout: true);
     }
 
@@ -296,7 +295,16 @@ internal sealed class SettingsForm : Form
 
     private Control BuildButtons()
     {
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Margin = new Padding(0) };
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0),
+            Padding = new Padding(24, 8, 24, 16),
+            BackColor = AppTheme.Canvas
+        };
         var ok = new Button { Text = "儲存", DialogResult = DialogResult.OK, AutoSize = true };
         AppTheme.StyleButton(ok, AppTheme.ButtonVariant.Primary);
         ok.Click += SaveValues;

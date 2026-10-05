@@ -11,7 +11,9 @@ internal static class Program
         AiWakeScheduler.Core.ProcessRunner.SuppressChildProcessErrorDialogs();
 
         var isMinimized = args.Contains("--minimized", StringComparer.OrdinalIgnoreCase);
-        using var mutex = new Mutex(true, SingleInstanceMutexName, out var ownsMutex);
+        var verifyUi = args.Contains("--verify-ui", StringComparer.OrdinalIgnoreCase);
+        var mutexName = verifyUi ? $"{SingleInstanceMutexName}-QA-{Guid.NewGuid():N}" : SingleInstanceMutexName;
+        using var mutex = new Mutex(true, mutexName, out var ownsMutex);
         if (!ownsMutex)
         {
             if (!isMinimized)
@@ -44,14 +46,23 @@ internal static class Program
 
     private static void Run(string[] args)
     {
-        StartupManager.MigrateLegacyIfNeeded();
+        var verifyUi = args.Contains("--verify-ui", StringComparer.OrdinalIgnoreCase);
+        var startupMigrationError = verifyUi ? null : StartupManager.MigrateLegacyIfNeeded();
+        var rootDirectory = verifyUi ? Path.Combine(Path.GetTempPath(), $"AiWakeScheduler-QA-{Guid.NewGuid():N}") : null;
 
-        var host = AppHost.CreateAsync().GetAwaiter().GetResult();
+        var host = AppHost.CreateAsync(rootDirectory: rootDirectory).GetAwaiter().GetResult();
         try
         {
             using var mainForm = new MainForm(
                 host,
                 args.Contains("--minimized", StringComparer.OrdinalIgnoreCase));
+            if (verifyUi) mainForm.Text += "（功能驗證）";
+            if (startupMigrationError is not null)
+            {
+                mainForm.Shown += (_, _) => MessageBox.Show(mainForm,
+                    $"開機啟動設定未完成遷移：{startupMigrationError}",
+                    "AI 倒數喚醒", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
             Application.Run(mainForm);
         }
         finally

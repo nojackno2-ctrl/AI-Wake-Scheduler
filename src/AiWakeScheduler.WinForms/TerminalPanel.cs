@@ -235,7 +235,18 @@ internal sealed class TerminalPanel : UserControl
 
         var cut = _output.TextLength - TrimToCharacters;
         _output.Select(0, cut);
-        _output.SelectedText = string.Empty;
+        var wasReadOnly = _output.ReadOnly;
+        try
+        {
+            // RichEdit rejects selection replacement while read-only; keep this
+            // synchronous UI operation writable only for the deletion itself.
+            _output.ReadOnly = false;
+            _output.SelectedText = string.Empty;
+        }
+        finally
+        {
+            _output.ReadOnly = wasReadOnly;
+        }
         _atLineStart = true;
         _lastWriter = null;
     }

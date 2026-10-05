@@ -164,9 +164,8 @@ public static class CliCommandBuilder
                 break;
 
             case CliKind.AntigravityClaude:
-                // 這個設定檔僅提供 claude-sonnet-4-6 / claude-opus-4-6-thinking / gpt-oss-120b-medium，
-                // 三者皆已內建固定思考程度，agy 對其一律拒絕 --effort（實測：
-                // "--effort is not supported for model ..."），故永遠略過。
+                // 此群組使用包含思考程度後綴的完整模型 ID（Claude 5.5 / GPT-OSS），
+                // 由模型 ID 決定程度，不再附加可能衝突的 --effort。
                 return;
 
             // 實際可用值由 Codex App Server model/list 核對；各模型不相容的較高等級
