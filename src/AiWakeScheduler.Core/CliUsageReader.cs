@@ -111,13 +111,14 @@ public sealed class CliUsageReader : ICliUsageReader
     }
 
     /// <summary>
-    /// Antigravity 沒開時，是否自動於背景無視窗啟動一個 language server 來讀額度。
-    /// 關閉後遇到 Antigravity 未啟動只會回報「尚未啟動」，不會產生任何子程序。
+    /// 是否允許背景無視窗執行 agy 內建 /usage 指令讀取額度。
+    /// 關閉後僅讀取已啟動的 IDE language server。
     /// </summary>
     public bool AutoStartAntigravity { get; set; } = true;
 
     private static readonly SemaphoreSlim _agyQueryLock = new(1, 1);
-    private static (string Json, DateTimeOffset CachedAt, TimeSpan Ttl)? _cachedAgyResponse;
+    private static (string Json, DateTimeOffset CachedAt, TimeSpan Ttl, string Executable,
+        string WorkingDirectory, bool AutoStart)? _cachedAgyResponse;
     private static readonly TimeSpan AgyCacheDuration = TimeSpan.FromSeconds(3);
 
     /// <summary>
@@ -193,7 +194,9 @@ public sealed class CliUsageReader : ICliUsageReader
             await _agyQueryLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (_cachedAgyResponse is { } cached && DateTimeOffset.Now - cached.CachedAt < cached.Ttl)
+                if (_cachedAgyResponse is { } cached && DateTimeOffset.Now - cached.CachedAt < cached.Ttl &&
+                    cached.Executable == profile.Executable && cached.WorkingDirectory == workingDirectory &&
+                    cached.AutoStart == AutoStartAntigravity)
                 {
                     responseJson = cached.Json;
                 }
@@ -209,7 +212,8 @@ public sealed class CliUsageReader : ICliUsageReader
                     _cachedAgyResponse = (
                         responseJson,
                         DateTimeOffset.Now,
-                        launched ? AgyLaunchedCacheDuration : AgyCacheDuration);
+                        launched ? AgyLaunchedCacheDuration : AgyCacheDuration,
+                        profile.Executable, workingDirectory, AutoStartAntigravity);
                 }
             }
             finally
@@ -257,9 +261,9 @@ public sealed class CliUsageReader : ICliUsageReader
     /// <summary>
     /// 取得 Antigravity 額度 RPC 的原始 JSON。
     ///
-    /// 依序嘗試：上一次成功的連線 → 探測既有的 language server →
-    /// 都沒有時自行在背景無視窗啟動一個。
-    /// <c>Launched</c> 表示這份資料來自本應用程式自己啟動的短命服務，
+    /// 開啟背景查詢時使用 agy 內建 /usage；關閉時依序嘗試
+    /// 上一次成功的連線與既有 language server。
+    /// <c>Launched</c> 表示這份資料來自本應用程式自己啟動的 CLI，
     /// 呼叫端要據此拉長快取時間，避免每個額度池都各啟動一次。
     /// </summary>
     private async Task<(string Json, bool Launched)> FetchAntigravityQuotaJsonAsync(
@@ -268,6 +272,25 @@ public sealed class CliUsageReader : ICliUsageReader
         string workingDirectory,
         CancellationToken cancellationToken)
     {
+        if (AutoStartAntigravity)
+        {
+            var executable = ExecutableLocator.Resolve(CliKind.Antigravity, profile.Executable, workingDirectory)
+                ?? throw new FileNotFoundException("找不到 Antigravity CLI，請檢查 CLI 設定。");
+            var execution = await ProcessRunner.ExecuteAsync(
+                executable, ["--output-format", "json", "--print", "/usage"],
+                workingDirectory, QueryTimeout, cancellationToken).ConfigureAwait(false);
+            if (execution.TimedOut) throw new InvalidOperationException("Antigravity /usage 額度查詢逾時。");
+            if (execution.ExitCode != 0)
+                throw new InvalidOperationException($"Antigravity /usage 額度查詢失敗：{TrimDiagnostic(execution.StandardError)}");
+            // 只接受內建 usage 指令回應；絕不將一般模型文字當成額度資料。
+            using var document = JsonDocument.Parse(execution.StandardOutput);
+            var root = document.RootElement;
+            if (!TryGetObjectProperty(root, "command", out var command) || GetString(command, "name") != "usage" ||
+                !TryGetObjectProperty(command, "data", out var quota) || !TryGetArrayProperty(quota, "groups", out _))
+                throw new InvalidOperationException("Antigravity CLI 未回傳內建 /usage 額度資料，請更新 agy CLI。");
+            return (quota.GetRawText(), true);
+        }
+
         if (_activeAgyConnection is { } cachedConnection)
         {
             var fastBody = await TryQueryAntigravityAsync(cachedConnection, cancellationToken).ConfigureAwait(false);
@@ -282,8 +305,7 @@ public sealed class CliUsageReader : ICliUsageReader
 
         var (csrfToken, ports) = await DiscoverAntigravityEndpointsAsync(pid, cancellationToken).ConfigureAwait(false);
 
-        // agy CLI 自帶的本機 language server 是 tokenless，桌面 IDE 則需要 CSRF；
-        // 兩種來源都要能讀到同一個額度 RPC，所以 Token 為空時仍繼續探測。
+        // IDE 需要 CSRF；仍容許沒有 Token 的舊版 IDE 端點。
         foreach (var port in ports)
         {
             foreach (var method in AgyQuotaRpcMethods)
@@ -298,146 +320,8 @@ public sealed class CliUsageReader : ICliUsageReader
             }
         }
 
-        if (!AutoStartAntigravity)
-        {
-            throw new InvalidOperationException(
-                "Antigravity 尚未啟動，請先開啟 Antigravity 以讀取即時額度（自動啟動已關閉）。");
-        }
-
-        var launchedBody = await QueryViaLaunchedAntigravityAsync(profile, workingDirectory, cancellationToken)
-            .ConfigureAwait(false);
-        if (launchedBody is not null)
-        {
-            return (launchedBody, true);
-        }
-
         throw new InvalidOperationException(
-            "Antigravity 尚未啟動，且無法自動啟動背景 language server 讀取額度。");
-    }
-
-    /// <summary>
-    /// 對一個已啟動的 <see cref="AntigravityHost"/> 直接查詢額度。
-    /// 供整合測試在 Antigravity 已經開著的情況下也能驗證自動啟動路徑。
-    /// </summary>
-    public static async Task<CliUsageSnapshot> ReadLaunchedAntigravityForTestAsync(
-        AntigravityHost host,
-        CliKind kind,
-        CancellationToken cancellationToken)
-    {
-        ArgumentNullException.ThrowIfNull(host);
-        var observedAt = DateTimeOffset.Now;
-        var diagnostics = new List<string>();
-
-        var body = await QueryLaunchedHostAsync(host, diagnostics, cancellationToken).ConfigureAwait(false);
-        if (body is null)
-        {
-            var detail = diagnostics.Count == 0 ? "沒有任何回應" : string.Join("；", diagnostics.TakeLast(4));
-            return Unavailable(kind, $"自動啟動的 Antigravity language server 未回傳可解析的額度（{detail}）。", observedAt);
-        }
-
-        var snapshot = ParseAntigravityModelConfigs(body, kind, observedAt);
-        return snapshot.Availability == CliUsageAvailability.Available
-            ? snapshot with { Message = DescribeAntigravityCoverage(snapshot.Windows) }
-            : snapshot;
-    }
-
-    /// <summary>
-    /// 對自行啟動的 language server 取得額度 JSON。
-    ///
-    /// 有兩個必須等的階段：監聽連接埠開啟的瞬間服務還不能接受請求，
-    /// 而且服務接受請求之後額度仍在非同步載入中，會先回一份沒有額度的空殼。
-    /// 因此重試條件是「解析得出額度視窗」，而不只是「HTTP 有回應」。
-    /// </summary>
-    private static async Task<string?> QueryLaunchedHostAsync(
-        AntigravityHost host,
-        List<string>? diagnostics,
-        CancellationToken cancellationToken)
-    {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
-        Action<string>? onFailure = diagnostics is null ? null : diagnostics.Add;
-
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            var alive = host.IsAlive;
-
-            foreach (var method in AgyQuotaRpcMethods)
-            {
-                var body = await TryQueryAntigravityAsync(
-                    new AntigravityConnection(host.Port, string.Empty, method),
-                    cancellationToken,
-                    onFailure).ConfigureAwait(false);
-                if (body is null)
-                {
-                    continue;
-                }
-
-                if (ContainsAntigravityQuota(body))
-                {
-                    return body;
-                }
-
-                onFailure?.Invoke($"{method}：已回應但額度尚未載入");
-            }
-
-            // 程序結束後再試一輪已無意義：服務隨它一起消失。
-            if (!alive)
-            {
-                return null;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// 這份回應是否真的帶著額度。
-    /// 自行啟動的服務同時供應兩個額度池，任一個解析得出視窗就算已就緒。
-    /// </summary>
-    private static bool ContainsAntigravityQuota(string json)
-    {
-        var now = DateTimeOffset.Now;
-        return ParseAntigravityModelConfigs(json, CliKind.Antigravity, now).Windows.Count > 0 ||
-               ParseAntigravityModelConfigs(json, CliKind.AntigravityClaude, now).Windows.Count > 0;
-    }
-
-    /// <summary>
-    /// 自行啟動一個隱藏的 agy language server 並讀取額度。
-    ///
-    /// agy 只會活兩秒多，中途結束就整個重來一次；
-    /// 服務隨 <see cref="AntigravityHost"/> 一起結束，因此不寫入連線快取。
-    /// </summary>
-    private static async Task<string?> QueryViaLaunchedAntigravityAsync(
-        CliProfile profile,
-        string workingDirectory,
-        CancellationToken cancellationToken)
-    {
-        var executable = ExecutableLocator.Resolve(CliKind.Antigravity, profile.Executable, workingDirectory);
-        if (executable is null)
-        {
-            return null;
-        }
-
-        for (var attempt = 0; attempt < 2; attempt++)
-        {
-            using var host = await AntigravityLauncher
-                .StartAsync(executable, workingDirectory, cancellationToken)
-                .ConfigureAwait(false);
-            if (host is null)
-            {
-                continue;
-            }
-
-            var body = await QueryLaunchedHostAsync(host, diagnostics: null, cancellationToken)
-                .ConfigureAwait(false);
-            if (body is not null)
-            {
-                return body;
-            }
-        }
-
-        return null;
+            "Antigravity 尚未啟動，請先開啟 Antigravity 以讀取即時額度（自動啟動已關閉）。");
     }
 
     /// <summary>對單一連線嘗試一次額度 RPC；任何失敗都回傳 null，讓呼叫端換下一個候選。</summary>
@@ -782,7 +666,7 @@ public sealed class CliUsageReader : ICliUsageReader
         var poolName = isGeminiPool ? "Antigravity (Gemini)" : "Antigravity (Claude / GPT)";
         foreach (var group in groups.EnumerateArray())
         {
-            var groupName = GetStringAny(group, "displayName", "display_name") ?? string.Empty;
+            var groupName = GetStringAny(group, "displayName", "display_name", "name") ?? string.Empty;
             var matchesPool = isGeminiPool
                 ? groupName.Contains("Gemini", StringComparison.OrdinalIgnoreCase)
                 : groupName.Contains("Claude", StringComparison.OrdinalIgnoreCase) ||
@@ -795,7 +679,7 @@ public sealed class CliUsageReader : ICliUsageReader
                 // Protobuf JSON 省略缺省值；缺少 remainingFraction 代表未知，不是 0 或 1。
                 if (remaining is not { } fraction) continue;
 
-                var bucketLabel = GetStringAny(bucket, "displayName", "display_name", "window", "bucketId", "bucket_id") ?? "額度";
+                var bucketLabel = GetStringAny(bucket, "displayName", "display_name", "name", "window", "bucketId", "bucket_id", "id") ?? "額度";
                 var duration = InferAntigravityDuration(bucket, bucketLabel);
                 var resetsAt = GetResetTime(bucket);
                 var usedPercent = Math.Clamp(
@@ -807,7 +691,7 @@ public sealed class CliUsageReader : ICliUsageReader
                     usedPercent,
                     duration,
                     resetsAt,
-                    usedPercent > 0 && resetsAt is { } reset && reset > observedAt));
+                    fraction < 1 && resetsAt is { } reset && reset > observedAt));
             }
         }
 
@@ -847,7 +731,7 @@ public sealed class CliUsageReader : ICliUsageReader
                 usedPercent,
                 duration,
                 resetsAt,
-                usedPercent > 0 && resetsAt is { } reset && reset > observedAt));
+                fraction < 1 && resetsAt is { } reset && reset > observedAt));
         }
 
         return SelectMostConstrainedWindows(candidates);
@@ -1017,7 +901,7 @@ public sealed class CliUsageReader : ICliUsageReader
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.TryAddWithoutValidation("anthropic-beta", ClaudeOAuthBeta);
                 request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.9.0");
+                request.Headers.UserAgent.ParseAdd("ai-wake-scheduler/1.10.0");
 
                 using var response = await SharedClaudeHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
                 var responseJson = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -1113,7 +997,7 @@ public sealed class CliUsageReader : ICliUsageReader
         for (var i = 0; i < snapshot.Windows.Count; i++)
         {
             var window = snapshot.Windows[i];
-            var isActiveCountdown = window.UsedPercent > 0 &&
+            var isActiveCountdown = window.IsActiveCountdown &&
                 window.ResetsAt is { } resetsAt &&
                 resetsAt > observedAt;
             windows[i] = window with { IsActiveCountdown = isActiveCountdown };
@@ -1232,7 +1116,7 @@ public sealed class CliUsageReader : ICliUsageReader
 
         var usedPercent = (int)Math.Round(utilization, MidpointRounding.AwayFromZero);
         var clampedUsed = Math.Clamp(usedPercent, 0, 100);
-        var isActiveCountdown = clampedUsed > 0 && resetsAt.HasValue && resetsAt.Value > observedAt;
+        var isActiveCountdown = utilization > 0 && resetsAt.HasValue && resetsAt.Value > observedAt;
         destination.Add(new CliUsageWindow(displayName, clampedUsed, duration, resetsAt, isActiveCountdown));
     }
 
@@ -1291,7 +1175,7 @@ public sealed class CliUsageReader : ICliUsageReader
             var token = timeoutSource.Token;
 
             await process.StandardInput.WriteLineAsync(
-                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.9.0\"}}}")
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.10.0\"}}}")
                 .ConfigureAwait(false);
             await process.StandardInput.FlushAsync(token).ConfigureAwait(false);
 

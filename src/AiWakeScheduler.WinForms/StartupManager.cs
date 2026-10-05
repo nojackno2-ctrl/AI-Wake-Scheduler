@@ -1,16 +1,11 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Text;
 using Microsoft.Win32;
 
 namespace AiWakeScheduler.WinForms;
 
 /// <summary>
-/// 管理開機自動啟動。程式現在需要系統管理員權限執行（見 app.manifest，
-/// 用來啟用 SeDebugPrivilege 讀取 Antigravity CSRF Token），因此自動啟動
-/// 不能再用登錄機碼 Run key ——那只會以標準權限啟動、且無法在無人值守時
-/// 自動取得提升權限。改用工作排程器建立「以最高權限執行」＋「不論使用者
-/// 是否登入均可執行」的登入觸發工作，開機仍會靜默啟動、不會跳出 UAC。
+/// 以目前使用者 Run key 管理開機啟動，並遷移舊版排程工作與啟動捷徑。
 /// </summary>
 internal static class StartupManager
 {
@@ -20,47 +15,72 @@ internal static class StartupManager
     private static readonly string[] LegacyShortcutNames = ["AI 倒數喚醒.lnk", "AI倒數喚醒.lnk"];
 
     /// <summary>
-    /// 升級相容：v1.3.0 前的版本用登錄機碼 Run key 記錄「開機自動啟動」。
-    /// 主程式改成需要系統管理員權限後，Run key 啟動的程序無法自動取得提升權限，
-    /// 靜默開機會失敗。啟動時偵測到舊機碼就自動遷移成工作排程器的提升權限工作，
-    /// 使用者不需要重新手動勾選一次設定。
+    /// 保留既有啟動偏好；只有成功移除旧排程後才建立 Run key，避免重複啟動。
     /// </summary>
-    public static void MigrateLegacyIfNeeded()
+    public static string? MigrateLegacyIfNeeded()
     {
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: false);
-            var legacyValue = key?.GetValue(LegacyValueName) as string;
-            if (string.IsNullOrWhiteSpace(legacyValue))
-            {
-                return;
-            }
-
-            SetEnabled(true);
+            if (HasLegacyTask() || IsEnabled()) SetEnabled(true);
         }
-        catch
+        catch (Exception ex)
         {
-            // 遷移失敗不阻擋程式啟動，使用者仍可在設定視窗手動重新勾選。
+            // 仍讓程式啟動，但明確顯示遷移未完成，不能悄悄當作成功。
+            return ex.Message;
         }
+        return null;
     }
 
     public static void SetEnabled(bool enabled)
     {
-        CleanupStartupShortcuts();
-        CleanupLegacyRunKeyValue();
+        if (HasLegacyTask()) RunSchTasks($"/Delete /TN \"{TaskName}\" /F");
+        using var key = Registry.CurrentUser.CreateSubKey(RunKey, writable: true)
+            ?? throw new InvalidOperationException("無法開啟目前使用者的開機啟動設定。");
 
         if (!enabled)
         {
-            RunSchTasks($"/Delete /TN \"{TaskName}\" /F", allowNotFound: true);
-            return;
+            key.DeleteValue(LegacyValueName, throwOnMissingValue: false);
         }
-
-        var command = BuildStartupCommand();
-        RunSchTasks(
-            $"/Create /F /SC ONLOGON /RL HIGHEST /TN \"{TaskName}\" /TR {command}");
+        else
+        {
+            key.SetValue(LegacyValueName, BuildStartupCommand(), RegistryValueKind.String);
+        }
+        CleanupStartupShortcuts();
     }
 
-    private static void RunSchTasks(string arguments, bool allowNotFound = false)
+    public static bool IsEnabled()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: false);
+        return !string.IsNullOrWhiteSpace(key?.GetValue(LegacyValueName) as string);
+    }
+
+    private static bool HasLegacyTask()
+    {
+        var startInfo = new ProcessStartInfo("schtasks.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        startInfo.ArgumentList.Add("/Query");
+        startInfo.ArgumentList.Add("/TN");
+        startInfo.ArgumentList.Add(TaskName);
+        using var process = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("無法檢查舊版開機啟動工作。");
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        process.WaitForExit();
+        Task.WhenAll(output, error).GetAwaiter().GetResult();
+        if (process.ExitCode == 0) return true;
+        // 不存在為正常狀態；拒絕存取不能當成不存在，避免建立重複啟動項目。
+        if (error.Result.Contains("denied", StringComparison.OrdinalIgnoreCase) ||
+            error.Result.Contains("拒絕", StringComparison.Ordinal))
+            throw new InvalidOperationException("無法存取舊版開機啟動工作，請以管理員身分執行一次程式完成遷移。");
+        return false;
+    }
+
+    private static void RunSchTasks(string arguments)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -84,32 +104,15 @@ internal static class StartupManager
             throw new InvalidOperationException("無法啟動 schtasks.exe 設定自動啟動工作。", ex);
         }
 
-        var stdErr = process.StandardError.ReadToEnd();
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
         process.WaitForExit();
+        Task.WhenAll(output, error).GetAwaiter().GetResult();
 
         if (process.ExitCode != 0)
         {
-            // 工作原本就不存在時刪除會回傳非 0，允許忽略（例如從未啟用過就直接關閉設定）。
-            if (allowNotFound)
-            {
-                return;
-            }
-
             throw new InvalidOperationException(
-                $"設定 Windows 工作排程器自動啟動工作失敗（結束碼 {process.ExitCode}）：{stdErr.Trim()}");
-        }
-    }
-
-    private static void CleanupLegacyRunKeyValue()
-    {
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
-            key?.DeleteValue(LegacyValueName, throwOnMissingValue: false);
-        }
-        catch
-        {
-            // 舊版登錄機碼清理失敗不影響新的工作排程器設定。
+                $"設定 Windows 工作排程器自動啟動工作失敗（結束碼 {process.ExitCode}）：{error.Result.Trim()}");
         }
     }
 
@@ -138,7 +141,7 @@ internal static class StartupManager
         }
     }
 
-    /// <summary>回傳給 schtasks /TR 使用、已含外層引號的完整命令字串。</summary>
+    /// <summary>Run key 的標準 Windows 命令列；路徑含空白時仍正確引用。</summary>
     private static string BuildStartupCommand()
     {
         var processPath = Environment.ProcessPath;
@@ -151,12 +154,11 @@ internal static class StartupManager
             throw new InvalidOperationException("無法取得目前程式路徑。");
         }
 
-        // schtasks /TR 的值若含空白，整段要再包一層引號，內層路徑引號用 \" 逸出。
         if (string.Equals(Path.GetFileNameWithoutExtension(processPath), "dotnet", StringComparison.OrdinalIgnoreCase))
         {
             var assemblyPath = Path.Combine(AppContext.BaseDirectory, "AI倒數喚醒.dll");
-            return $"\"\\\"{processPath}\\\" \\\"{assemblyPath}\\\" --minimized\"";
+            return $"\"{processPath}\" \"{assemblyPath}\" --minimized";
         }
-        return $"\"\\\"{processPath}\\\" --minimized\"";
+        return $"\"{processPath}\" --minimized";
     }
 }

@@ -16,7 +16,7 @@
 
 - ⏰ **極簡每日排程**：直接設定每天固定觸發時分（`HH:mm`），支援多組排程管理，主畫面即時顯示距離下一次執行的倒數計時。
 - 🚀 **四大多模型目標平行喚醒**：同時支援 **Google Antigravity (`agy`) Gemini 額度池**、**Antigravity Claude / GPT 額度池**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
-- 📊 **真實額度與重置倒數**：透過 Codex 官方 app-server、Claude Code OAuth usage 端點與 Antigravity 本機 Language Server，唯讀取得剩餘百分比及重置時間；不以排程時間推測帳戶資料。
+- 📊 **真實額度與重置倒數**：透過 Codex 官方 app-server、Claude Code OAuth usage 端點與 Antigravity CLI 內建 `/usage`，唯讀取得剩餘百分比及重置時間；關閉背景查詢時可讀取已開啟 IDE 的 Language Server。
 - 💡 **極致 Token 節省模式 (Token Saver)**：
   - 自動套用最低推理與簡短模式（`--effort low`、`model_reasoning_effort=low`）。
   - 禁用 Claude 所有 Tool 呼叫（`--tools ""`）。
@@ -35,10 +35,12 @@
 
 | AI 工具 / 額度池 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
 | :--- | :--- | :--- | :--- |
-| **Antigravity (Gemini)** | `agy` | `agy --effort low --disable-slash-commands --mode plan --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
-| **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-4-6 --disable-slash-commands --mode plan --print <提示>` | 明確選擇 Claude 額度池；該模型不支援 `--effort`，因此不傳入無效旗標 |
-| **OpenAI Codex** | `codex` | `codex exec --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
-| **Anthropic Claude** | `claude` | `claude --print --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
+| **Antigravity (Gemini)** | `agy` | `agy --model gemini-3.8-flash --effort low --disable-slash-commands --mode plan --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
+| **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-5-5-low --disable-slash-commands --mode plan --print <提示>` | 明確選擇 Claude 額度池；完整模型 ID 已包含 Low 思考程度，因此不另傳 `--effort` |
+| **OpenAI Codex** | `codex` | `codex exec --model gpt-6-luna --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
+| **Anthropic Claude** | `claude` | `claude --print --model claude-haiku-4-5-20251001 --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
+
+預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 4.5；AGY Claude 池使用 Sonnet 5.5 Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
 
 > [!TIP]
 > Google Antigravity 內部將額度切分為 **Gemini Models** 與 **Claude and GPT models** 兩組獨立計數器。勾選本工具中的這兩項目標，可同時喚醒兩邊的 5 小時滾動重設窗口！
@@ -51,23 +53,23 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 Releases 下載最新版 **`AI倒數喚醒_Setup_v1.9.0_x64.exe`**。
+1. 前往 [Releases](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/latest) 下載 **`AI-Wake-Scheduler_Setup_v1.10.0_x64.exe`**；`SHA256SUMS.txt` 提供校驗碼。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
 4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
 
 #### 方法 B：綠色免安裝版 / 自行編譯
-- 下載免安裝可執行檔或從原始碼建置，直接執行 `AI倒數喚醒.exe`。
+- 下載 **`AI-Wake-Scheduler_Portable_v1.10.0_win-x64.zip`**，完整解壓縮後執行 `AI倒數喚醒.exe`；此版本內建 .NET 執行環境。也可從原始碼建置。
 
 ### 2. 初次設定與 CLI 檢查
 1. 點擊主畫面右下角的 **「CLI 設定…」** 按鈕。
 2. 點擊 **「檢查全部 CLI」** 按鈕，程式會自動執行 `--version` 檢查本機 CLI 是否已就緒。
 3. 若你的 CLI 安裝於特殊路徑（例如透過 npm、專屬安裝目錄等），可點擊 **「瀏覽…」** 自訂 `.exe` 完整路徑。
 4. （可選）勾選 **「登入 Windows 後自動啟動」**，確保開機或重啟後仍能在背景常駐。
-5. （可選）**「Antigravity 沒開時，於背景無視窗自動啟動以讀取額度」**（預設開啟）：
-   Antigravity 沒開時額度本來讀不到，勾選後程式會在背景無視窗地啟動一個
-   Antigravity language server 來讀取，讀完立即結束該程序。全程不會建立模型回合、
-   不消耗任何 Token，也不會出現任何視窗。
+5. （可選）**「允許在背景無視窗查詢 Antigravity 額度（不需開啟 IDE）」**（預設開啟）：
+   透過新版 `agy --output-format json --print /usage` 內建指令讀取兩個額度池的五小時與每週倒數。
+   已於 agy 1.2.16 驗證為 0 模型回合、0 Token；讀完程序立即結束，沒有視窗。
+   關閉此選項時只查詢已啟動的 Antigravity IDE。
 6. 點擊 **「儲存」**。
 
 ### 3. 建立每日排程或自動模式
@@ -107,7 +109,8 @@ AI倒數喚醒/
 │   ├── AiWakeScheduler.Core/     # 核心邏輯庫（排程引擎、CLI 執行器、參數建構器、JSON 儲存）
 │   └── AiWakeScheduler.WinForms/ # Windows Forms 繁體中文桌面使用者介面
 └── tests/
-    └── AiWakeScheduler.Tests/    # 原生輕量化單元與整合測試（0 NuGet 相依）
+    ├── AiWakeScheduler.Tests/    # 核心與 CLI 整合測試（0 NuGet 相依）
+    └── AiWakeScheduler.WinForms.Tests/ # 視窗事件、設定、系統匣與終端輸出測試
 ```
 
 ### 命令列建置與測試
@@ -128,11 +131,39 @@ dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj
 dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release -- --integration
 ```
 
+**Windows 視窗測試（不需要另裝 Desktop Runtime）：**
+```powershell
+dotnet publish '.\tests\AiWakeScheduler.WinForms.Tests\AiWakeScheduler.WinForms.Tests.csproj' -c Release -r win-x64 --self-contained true -o '.\bin\verification-tests'
+& '.\bin\verification-tests\AiWakeScheduler.WinForms.Tests.exe'
+```
+預設使用暫存資料驗證設定、排程編輯、系統匣與輸出，不更改正式排程或 Windows 啟動項目。另加 `--startup-integration` 才會暫時測試真實開機啟動鍵並還原；已有舊版工作或啟動捷徑時拒絕執行此測試。
+主程式的 `--verify-ui` 可開啟獨立暫存資料與 mutex 的人工檢查視窗，不變更 Windows 啟動項目。
+
+要實際驗證四個目標模型喚醒，可使用以下測試（會各送出一次最小 OK 提示詞，消耗少量 Token）：
+
+```powershell
+dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release -- --wake-smoke
+```
+
 **一鍵打包 Windows 安裝版 (Setup.exe)：**
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.9.0_x64.exe`。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.10.0_x64_<時間戳>.exe`，並附獨立 `.sha256`；保留之前的安裝包。可用 `-OutputDirectory <路徑>` 指定測試產物目錄。
+
+**安裝生命週期驗證（會建立 Windows 安裝登錄與捷徑）：**
+
+先完成上述自包含輸出，再以 Inno Setup 編譯器加 `/DVerificationBuild` 編譯 `installer\AI倒數喚醒.iss`。此模式使用獨立 QA 名稱、AppId、啟動鍵及 `--verify-ui` 捷徑。
+
+```powershell
+./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase Install
+./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase UpgradeKeepStartup
+./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase UpgradeDisableStartup
+./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase UpgradeEnableStartup
+./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase Uninstall
+```
+
+腳本拒絕正式安裝包，固定安裝於 `bin\verification-installed`，每階段比對正式設定、排程與啟動鍵是否維持原值。實際驗證結果與未驗證範圍見 [功能驗證紀錄](docs/FEATURE_VERIFICATION.md)。
 
 ---
 

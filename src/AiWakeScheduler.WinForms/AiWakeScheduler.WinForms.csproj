@@ -6,9 +6,7 @@
     <AssemblyName>AI倒數喚醒</AssemblyName>
     <RootNamespace>AiWakeScheduler.WinForms</RootNamespace>
     <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
-    <!-- 需要系統管理員權限以啟用 SeDebugPrivilege 讀取 Antigravity CSRF Token，
-         詳見 app.manifest；自動啟動改用工作排程器的「以最高權限執行」，
-         登入時靜默啟動不會跳出 UAC 提示 -->
+    <!-- 一般使用者權限啟動；詳見 app.manifest -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- 每個螢幕各自的 DPI 都會正確套用，多螢幕混合縮放時文字不會糊掉 -->
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -22,9 +20,9 @@
          two UI languages in self-contained publish output instead. -->
     <PublishTrimmed>false</PublishTrimmed>
     <SatelliteResourceLanguages>zh-Hant;en</SatelliteResourceLanguages>
-    <Version>1.9.0</Version>
-    <AssemblyVersion>1.9.0.0</AssemblyVersion>
-    <FileVersion>1.9.0.0</FileVersion>
+    <Version>1.10.0</Version>
+    <AssemblyVersion>1.10.0.0</AssemblyVersion>
+    <FileVersion>1.10.0.0</FileVersion>
     <Product>AI 倒數喚醒</Product>
     <Company>AI Wake Scheduler</Company>
     <Authors>AI Wake Scheduler</Authors>

@@ -100,7 +100,7 @@ public sealed record CliDescriptor
     /// <summary>使用者未自訂 --model 時採用的預設模型（null 表示交給 CLI 自行決定）。</summary>
     public string? DefaultModel { get; init; }
 
-    /// <summary>UI 下拉選單推薦的最新模型清單（首項為空代表 CLI 預設，亦可自訂輸入）。</summary>
+    /// <summary>UI 下拉選單推薦的最新模型清單（首項為空代表本工具預設，亦可自訂輸入）。</summary>
     public IReadOnlyList<string> PresetModels { get; init; } = [];
 
     /// <summary>此 CLI 支援的思考程度 / 推理強度選項。</summary>
@@ -112,7 +112,7 @@ public sealed record CliDescriptor
 
     public IReadOnlyList<ThinkingEffort> GetSupportedEfforts(string? model)
     {
-        var normalizedModel = model?.Trim();
+        var normalizedModel = string.IsNullOrWhiteSpace(model) ? DefaultModel : model.Trim();
         return !string.IsNullOrWhiteSpace(normalizedModel) &&
                ModelSupportedEfforts.TryGetValue(normalizedModel, out var efforts)
             ? efforts
@@ -194,6 +194,7 @@ public static class CliCatalog
             TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
             // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
             // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
+            DefaultModel = "gemini-3.8-flash",
             PresetModels = ["", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"],
             SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
             ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
@@ -226,12 +227,15 @@ public static class CliCatalog
             BaseArguments = [],
             PromptFlag = "--print",
             TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
-            // 以 `agy models` 實際輸出核對的模型 ID（非顯示名稱）：
-            // claude-sonnet-4-6、claude-opus-4-6-thinking、gpt-oss-120b-medium。
-            // 這三個模型都不接受獨立的 --effort 旗標（agy 會直接報錯拒絕），
-            // 因此本設定檔不提供思考程度選項。
-            DefaultModel = "claude-sonnet-4-6",
-            PresetModels = ["claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"],
+            // 2026-10-04 以 `agy models` 核對；使用包含思考程度的完整 ID，
+            // 不再附加獨立 --effort，避免後綴與旗標互相衝突。
+            DefaultModel = "claude-sonnet-5-5-low",
+            PresetModels =
+            [
+                "claude-sonnet-5-5-low", "claude-sonnet-5-5-medium", "claude-sonnet-5-5-high",
+                "claude-opus-5-5-low", "claude-opus-5-5-medium", "claude-opus-5-5-high",
+                "gpt-oss-120b-medium"
+            ],
             SupportedEfforts = [ThinkingEffort.Default],
             TimeoutArguments = timeout => ["--print-timeout", FormatGoDuration(timeout)],
             ExecutableCandidates = AntigravityCandidates
@@ -253,18 +257,21 @@ public static class CliCatalog
                 "--ignore-rules",
                 "-c", "model_verbosity=\"low\""
             ],
-            // 2026-08-14 由本機 Codex App Server `model/list` 直接取得的帳號可用清單。
-            // 空字串保留「由 CLI 自動選擇目前預設模型」的行為，避免未來再次被固定版本綁住。
-            PresetModels = ["", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+            // 2026-10-04 由本機 Codex App Server `model/list` 取得的可見清單。
+            // 空白設定使用本工具的低價喚醒預設；使用者可明確指定其他模型。
+            DefaultModel = "gpt-6-luna",
+            PresetModels = ["", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"],
             SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
             ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
             {
+                ["gpt-6.1-sol"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
+                ["gpt-6-astra"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
+                ["gpt-6-sol"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
+                ["gpt-6-luna"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max],
                 ["gpt-5.6-sol"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
                 ["gpt-5.6-terra"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max, ThinkingEffort.Ultra],
                 ["gpt-5.6-luna"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max],
-                ["gpt-5.5"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh],
-                ["gpt-5.4"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh],
-                ["gpt-5.4-mini"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh]
+                ["gpt-5.5"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh]
             },
             ExecutableCandidates = CodexCandidates
         },
@@ -287,10 +294,18 @@ public static class CliCatalog
                 "--no-session-persistence",
                 "--prompt-suggestions", "false"
             ],
-            // 用官方文件的別名（`claude --help` 明載：sonnet/opus/fable 皆代表「最新版」），
-            // 而非寫死版本號的完整模型 ID，避免新一代模型上市後這裡的清單直接失效。
-            PresetModels = ["", "sonnet", "opus", "fable"],
+            // 2026-10-04 官方 model-config 文件；保留最新版別名並提供固定版本。
+            // CLI 版本需求：Sonnet 5.5 >= 2.1.284、Opus 5.5 >= 2.1.280、Fable 5.1 >= 2.1.257。
+            DefaultModel = "claude-haiku-4-5-20251001",
+            PresetModels = ["", "claude-haiku-4-5-20251001", "haiku", "sonnet", "opus", "fable", "claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"],
             SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High, ThinkingEffort.XHigh, ThinkingEffort.Max],
+            // Haiku uses manual thinking and does not support adaptive effort.
+            ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["claude-haiku-4-5-20251001"] = [ThinkingEffort.Default],
+                ["claude-haiku-4-5"] = [ThinkingEffort.Default],
+                ["haiku"] = [ThinkingEffort.Default]
+            },
             ExecutableCandidates = ClaudeCandidates
         }
     ];

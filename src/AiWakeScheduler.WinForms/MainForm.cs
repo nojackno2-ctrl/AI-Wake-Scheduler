@@ -980,7 +980,11 @@ internal sealed class MainForm : Form
 
         try
         {
-            StartupManager.SetEnabled(dialog.ResultSettings.StartWithWindows);
+            // 模型、額度與其他設定的變更不必重寫 Windows 啟動項目。
+            if (!_host.IsIsolated && dialog.ResultSettings.StartWithWindows != _host.Settings.StartWithWindows)
+            {
+                StartupManager.SetEnabled(dialog.ResultSettings.StartWithWindows);
+            }
             dialog.ResultSettings.CopyTo(_host.Settings);
             // 使用者可能改了可執行檔路徑，讓下一次執行重新解析。
             ExecutableLocator.ClearCache();

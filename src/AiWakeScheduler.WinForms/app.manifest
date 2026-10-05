@@ -5,12 +5,10 @@
     <security>
       <requestedPrivileges xmlns="urn:schemas-microsoft-com:asm.v3">
         <!--
-          需要系統管理員權限以啟用 SeDebugPrivilege，
-          藉此讀取 Antigravity language_server 行程的 CSRF Token
-          （Antigravity 新版已對其行程記憶體加上 DACL 保護，
-          一般權限的 OpenProcess(..., PROCESS_VM_READ) 會被拒絕）。
+          額度讀取使用 CLI 與日誌，不需要管理員權限。
+          開機啟動使用目前使用者的 Run key，舊排程工作由 StartupManager 遷移。
         -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false" />
+        <requestedExecutionLevel level="asInvoker" uiAccess="false" />
       </requestedPrivileges>
     </security>
   </trustInfo>
