@@ -1,5 +1,14 @@
 # AI HANDOFF
 
+## 2026-10-05 Codex: automatic local commit policy
+
+- User authorized automatic local commits without further confirmation; AGENTS.md now records the standing policy. Push/release/history changes require separate authorization.
+- Coordination: deferred edits while the release task was active; rechecked that the task completed and the working tree was clean before editing. Existing release evidence is preserved.
+- Evidence: inspected branch, git status, git diff, and recent commits. This task changes collaboration documentation only; no build/test or runtime behavior is claimed.
+- Verification: full staged git diff --cached --check passed; automatic commit wording and remaining authorization limits were checked. Documentation-only work; no build/runtime validation was needed.
+- Status: automatic commit policy established; this record accompanies the authorized local snapshot.
+
+
 ## 2026-10-05 Codex：v1.10.0 發布（完成）
 
 - 使用者已明確授權 commit、push 並發布 v1.10.0；開始時 main=febe4e9，remote main 同步，所有待提交變更為前輪功能更新及本次發布準備，未發現其他代理新增修改。
