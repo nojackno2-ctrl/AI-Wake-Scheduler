@@ -11,13 +11,23 @@ permissions:
 jobs:
   build-and-test:
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Tests must not depend on the machine's time zone (including DST and half-hour offsets).
+        timezone:
+          - UTC
+          - Taipei Standard Time
+          - India Standard Time
+          - Pacific Standard Time
+          - AUS Eastern Standard Time
+    name: build-and-test (${{ matrix.timezone }})
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # Schedule tests use fixed UTC+8 wall-clock times and the product uses TimeZoneInfo.Local.
-      - name: Use Taipei time zone
-        run: tzutil /s "Taipei Standard Time"
+      - name: Set time zone
+        run: tzutil /s "${{ matrix.timezone }}"
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"

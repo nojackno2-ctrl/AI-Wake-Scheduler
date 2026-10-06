@@ -871,30 +871,34 @@ static async Task TestScheduleManagerAdaptiveWaitAsync()
     }
 }
 
+// 排程以系統本地時區的牆上時間運作；測試時間也用本地時區建立，結果才與執行機器的時區無關。
+static DateTimeOffset LocalWallClock(int year, int month, int day, int hour, int minute, int second) =>
+    new(new DateTime(year, month, day, hour, minute, second, DateTimeKind.Local));
+
 static Task TestScheduleCalculatorAsync()
 {
-    var now = new DateTimeOffset(2026, 8, 10, 12, 0, 0, TimeSpan.FromHours(8));
+    var now = LocalWallClock(2026, 8, 10, 12, 0, 0);
     var morning = ScheduleCalculator.GetNextDailyOccurrence(new TimeSpan(8, 30, 45), now);
     Assert(morning.LocalDateTime == new DateTime(2026, 8, 11, 8, 30, 0), "已過的每日時分應排到明天並移除秒數。");
     var evening = ScheduleCalculator.GetNextDailyOccurrence(new TimeSpan(18, 5, 0), now);
     Assert(evening.LocalDateTime == new DateTime(2026, 8, 10, 18, 5, 0), "尚未到的每日時分應排在今天。");
 
     // 跨日邊界測試：午夜 23:59:59 評估 00:00:00 排程
-    var midnightNow = new DateTimeOffset(2026, 12, 31, 23, 59, 59, TimeSpan.FromHours(8));
+    var midnightNow = LocalWallClock(2026, 12, 31, 23, 59, 59);
     var nextDayMidnight = ScheduleCalculator.GetNextDailyOccurrence(TimeSpan.Zero, midnightNow);
     Assert(nextDayMidnight.LocalDateTime == new DateTime(2027, 1, 1, 0, 0, 0), "跨日午夜排程應排到下一年的 1 月 1 日 00:00。");
 
     // 時分剛好等於目前時刻邊界 (應排到明天)
-    var exactNow = new DateTimeOffset(2026, 8, 10, 8, 30, 0, TimeSpan.FromHours(8));
+    var exactNow = LocalWallClock(2026, 8, 10, 8, 30, 0);
     var exactNext = ScheduleCalculator.GetNextDailyOccurrence(new TimeSpan(8, 30, 0), exactNow);
     Assert(exactNext.LocalDateTime == new DateTime(2026, 8, 11, 8, 30, 0), "當前時刻與排程時間相同時應排到明天。");
 
     // 追溯過期多日 (系統休眠/時鐘回撥/錯過執行)
-    var old = new DateTimeOffset(2026, 8, 1, 8, 30, 0, TimeSpan.FromHours(8));
+    var old = LocalWallClock(2026, 8, 1, 8, 30, 0);
     var daily = ScheduleCalculator.GetNextOccurrence(old, ScheduleRecurrence.Daily, now);
     Assert(daily.LocalDateTime == new DateTime(2026, 8, 11, 8, 30, 0), "過期多日的每日排程應跳到目前時間之後的下一個時點。");
 
-    var oldWeekly = new DateTimeOffset(2026, 7, 1, 8, 30, 0, TimeSpan.FromHours(8));
+    var oldWeekly = LocalWallClock(2026, 7, 1, 8, 30, 0);
     var weekly = ScheduleCalculator.GetNextOccurrence(oldWeekly, ScheduleRecurrence.Weekly, now);
     Assert(weekly.LocalDateTime > now.LocalDateTime && weekly.LocalDateTime.DayOfWeek == oldWeekly.DayOfWeek, "過期多週的每週排程應保持相同星期數並跳至未來。");
 
@@ -919,24 +923,24 @@ static Task TestScheduleCalculatorAsync()
     var initialWakeup = new TimeSpan(5, 30, 0);
 
     // 1. 同日日間正常推進（08:00 完成 -> 13:01）
-    var finishedMorning = new DateTimeOffset(2026, 8, 10, 8, 0, 0, TimeSpan.FromHours(8));
+    var finishedMorning = LocalWallClock(2026, 8, 10, 8, 0, 0);
     var nextMorning = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finishedMorning);
     Assert(nextMorning == finishedMorning.Add(ScheduleCalculator.AutoInterval), "當日日間 08:00 執行完成應推進至 13:01。");
     Assert(nextMorning.LocalDateTime == new DateTime(2026, 8, 10, 13, 1, 0), "13:01 時間應正確。");
 
     // 2. 同日傍晚正常推進（18:02 完成 -> 23:03）
-    var finishedEvening = new DateTimeOffset(2026, 8, 10, 18, 2, 0, TimeSpan.FromHours(8));
+    var finishedEvening = LocalWallClock(2026, 8, 10, 18, 2, 0);
     var nextEvening = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finishedEvening);
     Assert(nextEvening == finishedEvening.Add(ScheduleCalculator.AutoInterval), "當日 18:02 執行完成應推進至 23:03。");
     Assert(nextEvening.LocalDateTime == new DateTime(2026, 8, 10, 23, 3, 0), "23:03 時間應正確。");
 
     // 3. 跨日不排半夜：23:03 完成後加 5h1m 為隔日 04:04（超過 24:00），應自動重置為隔日 05:30
-    var finishedLateNight = new DateTimeOffset(2026, 8, 10, 23, 3, 0, TimeSpan.FromHours(8));
+    var finishedLateNight = LocalWallClock(2026, 8, 10, 23, 3, 0);
     var nextCrossDay = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finishedLateNight);
     Assert(nextCrossDay.LocalDateTime == new DateTime(2026, 8, 11, 5, 30, 0), "23:03 跨日後不應排在半夜 04:04，應排在隔天 05:30。");
 
     // 4. 20:00 執行跨日（加 5h1m 為 01:01），重置為隔日 05:30
-    var finished8pm = new DateTimeOffset(2026, 8, 10, 20, 0, 0, TimeSpan.FromHours(8));
+    var finished8pm = LocalWallClock(2026, 8, 10, 20, 0, 0);
     var nextAfter8pm = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialWakeup, finished8pm);
     Assert(nextAfter8pm.LocalDateTime == new DateTime(2026, 8, 11, 5, 30, 0), "20:00 跨日後應排在隔天 05:30。");
 
@@ -1472,10 +1476,10 @@ static async Task TestScheduleManagerAutoIntervalAsync()
         }
 
         // 4. 測試隔天逾時開機補做：昨天 23:03 跑過，今天 08:00 開機（超過 05:30），應立即補做一次
-        var lateBootTime = new DateTimeOffset(2026, 8, 19, 8, 0, 0, TimeSpan.FromHours(8));
+        var lateBootTime = LocalWallClock(2026, 8, 19, 8, 0, 0);
         var lateBootTimeProvider = new FakeTimeProvider(lateBootTime);
         var lateBootRunner = new CountingCliRunner();
-        var yesterdayFinished = new DateTimeOffset(2026, 8, 18, 23, 3, 0, TimeSpan.FromHours(8));
+        var yesterdayFinished = LocalWallClock(2026, 8, 18, 23, 3, 0);
         var lateBootJobId = Guid.NewGuid();
         await store.SaveAsync(
         [
@@ -1483,7 +1487,7 @@ static async Task TestScheduleManagerAutoIntervalAsync()
             {
                 Id = lateBootJobId,
                 Name = "隔天逾時開機補做",
-                ScheduledAt = new DateTimeOffset(2026, 8, 19, 5, 30, 0, TimeSpan.FromHours(8)),
+                ScheduledAt = LocalWallClock(2026, 8, 19, 5, 30, 0),
                 InitialTimeOfDay = initialWakeup,
                 FinishedAt = yesterdayFinished,
                 Message = "早安",
@@ -1507,7 +1511,7 @@ static async Task TestScheduleManagerAutoIntervalAsync()
         }
 
         // 5. 測試隔天提早開機等待：昨天 23:03 跑過，今天 04:30 開機（未到 05:30），不應提前執行
-        var earlyBootTime = new DateTimeOffset(2026, 8, 19, 4, 30, 0, TimeSpan.FromHours(8));
+        var earlyBootTime = LocalWallClock(2026, 8, 19, 4, 30, 0);
         var earlyBootTimeProvider = new FakeTimeProvider(earlyBootTime);
         var earlyBootRunner = new CountingCliRunner();
         var earlyBootJobId = Guid.NewGuid();
@@ -1517,7 +1521,7 @@ static async Task TestScheduleManagerAutoIntervalAsync()
             {
                 Id = earlyBootJobId,
                 Name = "隔天提早開機等待",
-                ScheduledAt = new DateTimeOffset(2026, 8, 19, 5, 30, 0, TimeSpan.FromHours(8)),
+                ScheduledAt = LocalWallClock(2026, 8, 19, 5, 30, 0),
                 InitialTimeOfDay = initialWakeup,
                 FinishedAt = yesterdayFinished,
                 Message = "早安",
@@ -1554,7 +1558,7 @@ static async Task TestScheduleManagerQuotaAwareIntervalAsync()
         var initialWakeup = new TimeSpan(8, 0, 0);
 
         // 1. 當日首次時間之前（07:30 < 08:00）：即便未倒數也不提前喚醒
-        var earlyNow = new DateTimeOffset(2026, 8, 21, 7, 30, 0, TimeSpan.FromHours(8));
+        var earlyNow = LocalWallClock(2026, 8, 21, 7, 30, 0);
         var earlyTimeProvider = new FakeTimeProvider(earlyNow);
         var earlyRunner = new CountingCliRunner();
         var fakeUsageReader = new FakeCliUsageReader();
@@ -1589,9 +1593,9 @@ static async Task TestScheduleManagerQuotaAwareIntervalAsync()
             {
                 Id = jobId,
                 Name = "流量未倒數測試",
-                ScheduledAt = new DateTimeOffset(2026, 8, 21, 13, 1, 0, TimeSpan.FromHours(8)),
+                ScheduledAt = LocalWallClock(2026, 8, 21, 13, 1, 0),
                 InitialTimeOfDay = initialWakeup,
-                FinishedAt = new DateTimeOffset(2026, 8, 20, 23, 0, 0, TimeSpan.FromHours(8)),
+                FinishedAt = LocalWallClock(2026, 8, 20, 23, 0, 0),
                 Message = "早安",
                 WorkingDirectory = directory,
                 Targets = [CliKind.Antigravity, CliKind.AntigravityClaude, CliKind.Claude],
@@ -1610,7 +1614,7 @@ static async Task TestScheduleManagerQuotaAwareIntervalAsync()
         // 設定 Antigravity（Gemini）倒數中（resets at 13:30），
         // AntigravityClaude 與 Claude 未倒數（resets at 07:30，已過期）。
         // 預期：只喚醒 AntigravityClaude 與 Claude，不呼叫 Antigravity！
-        var lateNow = new DateTimeOffset(2026, 8, 21, 8, 30, 0, TimeSpan.FromHours(8));
+        var lateNow = LocalWallClock(2026, 8, 21, 8, 30, 0);
         var lateTimeProvider = new FakeTimeProvider(lateNow);
         var lateRunner = new CountingCliRunner();
 
@@ -1657,7 +1661,7 @@ static async Task TestScheduleManagerQuotaAwareIntervalAsync()
         // 3. 背景排程迴圈即使被頻繁喚醒，未倒數時也只能依使用者設定的分鐘間隔查一次額度。
         // 這是 Claude /api/oauth/usage 不再因每 30 秒重查而觸發 HTTP 429 的迴歸測試。
         settings.QuotaAutoRefreshMinutes = 10;
-        var throttledNow = new DateTimeOffset(2026, 8, 21, 9, 0, 0, TimeSpan.FromHours(8));
+        var throttledNow = LocalWallClock(2026, 8, 21, 9, 0, 0);
         var throttledTimeProvider = new FakeTimeProvider(throttledNow);
         var throttledUsageReader = new FakeCliUsageReader();
         // 模擬未抓到倒數（例如 100% 額度或未在倒數中）
@@ -1722,7 +1726,7 @@ static async Task TestScheduleManagerQuotaAwareIntervalAsync()
         }
 
         // 4. 倒數結束時（Countdown Ended）自動喚醒並探測
-        var countdownEndNow = new DateTimeOffset(2026, 8, 21, 9, 0, 0, TimeSpan.FromHours(8));
+        var countdownEndNow = LocalWallClock(2026, 8, 21, 9, 0, 0);
         var countdownEndTimeProvider = new FakeTimeProvider(countdownEndNow);
         var countdownEndReader = new FakeCliUsageReader();
         var countdownEndRunner = new CountingCliRunner();

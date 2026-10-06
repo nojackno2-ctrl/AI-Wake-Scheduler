@@ -1,5 +1,11 @@
 # AI HANDOFF
 
+## 2026-10-06 Claude: schedule tests are time-zone independent
+
+- Replaces the earlier CI-only Taipei time-zone workaround. Schedule tests now build their instants with `LocalWallClock(...)` (a `DateTimeKind.Local` wall-clock time) instead of fixed `+08:00` offsets, matching the product's use of `TimeZoneInfo.Local`. `TestCliUsageReaderAsync` keeps its fixed +08:00 instants on purpose (it compares absolute instants against the JSON).
+- CI now runs the full build and both test runners on a time-zone matrix: UTC, Taipei, India (+05:30), Pacific and AUS Eastern (both DST zones).
+- Local (UTC+8): core 16/16. Other zones are verified only through the CI matrix (no WSL/second zone available locally).
+
 ## 2026-10-06 Claude: CI time zone
 
 - First CI run failed 13/16: ScheduleCalculator / ScheduleManagerAutoInterval / ScheduleManagerQuotaAwareInterval assume a UTC+8 local zone (fixed +08:00 offsets vs `TimeZoneInfo.Local` in the product) and the runner is UTC. CI now sets `tzutil /s "Taipei Standard Time"` before tests. The tests remain time-zone dependent when run locally outside UTC+8.
