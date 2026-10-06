@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet restore AI倒數喚醒.sln
+      - run: dotnet build AI倒數喚醒.sln -c Release --no-restore
+      - name: Core tests
+        run: dotnet run --project tests/AiWakeScheduler.Tests -c Release --no-build
+      - name: WinForms tests
+        run: dotnet run --project tests/AiWakeScheduler.WinForms.Tests -c Release --no-build

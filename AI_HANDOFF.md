@@ -1,5 +1,9 @@
 # AI HANDOFF
 
+## 2026-10-06 Claude: add CI
+
+- Added `.github/workflows/ci.yml`: Release build of `AI倒數喚醒.sln`, then both console test runners via `dotnet run --no-build`. Local Release: build 0/0, core 16/16, WinForms 7/7 (run on the .NET 10 runtime with roll-forward; no .NET 8 desktop runtime locally). CI not yet observed on GitHub.
+
 ## 2026-10-05 Codex: automatic local commit policy
 
 - User authorized automatic local commits without further confirmation; AGENTS.md now records the standing policy. Push/release/history changes require separate authorization.
