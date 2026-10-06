@@ -1,5 +1,9 @@
 # AI HANDOFF
 
+## 2026-10-06 Claude: CI time zone
+
+- First CI run failed 13/16: ScheduleCalculator / ScheduleManagerAutoInterval / ScheduleManagerQuotaAwareInterval assume a UTC+8 local zone (fixed +08:00 offsets vs `TimeZoneInfo.Local` in the product) and the runner is UTC. CI now sets `tzutil /s "Taipei Standard Time"` before tests. The tests remain time-zone dependent when run locally outside UTC+8.
+
 ## 2026-10-06 Claude: add CI
 
 - Added `.github/workflows/ci.yml`: Release build of `AI倒數喚醒.sln`, then both console test runners via `dotnet run --no-build`. Local Release: build 0/0, core 16/16, WinForms 7/7 (run on the .NET 10 runtime with roll-forward; no .NET 8 desktop runtime locally). CI not yet observed on GitHub.

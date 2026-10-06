@@ -15,6 +15,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      # Schedule tests use fixed UTC+8 wall-clock times and the product uses TimeZoneInfo.Local.
+      - name: Use Taipei time zone
+        run: tzutil /s "Taipei Standard Time"
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
