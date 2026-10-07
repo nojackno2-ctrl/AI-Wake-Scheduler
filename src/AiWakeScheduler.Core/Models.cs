@@ -33,7 +33,8 @@ public enum ScheduleRecurrence
     Once,
     Daily,
     Weekly,
-    Interval
+    Interval,
+    Countdown
 }
 
 /// <summary>
@@ -279,6 +280,7 @@ public static class ScheduleRecurrenceNames
         ScheduleRecurrence.Daily => "每天固定時間",
         ScheduleRecurrence.Weekly => "每週",
         ScheduleRecurrence.Interval => "自動模式（5 小時倒數喚醒）",
+        ScheduleRecurrence.Countdown => "自動倒數模式（每日偵測至 24:00）",
         _ => recurrence.ToString()
     };
 }

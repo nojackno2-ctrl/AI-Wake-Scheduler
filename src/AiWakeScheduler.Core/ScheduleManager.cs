@@ -39,6 +39,14 @@ public sealed class ScheduleManager : IAsyncDisposable
     private List<ScheduledJob> _jobs = [];
     private Task? _schedulerLoop;
     private bool _disposed;
+    private readonly ConcurrentDictionary<(Guid Job, CliKind Cli), DateTimeOffset> _countdownProbes = new();
+
+    private static bool IsCountdownActive(ScheduledJob job, DateTimeOffset now) =>
+        now.LocalDateTime.TimeOfDay >= (job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay);
+
+    private static DateTimeOffset CountdownOccurrence(ScheduledJob job, DateTimeOffset now) =>
+        IsCountdownActive(job, now) ? now : ScheduleCalculator.GetNextDailyOccurrence(
+            job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay, now);
 
     public ScheduleManager(
         IDataStore<List<ScheduledJob>> jobStore,
@@ -77,7 +85,12 @@ public sealed class ScheduleManager : IAsyncDisposable
                 job.Recurrence = ScheduleRecurrence.Daily;
             }
 
-            if (job.Recurrence == ScheduleRecurrence.Interval)
+            if (job.Recurrence == ScheduleRecurrence.Countdown)
+            {
+                job.InitialTimeOfDay ??= job.ScheduledAt.LocalDateTime.TimeOfDay;
+                job.ScheduledAt = CountdownOccurrence(job, now);
+            }
+            else if (job.Recurrence == ScheduleRecurrence.Interval)
             {
                 var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
                 job.InitialTimeOfDay = initialTime;
@@ -175,7 +188,14 @@ public sealed class ScheduleManager : IAsyncDisposable
         try
         {
             var saved = job.Clone();
-            if (saved.Recurrence == ScheduleRecurrence.Interval)
+            if (saved.Recurrence == ScheduleRecurrence.Countdown)
+            {
+                saved.InitialTimeOfDay ??= saved.ScheduledAt.LocalDateTime.TimeOfDay;
+                saved.ScheduledAt = CountdownOccurrence(saved, Now);
+                foreach (var key in _countdownProbes.Keys.Where(k => k.Job == saved.Id).ToArray())
+                    _countdownProbes.TryRemove(key, out _);
+            }
+            else if (saved.Recurrence == ScheduleRecurrence.Interval)
             {
                 var initialTime = saved.InitialTimeOfDay ?? saved.ScheduledAt.LocalDateTime.TimeOfDay;
                 saved.InitialTimeOfDay = initialTime;
@@ -343,6 +363,7 @@ public sealed class ScheduleManager : IAsyncDisposable
     /// </summary>
     private async Task<TimeSpan> ScanAndStartDueJobsAsync(CancellationToken cancellationToken)
     {
+        await ScanCountdownJobsAsync(cancellationToken).ConfigureAwait(false);
         List<(ScheduledJob Job, IReadOnlyList<CliKind> Targets)>? dueJobs = null;
         TimeSpan nextDelay;
 
@@ -375,6 +396,9 @@ public sealed class ScheduleManager : IAsyncDisposable
                 {
                     continue;
                 }
+
+                if (job.Recurrence == ScheduleRecurrence.Countdown)
+                    continue;
 
                 if (job.Recurrence == ScheduleRecurrence.Interval &&
                     _usageReader is not null &&
@@ -600,6 +624,79 @@ public sealed class ScheduleManager : IAsyncDisposable
         return nextDelay;
     }
 
+    // 每日偵測視窗與固定間隔排程分開；讀取失敗不代表沒有倒數。
+    private async Task ScanCountdownJobsAsync(CancellationToken cancellationToken)
+    {
+        if (_usageReader is null) return;
+        ScheduledJob[] jobs;
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            jobs = _jobs.Where(j => j.Recurrence == ScheduleRecurrence.Countdown && j.Enabled &&
+                j.Status == ScheduleStatus.Pending && IsCountdownActive(j, Now)).Select(j => j.Clone()).ToArray();
+        }
+        finally { _gate.Release(); }
+
+        foreach (var job in jobs)
+        {
+            var probeDate = Now.LocalDateTime.Date;
+            var settings = _settingsProvider().Clone();
+            var targets = new List<CliKind>();
+            foreach (var kind in job.Targets.Distinct())
+            {
+                var now = Now;
+                if (now.LocalDateTime.Date != probeDate || !IsCountdownActive(job, now)) break;
+                if (_countdownProbes.TryGetValue((job.Id, kind), out var next) && next > now) continue;
+                _countdownProbes[(job.Id, kind)] = now + MaxIdleWait;
+                if (_lastQuotaWakeupByCli.TryGetValue(kind, out var last) && now - last < QuotaWakeupCooldown)
+                {
+                    _countdownProbes[(job.Id, kind)] = last + QuotaWakeupCooldown;
+                    continue;
+                }
+                try
+                {
+                    var snapshot = await _usageReader.ReadAsync(kind, settings.CliProfiles[kind].Clone(),
+                        job.WorkingDirectory, cancellationToken).ConfigureAwait(false);
+                    if (snapshot.Availability != CliUsageAvailability.Available) continue;
+                    if (!CliUsageReader.IsCountingDown(snapshot, Now)) targets.Add(kind);
+                    else if (GetShortWindowOrFirst(snapshot).ResetsAt is { } reset)
+                        _countdownProbes[(job.Id, kind)] = reset < now + MaxIdleWait ? reset : now + MaxIdleWait;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch { /* 下一輪重試；不以讀取失敗觸發 CLI。 */ }
+            }
+            if (targets.Count == 0) continue;
+            ScheduledJob? execution = null;
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var stored = _jobs.SingleOrDefault(j => j.Id == job.Id);
+                var now = Now;
+                // 讀取可能跨午夜，或期間使用者修改／停用排程。
+                if (stored is { Enabled: true, Status: ScheduleStatus.Pending, Recurrence: ScheduleRecurrence.Countdown } &&
+                    stored.InitialTimeOfDay == job.InitialTimeOfDay && stored.WorkingDirectory == job.WorkingDirectory &&
+                    stored.Targets.SequenceEqual(job.Targets) && now.LocalDateTime.Date == probeDate && IsCountdownActive(stored, now))
+                {
+                    stored.Status = ScheduleStatus.Running;
+                    stored.StartedAt = now;
+                    execution = stored.Clone();
+                    foreach (var kind in targets)
+                    {
+                        _lastQuotaWakeupByCli[kind] = now;
+                        _countdownProbes[(job.Id, kind)] = now + QuotaWakeupCooldown;
+                    }
+                    await _jobStore.SaveAsync(_jobs, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            finally { _gate.Release(); }
+            if (execution is not null)
+            {
+                RaiseJobsChanged();
+                StartExecution(execution, targets, cancellationToken, respectCountdownWindow: true);
+            }
+        }
+    }
+
     /// <summary>計算距離最近一個待執行排程的等待時間。呼叫端必須已持有 <see cref="_gate"/>。</summary>
     private TimeSpan CalculateNextDelay(DateTimeOffset now, Guid? ignoredJobId = null)
     {
@@ -613,6 +710,18 @@ public sealed class ScheduleManager : IAsyncDisposable
             }
             if (ignoredJobId.HasValue && job.Id == ignoredJobId.Value)
             {
+                continue;
+            }
+
+            if (job.Recurrence == ScheduleRecurrence.Countdown)
+            {
+                var next = CountdownOccurrence(job, now);
+                if (_usageReader is null) continue;
+                if (IsCountdownActive(job, now))
+                {
+                    next = job.Targets.Select(t => _countdownProbes.GetValueOrDefault((job.Id, t), now)).Min();
+                }
+                if (next - now < shortest) shortest = next - now;
                 continue;
             }
 
@@ -661,10 +770,10 @@ public sealed class ScheduleManager : IAsyncDisposable
         return windows[0];
     }
 
-    private void StartExecution(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken)
+    private void StartExecution(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken, bool respectCountdownWindow = false)
     {
         var id = job.Id;
-        var task = ExecuteJobAsync(job, targets, cancellationToken);
+        var task = ExecuteJobAsync(job, targets, cancellationToken, respectCountdownWindow);
         _executions[id] = task;
         _ = task.ContinueWith(
             _ => _executions.TryRemove(id, out Task? _),
@@ -673,7 +782,7 @@ public sealed class ScheduleManager : IAsyncDisposable
             TaskScheduler.Default);
     }
 
-    private async Task ExecuteJobAsync(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken)
+    private async Task ExecuteJobAsync(ScheduledJob job, IReadOnlyList<CliKind> targets, CancellationToken cancellationToken, bool respectCountdownWindow)
     {
         try
         {
@@ -682,7 +791,7 @@ public sealed class ScheduleManager : IAsyncDisposable
             var timeout = TimeSpan.FromMinutes(settings.ExecutionTimeoutMinutes);
 
             // 執行前：若支援用量讀取，且最新快照非近期取得，先讀取目標 CLI 的最新流量與倒數狀態
-            if (_usageReader is not null)
+            if (_usageReader is not null && job.Recurrence != ScheduleRecurrence.Countdown)
             {
                 for (var i = 0; i < targets.Count; i++)
                 {
@@ -712,6 +821,12 @@ public sealed class ScheduleManager : IAsyncDisposable
             for (var i = 0; i < targets.Count; i++)
             {
                 var target = targets[i];
+                if (respectCountdownWindow &&
+                    (Now.LocalDateTime.Date != job.StartedAt?.LocalDateTime.Date || !IsCountdownActive(job, Now)))
+                {
+                    runs[i] = Task.FromResult(new CliRunResult { Cli = target, Error = "當日偵測已結束", FinishedAt = Now });
+                    continue;
+                }
                 runs[i] = RunTargetAsync(
                     job,
                     target,
@@ -838,7 +953,11 @@ public sealed class ScheduleManager : IAsyncDisposable
 
             if (stored.Enabled)
             {
-                if (stored.Recurrence == ScheduleRecurrence.Interval)
+                if (stored.Recurrence == ScheduleRecurrence.Countdown)
+                {
+                    stored.ScheduledAt = CountdownOccurrence(stored, now);
+                }
+                else if (stored.Recurrence == ScheduleRecurrence.Interval)
                 {
                     var initialTime = stored.InitialTimeOfDay ?? stored.ScheduledAt.LocalDateTime.TimeOfDay;
                     stored.ScheduledAt = ScheduleCalculator.GetNextAutoIntervalOccurrence(initialTime, stored.FinishedAt ?? now);
@@ -874,6 +993,8 @@ public sealed class ScheduleManager : IAsyncDisposable
 
     private static void ValidateJob(ScheduledJob job)
     {
+        if (job.InitialTimeOfDay is { } start && (start < TimeSpan.Zero || start >= TimeSpan.FromDays(1)))
+            throw new ArgumentOutOfRangeException(nameof(job), "開始時間必須介於 00:00 到 23:59。");
         if (string.IsNullOrWhiteSpace(job.Name))
         {
             throw new ArgumentException("請輸入排程名稱。");

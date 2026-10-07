@@ -82,7 +82,7 @@ internal static class Program
 
     private static void TestCountdown()
     {
-        var now = new DateTimeOffset(2026, 10, 4, 12, 0, 0, TimeSpan.FromHours(8));
+        var now = new DateTimeOffset(DateTime.SpecifyKind(new DateTime(2026, 10, 4, 12, 0, 0), DateTimeKind.Local));
         var job = new ScheduledJob { Recurrence = ScheduleRecurrence.Interval, Targets = [CliKind.Codex, CliKind.Claude] };
         var usage = new Dictionary<CliKind, CliUsageSnapshot>
         {
@@ -95,6 +95,12 @@ internal static class Program
         var text = JobPresenter.Countdown(job, now, usage);
         Assert(text.Contains("Codex 02:00:00") && text.Contains("Claude 未倒數"), "Each target should use its own short-window countdown.");
         Assert(JobPresenter.Countdown(job, now.AddSeconds(1), usage).Contains("01:59:59"), "Countdown should tick using server reset time.");
+        job.Recurrence = ScheduleRecurrence.Countdown;
+        job.InitialTimeOfDay = TimeSpan.FromHours(8);
+        Assert(JobPresenter.Time(job) == "每日 08:00～24:00", "New mode must show its daily detection window.");
+        Assert(JobPresenter.Countdown(job, now, usage).Contains("Codex 02:00:00"), "New mode must show real per-target countdowns.");
+        var early = new DateTimeOffset(DateTime.SpecifyKind(new DateTime(2026, 10, 7, 7, 59, 0), DateTimeKind.Local));
+        Assert(JobPresenter.Countdown(job, early, usage) == "等待開始偵測", "Outside daily window must show waiting state.");
         job.Enabled = false;
         Assert(JobPresenter.Countdown(job, now, usage) == "已停用", "Disabled jobs must not display an active wake countdown.");
     }
@@ -151,6 +157,15 @@ internal static class Program
             Assert(edited.Id == first.Id && edited.Recurrence == ScheduleRecurrence.Interval && edited.InitialTimeOfDay is not null,
                 "Edit event must update the same job and preserve interval anchor.");
             Assert(File.ReadAllText(host.Paths.JobsFile).Contains("QA interval"), "Edited schedule must be persisted.");
+            Field<ComboBox>(form, "_recurrenceInput").SelectedIndex = 2;
+            Assert(Field<Label>(form, "_timeLabel").Text == "開始偵測時間", "New mode needs a detection start label.");
+            Field<TextBox>(form, "_nameInput").Text = "QA countdown";
+            Invoke(form, "SaveScheduleAsync", null, EventArgs.Empty);
+            PumpUntil(() => host.Manager.GetJobsAsync().GetAwaiter().GetResult().Single().Name == "QA countdown");
+            edited = host.Manager.GetJobsAsync().GetAwaiter().GetResult().Single();
+            Assert(edited.Recurrence == ScheduleRecurrence.Countdown && edited.InitialTimeOfDay is not null && !edited.Enabled,
+                "New mode and daily start must survive actual editor save.");
+            Assert(File.ReadAllText(host.Paths.JobsFile).Contains("Countdown"), "New mode must persist as Countdown.");
             // Keep the tray test offline; the real Shown handler starts account queries.
             form.Shown -= (EventHandler)Delegate.CreateDelegate(typeof(EventHandler), form, "MainFormOnShown");
             form.Show();

@@ -209,7 +209,7 @@ internal sealed class MainForm : Form
         }, 0, 0);
         header.Controls.Add(new Label
         {
-            Text = "依排程或自動週期（每 5 小時 1 分鐘），向勾選的 CLI 傳送簡短訊息喚醒配額（預設：早安）",
+            Text = "依每日排程、自動週期或實際倒數，向勾選的 CLI 傳送簡短訊息喚醒配額（預設：早安）",
             ForeColor = AppTheme.BannerSubtitle,
             AutoSize = true,
             Margin = new Padding(1, 5, 0, 0)
@@ -327,6 +327,7 @@ internal sealed class MainForm : Form
         _recurrenceInput.Items.Clear();
         _recurrenceInput.Items.Add("每天固定時間");
         _recurrenceInput.Items.Add("自動模式（每 5 小時 1 分鐘）");
+        _recurrenceInput.Items.Add("自動倒數模式（每日偵測至 24:00）");
         _recurrenceInput.SelectedIndex = 0;
         _recurrenceInput.SelectedIndexChanged += (_, _) => UpdateRecurrenceLabel();
 
@@ -362,7 +363,7 @@ internal sealed class MainForm : Form
 
         var note = new Label
         {
-            Text = "支援每日固定時間或每 5 小時 1 分鐘自動模式。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，"
+            Text = "自動倒數模式從指定時間偵測至 24:00，未倒數即呼叫，倒數中則等待結束。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，"
                  + "並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。",
             AutoSize = true,
             MaximumSize = new Size(420, 0),
@@ -386,7 +387,7 @@ internal sealed class MainForm : Form
     {
         if (_timeLabel is not null)
         {
-            _timeLabel.Text = _recurrenceInput.SelectedIndex == 1 ? "首次喚醒時間" : "每天時間";
+            _timeLabel.Text = _recurrenceInput.SelectedIndex switch { 1 => "首次喚醒時間", 2 => "開始偵測時間", _ => "每天時間" };
         }
     }
 
@@ -889,7 +890,7 @@ internal sealed class MainForm : Form
     {
         try
         {
-            var isInterval = _recurrenceInput.SelectedIndex == 1;
+            var isInterval = _recurrenceInput.SelectedIndex >= 1;
             var scheduledTimeOfDay = _timeInput.Value.TimeOfDay;
             var job = new ScheduledJob
             {
@@ -900,7 +901,7 @@ internal sealed class MainForm : Form
                 Message = _messageInput.Text.Trim(),
                 WorkingDirectory = _workingDirectoryInput.Text.Trim(),
                 Targets = SelectedTargets(),
-                Recurrence = isInterval ? ScheduleRecurrence.Interval : ScheduleRecurrence.Daily,
+                Recurrence = _recurrenceInput.SelectedIndex switch { 1 => ScheduleRecurrence.Interval, 2 => ScheduleRecurrence.Countdown, _ => ScheduleRecurrence.Daily },
                 Enabled = _enabledCheck.Checked
             };
             await Manager.UpsertAsync(job).ConfigureAwait(true);
@@ -1017,7 +1018,7 @@ internal sealed class MainForm : Form
             _saveButton.Text = "儲存修改";
         }
         _nameInput.Text = job.Name;
-        _recurrenceInput.SelectedIndex = job.Recurrence == ScheduleRecurrence.Interval ? 1 : 0;
+        _recurrenceInput.SelectedIndex = job.Recurrence switch { ScheduleRecurrence.Interval => 1, ScheduleRecurrence.Countdown => 2, _ => 0 };
         UpdateRecurrenceLabel();
         var initialTime = job.InitialTimeOfDay ?? job.ScheduledAt.LocalDateTime.TimeOfDay;
         _timeInput.Value = ClampPickerValue(_timeInput, DateTime.Today + initialTime);

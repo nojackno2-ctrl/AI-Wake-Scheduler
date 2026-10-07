@@ -1,11 +1,18 @@
 # 功能驗證紀錄
 
+## 2026-10-07 自動倒數模式
+
+- Release 方案建置：0 警告／0 錯誤；核心 17/17、WinForms 7/7，格式與 diff check 通過。
+- 新 Countdown 模式：可控本機時鐘／假額度來源／CLI 驗證每日開始前不查不呼叫、開始時只呼叫未倒數的 CLI、等待實際倒數結束、多輪循環、午夜停止與隔日恢復、全域刷新關閉仍偵測、讀取失敗保護、冷卻防連發、JSON 持久化、重啟保留倒數及查詢跨午夜停止呼叫。
+- WinForms 實際控制項與儲存事件驗證第三個模式選項、開始時間標籤、模式持久化、每日視窗及各 CLI 倒數文字。
+- 未實測新模式全天真實 CLI 運行、休眠恢復或新版安裝；不把可控時鐘測試當成全天端到端驗證。
+
 ## 2026-10-05 v1.10.0 發布檢查
 
 - 核心 16/16、WinForms 7/7；Release 方案建置 0 警告／0 錯誤；whitespace verify 及 diff check 通過。
 - 最終低價預設四目標喚醒均 exit 0 且回覆 OK（Gemini 3.8 Flash Low、AGY Sonnet 5.5 Low、Codex GPT-6 Luna、Claude Haiku 4.5），wake smoke 1/1 通過。
 - 額度整合初次因 Claude 憑證過期失敗；真實呼叫後重新檢查 1/1 通過，四個目標各 2 視窗。
-- 最終正式自包含安裝包建置成功；低價版 QA Install、UpgradeKeepStartup、UpgradeDisableStartup、UpgradeEnableStartup、Uninstall 全 PASS，正式設定／排程／Run key 不變。免安裝 ZIP 解壓後所有 publish 檔案 hash 相同；正式安裝器版本與 SHA256SUMS 校驗通過。產物位於 dist/v1.10.0-final，使用者已授權 commit／push／發布；將重新建置對應提交版本後發布。
+- 最終正式自包含安裝包建置成功；低價版 QA Install、UpgradeKeepStartup、UpgradeDisableStartup、UpgradeEnableStartup、Uninstall 全 PASS，正式設定／排程／Run key 不變。免安裝 ZIP 解壓後所有 publish 檔案 hash 相同；正式安裝器版本與 SHA256SUMS 校驗通過。產物位於 dist/v1.10.0-final，已依授權提交、推送，從 f060c30ade8a3f19207c303a0be2dce7304441a2 完整重建至 dist/v1.10.0-release，核心 16/16、WinForms 7/7、額度整合 1/1 再次通過；exe ProductVersion 含相同提交。GitHub v1.10.0 已正式發布，latest／tag／三項資產 SHA256 digest 與大小均確認。大型資產下載初期長時間顯示零位元組，但 helper 隨後自行成功結束；三項完整下載與本機 SHA256 相同，下載校驗檔逐行通過，未實際取消程序。GitHub API 官方 SHA256、本機解壓比對及完整下載三者均通過。
 
 ## 2026-10-04 歷史 QA 紀錄
 

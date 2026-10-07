@@ -11,6 +11,7 @@ internal static class JobPresenter
 {
     public static string Time(ScheduledJob job) => job.Recurrence switch
     {
+        ScheduleRecurrence.Countdown => $"每日 {job.InitialTimeOfDay:hh\\:mm}～24:00",
         ScheduleRecurrence.Interval => $"5h倒數 ({job.ScheduledAt.LocalDateTime:HH:mm})",
         _ => job.ScheduledAt.LocalDateTime.ToString("HH:mm")
     };
@@ -24,7 +25,10 @@ internal static class JobPresenter
         if (job.Status is ScheduleStatus.Completed or ScheduleStatus.Failed) return "已執行";
         if (!job.Enabled) return "已停用";
 
-        if (job.Recurrence == ScheduleRecurrence.Interval && usageSnapshots is not null && job.Targets.Count > 0)
+        if (job.Recurrence == ScheduleRecurrence.Countdown &&
+            now.LocalDateTime.TimeOfDay < job.InitialTimeOfDay) return "等待開始偵測";
+
+        if ((job.Recurrence is ScheduleRecurrence.Interval or ScheduleRecurrence.Countdown) && usageSnapshots is not null && job.Targets.Count > 0)
         {
             var builder = new StringBuilder(job.Targets.Count * 20);
             for (var i = 0; i < job.Targets.Count; i++)
