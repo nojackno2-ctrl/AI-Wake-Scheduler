@@ -1,5 +1,25 @@
 # AI HANDOFF
 
+## 2026-10-14 Antigravity: automatic commit and push to GitHub policy
+
+- User authorized automatic local commits and automatic push to GitHub for all projects; AGENTS.md now records the standing policy. A Git post-commit hook has been installed in `.git/hooks/post-commit` to automatically push the current branch to `origin` upon commit. Destructive operations (force-push, release, merge, rebase, reset, branch deletion) still require separate authorization.
+- Evidence: inspected branches, git remotes, and status across all repositories. Verified hook execution on Windows Git. Pushed existing unpushed commits where applicable.
+- Verification: git status clean, post-commit hook configured and tested, collaboration rules updated.
+- Status: auto-push policy established and active.
+
+## 2026-10-12 Claude：改寫成 Rust（核心與桌面程式完成，與 C# 版並存）
+
+- 使用者目標「程式改寫成Rust語言」。已確認的決策：Rust 版放在 `rust/`，與 C# 版並存到功能對等後再另行決定是否移除 C#；UI 以 Microsoft `windows` crate 直接寫原生 Win32；相依只用少量主流 crate（serde_json、chrono、regex、windows；建置時另用 winresource 嵌入圖示與資訊清單），HTTP 走 WinHTTP、不引入 async runtime。本機 Rust 為 stable 1.99.0（rustup 原已安裝，只是不在 PATH：`%USERPROFILE%\.cargo\bin`）。
+- `rust/core`（crate `aiwake-core`，commit f4ce6eb 起）：對應 C# Core 全部檔案。async/Task 改為執行緒＋Condvar，取消改為 `CancelToken`，`TimeProvider` 改為 `Clock` trait。資料檔格式與 C# 版相容（PascalCase、字串列舉、`hh:mm:ss`、ISO 8601 最多 7 位小數），測試含讀取舊版格式。
+- `rust/app`（crate `aiwake-app`，執行檔 `ai-wake-scheduler.exe`）：對應 WinForms 專案。主視窗（清單為 ListView、編輯器為可捲動面板、額度看板自繪、終端機為 RichEdit、可拖曳的兩條分隔線、狀態列）、設定對話框（可捲動內容＋固定在底部的儲存／取消）、系統匣與氣球通知、Run key 開機啟動與舊排程工作遷移、`--minimized`／`--verify-ui`。自繪按鈕保留主要／次要／危險三種樣式與高對比模式。視窗狀態全部用 `Cell`/`RefCell` 內部可變性，背景執行緒一律經 `UiQueue` 排回 UI 執行緒。
+- 兩個版本共用資料目錄、單一執行個體 mutex 名稱與 Run key 值名稱：不能同時執行，正式模式啟動 Rust 版時若已啟用開機啟動，Run key 會被改指向 Rust 執行檔（與 C# 版的遷移行為相同）。我所有的實機執行都只用 `--verify-ui` 隔離模式，未碰正式資料、正式排程與 Run key。安裝包（Inno Setup）仍打包 C# 版，未改動。
+- 驗證（本機 UTC+8，最終程式碼）：`cargo fmt --all -- --check` 通過；`cargo clippy --workspace --all-targets --locked -- -D warnings` 通過；`cargo test --workspace` 核心 17/17、App 單元 10/10（排程文字、額度看板整形與格式、啟動命令）、端對端 UI 1/1。端對端測試啟動真正的 debug 執行檔，以視窗訊息驗證：編輯器預設值、建立／修改排程並比對隔離 `schedules.json`、關閉縮到系統匣與還原、設定對話框的模型↔思考程度連動（Sol Ultra→Luna Max、完整模型 ID 只留預設）、取消不寫檔、連線檢查、儲存寫入 `settings.json`、把四個 CLI 指向假批次檔後「立即執行」→確認對話框→三個目標平行執行→終端機輸出→查看結果、清除終端機、新增、關閉即結束（結束碼 0）。
+- 其他已實測：opt-in `cargo test -p aiwake-core -- --ignored executable_locator_resolution` 1/1（最終程式碼）：四個真實 CLI 的 `--version` 與額度讀取（agy /usage、Codex app-server、Claude OAuth usage 經 WinHTTP）皆 Available。`cargo build --release` 成功，執行檔 1,796,096 bytes；release 版 `--verify-ui` 可啟動並正確繪製（PrintWindow 擷圖人工檢視：主視窗、編輯器底部含真實額度看板、設定對話框、執行後終端機），`--verify-ui --minimized` 啟動後無可見視窗、行程存活。`rust/build-release.ps1`（測試＋release 建置＋複製）執行成功，產出 `dist\rust\AI倒數喚醒.exe`，SHA256 876EDB1428151F8FE78F1EE96B827CF6CBFD6F71173E1CE187A0EE03827AD3D9（`dist/` 不納入版控）。
+- 未驗證：GitHub Actions 的 `rust-build-and-test` 工作（已加入 `.github/workflows/ci.yml`，尚未 push，沒有任何一次實際執行；UTC+8 以外的時區只會由該矩陣驗證）。系統匣氣球通知外觀與點擊登入、CLI 登入主控台流程、資料夾／檔案選擇對話框、分隔線拖曳、跨螢幕 DPI 變更、高對比模式、正式模式的 Run key 寫入與 schtasks 舊工作遷移、長時間常駐／睡眠恢復、經 Rust UI 的真實 CLI 喚醒（`real_cli_wake_smoke` 會消耗 Token，未執行）。
+- 注意：本機「應用程式控制原則」(os error 4551) 會不定期封鎖 cargo 新產生、未簽章的測試或 build script 執行檔（曾封鎖假 CLI 的 unittest 執行檔、一次重編後的 `ui_smoke` 測試檔，以及換工具鏈後的 build script）。這是使用者機器的安全政策，不可繞過；遇到時只能如實回報。曾嘗試加入 `rust-toolchain.toml` 固定版本，結果 rustup 另外下載了一份 1.99.0 工具鏈且新 build script 被封鎖，已移除該檔並解除安裝那份重複的工具鏈；版本固定改寫在 CI 工作流程內。
+- 與 C# 版的已知差異：按鈕、清單與輸入框是系統原生控制項的外觀；清單列高 34（C# 為 42）；設定對話框的模型欄寬比例改為 32/38/30；額度看板以內容比對（而非物件參考）判斷是否重排版面。`.cmd` 形式的 CLI 經 `cmd.exe /c` 執行時，節省 Token 提示詞中的換行會截斷其後的參數——這是從 C# 版原樣移植的既有行為，兩版相同，未修改。
+- 測試用的隔離資料夾留在 `%TEMP%\AiWakeScheduler-QA-*`（手動啟動幾次留下的，內容只有空的設定與日誌目錄），可自行刪除。
+
 ## 2026-10-07 Codex：自動倒數模式（完成）
 
 - 工作開始時 main=7c4a835，工作樹乾淨，已讀取規則及交接。新增 Countdown 週期與 UI 第三個選項；指定每日開始偵測時間，逐 CLI 查真實倒數，未倒數呼叫、倒數中等待，午夜後至翌日開始前不自動呼叫。

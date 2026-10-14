@@ -6,3 +6,6 @@ obj/
 TestResults/
 dist/
 
+
+# Rust
+rust/target/

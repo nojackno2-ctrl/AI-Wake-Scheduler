@@ -1,0 +1,28 @@
+[package]
+name = "aiwake-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AI 倒數喚醒核心：排程、CLI 執行與額度讀取"
+
+[lib]
+name = "aiwake_core"
+doctest = false
+
+[[bin]]
+name = "aiwake-fake-cli"
+path = "src/fake_cli.rs"
+test = false
+
+[dependencies]
+serde_json.workspace = true
+chrono.workspace = true
+regex.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinHttp",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }

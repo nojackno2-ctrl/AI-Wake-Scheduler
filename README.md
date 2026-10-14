@@ -166,6 +166,35 @@ powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 
 腳本拒絕正式安裝包，固定安裝於 `bin\verification-installed`，每階段比對正式設定、排程與啟動鍵是否維持原值。實際驗證結果與未驗證範圍見 [功能驗證紀錄](docs/FEATURE_VERIFICATION.md)。
 
+### Rust 版（`rust/`）
+
+程式已另以 Rust 改寫，與上述 C# 版並存：`rust/core` 是核心邏輯（排程、CLI 執行、額度讀取），`rust/app` 是以原生 Win32 控制項實作的桌面程式。兩個版本使用相同的資料目錄、資料檔格式、單一執行個體鎖與開機啟動登錄值，因此**不能同時執行**，但可以互相接手既有的設定與排程。目前的安裝包仍打包 C# 版。
+
+- **開發工具**：[Rust](https://rustup.rs/) stable（CI 使用 1.99.0）與 Visual Studio 的「使用 C++ 的桌面開發」工作負載（提供 MSVC 連結器與 Windows SDK 的資源編譯器）。
+- **相依套件**：`serde_json`、`chrono`、`regex`、`windows`；HTTP 使用系統內建的 WinHTTP，沒有 async runtime。建置時另用 `winresource` 嵌入圖示與資訊清單。
+
+```
+rust/
+├── Cargo.toml              # workspace
+├── build-release.ps1       # 測試後建置 release，輸出 dist\rust\AI倒數喚醒.exe
+├── core/                   # crate aiwake-core：核心邏輯與測試
+└── app/                    # crate aiwake-app：Win32 主視窗、設定對話框、系統匣
+```
+
+```powershell
+cd rust
+cargo test --workspace          # 核心測試、畫面文字格式測試，以及啟動真正執行檔的端對端 UI 測試
+cargo build --release           # 產出 target\release\ai-wake-scheduler.exe（單一執行檔，免安裝執行階段）
+.\build-release.ps1             # 測試 + release 建置，並複製成 dist\rust\AI倒數喚醒.exe
+```
+
+端對端 UI 測試會以 `--verify-ui` 啟動程式（獨立暫存資料與 mutex，不變更 Windows 啟動項目），並把四個 CLI 指向假的批次檔，不會呼叫真正的 CLI；啟動時的額度看板仍會做一次唯讀的額度查詢。需要本機 CLI 與登入狀態的測試要明確選用：
+
+```powershell
+cargo test -p aiwake-core -- --ignored executable_locator_resolution   # 唯讀：--version 與額度查詢，不消耗 Token
+cargo test -p aiwake-core -- --ignored real_cli_wake_smoke             # 會各送出一次最小提示詞，消耗少量 Token
+```
+
 ---
 
 ## 📁 資料與日誌路徑

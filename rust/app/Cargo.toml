@@ -1,0 +1,43 @@
+[package]
+name = "aiwake-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "每日定時平行喚醒 Antigravity、Claude 與 OpenAI Codex CLI 之 Windows 桌面工具"
+build = "build.rs"
+
+[lib]
+name = "aiwake_app"
+doctest = false
+
+[[bin]]
+name = "ai-wake-scheduler"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+aiwake-core = { path = "../core" }
+chrono.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_Xps",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_RichEdit",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+winresource = "0.1"
