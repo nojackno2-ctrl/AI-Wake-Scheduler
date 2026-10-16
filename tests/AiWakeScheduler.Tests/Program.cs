@@ -198,13 +198,13 @@ static Task TestCliCommandBuilderAsync()
     var saverAgy = CliCommandBuilder.Build(CliKind.Antigravity, "早安", timeout: TimeSpan.FromMinutes(3));
     Assert(saverAgy.Contains("--effort") && saverAgy.Contains("low"), "Antigravity 節省模式應包含 low effort。");
     Assert(saverAgy.Contains("--disable-slash-commands"), "Antigravity 節省模式應停用斜線指令。");
-    Assert(saverAgy.Contains("--mode") && saverAgy.Contains("plan"), "Antigravity 節省模式不可修改工作區。");
+    Assert(!saverAgy.Contains("--mode"), "Antigravity 節省模式停用斜線指令時不可帶 --mode plan 避免警告。");
     Assert(saverAgy.Contains("--print-timeout") && saverAgy.Contains("180s"), "應把應用程式逾時轉為 CLI 自身的 --print-timeout。");
 
     var saverAgyClaude = CliCommandBuilder.Build(CliKind.AntigravityClaude, "早安");
     Assert(saverAgyClaude.Contains("--model") && saverAgyClaude.Contains("claude-sonnet-5-5-low"), "AntigravityClaude 預設應使用 Claude Sonnet 模型 ID。");
     Assert(saverAgyClaude.Contains("--disable-slash-commands"), "AntigravityClaude 節省模式應停用技能展開。");
-    Assert(saverAgyClaude.Contains("--mode") && saverAgyClaude.Contains("plan"), "AntigravityClaude 節省模式不可修改工作區。");
+    Assert(!saverAgyClaude.Contains("--mode"), "AntigravityClaude 節省模式停用技能展開時不可帶 --mode plan 避免警告。");
     // Claude 系列模型不接受 --effort，帶上去 agy 會直接拒絕整個呼叫
     Assert(!saverAgyClaude.Contains("--effort"), "AntigravityClaude 不可帶 --effort，Claude 模型不支援。");
     Assert(!saverAgyClaude.Contains("--print-timeout"), "未指定逾時時不應產生 --print-timeout。");
@@ -440,10 +440,13 @@ static Task TestCliUsageReaderAsync()
             {"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.999,"reset_time":"{{observedAt.AddHours(2):O}}"},
             {"name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8,"reset_time":"{{observedAt.AddDays(3):O}}"}]},
           {"name":"Claude and GPT models","buckets":[
-            {"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"{{observedAt.AddHours(5):O}}"}]}]}
+            {"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"{{observedAt.AddHours(5):O}}"}]},
+          {"name":"Gemini 4 Argon","buckets":[
+            {"name":"Gemini 4 Argon Weekly Limit","window":"weekly","remaining_fraction":0.89,"reset_time":"{{observedAt.AddDays(6):O}}"}]}]}
         """;
     var usageGemini = CliUsageReader.ParseAntigravityModelConfigs(usageData, CliKind.Antigravity, observedAt);
-    Assert(usageGemini.Windows.Count == 2 && usageGemini.Windows[1].Duration == TimeSpan.FromDays(7), "新版 usage 應解析 5h 與 weekly。");
+    Assert(usageGemini.Windows.Count == 3 && usageGemini.Windows[0].Duration == TimeSpan.FromHours(5) && usageGemini.Windows[1].Duration == TimeSpan.FromDays(7) && usageGemini.Windows[2].Duration == TimeSpan.FromDays(7), "新版 usage 應完整解析 5h、Gemini weekly 與獨立 Argon weekly 三個視窗。");
+    Assert(usageGemini.Windows[2].Name.Contains("Argon"), "Argon 視窗應被獨立保留而非覆蓋 Gemini 每週配額。");
     Assert(usageGemini.Windows[0].UsedPercent == 0 && CliUsageReader.IsCountingDown(usageGemini, observedAt), "微量使用即使顯示為 0% 仍應倒數。");
     var usageClaude = CliUsageReader.ParseAntigravityModelConfigs(usageData, CliKind.AntigravityClaude, observedAt);
     Assert(usageClaude.Windows.Count == 1 && !CliUsageReader.IsCountingDown(usageClaude, observedAt), "滿額滑動時間不可當成真正倒數。");
@@ -792,6 +795,8 @@ static Task TestCliCatalogAsync()
 
     var agy = CliCatalog.Get(CliKind.Antigravity);
     Assert(agy.PresetModels.Contains("gemini-3.8-flash"), "Antigravity 推薦清單應包含 gemini-3.8-flash。");
+    Assert(agy.PresetModels.Contains("gemini-4-argon"), "Antigravity 推薦清單應包含 gemini-4-argon。");
+    Assert(agy.GetSupportedEfforts("gemini-4-argon").Contains(ThinkingEffort.High), "gemini-4-argon 應支援 High。");
     Assert(agy.GetSupportedEfforts("gemini-3.8-flash").Contains(ThinkingEffort.High), "gemini-3.8-flash 應支援 High。");
     Assert(agy.GetSupportedEfforts("gemini-3.8-flash-high").SequenceEqual([ThinkingEffort.Default]), "gemini-3.8-flash-high 應抑制額外 --effort 避免衝突。");
 

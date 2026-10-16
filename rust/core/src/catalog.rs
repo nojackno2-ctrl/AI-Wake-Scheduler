@@ -177,17 +177,21 @@ static DESCRIPTORS: [CliDescriptor; 4] = [
         prompt_flag: Some("--print"),
         // --disable-slash-commands 停用技能展開；--mode plan 唯讀工作區；
         // 推理程度由 command_builder 依設定或節省模式動態附加。
-        token_saver_arguments: &["--disable-slash-commands", "--mode", "plan"],
+        token_saver_arguments: &["--disable-slash-commands"],
         // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
         // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
         default_model: Some("gemini-3.8-flash"),
-        preset_models: &["", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"],
+        preset_models: &["", "gemini-3.8-flash", "gemini-4-argon"],
         supported_efforts: AGY_FLASH,
         model_supported_efforts: &[
             ("gemini-3.8-flash", AGY_FLASH),
             ("gemini-3.8-flash-high", ONLY_DEFAULT),
             ("gemini-3.8-flash-medium", ONLY_DEFAULT),
             ("gemini-3.8-flash-low", ONLY_DEFAULT),
+            ("gemini-4-argon", AGY_FLASH),
+            ("gemini-4-argon-high", ONLY_DEFAULT),
+            ("gemini-4-argon-medium", ONLY_DEFAULT),
+            ("gemini-4-argon-low", ONLY_DEFAULT),
             ("gemini-3.7-flash", AGY_FLASH),
             ("gemini-3.7-flash-high", ONLY_DEFAULT),
             ("gemini-3.7-flash-medium", ONLY_DEFAULT),
@@ -210,7 +214,7 @@ static DESCRIPTORS: [CliDescriptor; 4] = [
         default_command: "agy",
         base_arguments: &[],
         prompt_flag: Some("--print"),
-        token_saver_arguments: &["--disable-slash-commands", "--mode", "plan"],
+        token_saver_arguments: &["--disable-slash-commands"],
         // 2026-10-04 以 `agy models` 核對；使用包含思考程度的完整 ID，
         // 不再附加獨立 --effort，避免後綴與旗標互相衝突。
         default_model: Some("claude-sonnet-5-5-low"),

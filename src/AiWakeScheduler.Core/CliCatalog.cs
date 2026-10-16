@@ -191,11 +191,11 @@ public static class CliCatalog
             PromptFlag = "--print",
             // --disable-slash-commands 停用技能展開；--mode plan 唯讀工作區；
             // 推理程度由 CliCommandBuilder 依設定或節省模式動態附加。
-            TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
+            TokenSaverArguments = ["--disable-slash-commands"],
             // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
             // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
             DefaultModel = "gemini-3.8-flash",
-            PresetModels = ["", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"],
+            PresetModels = ["", "gemini-3.8-flash", "gemini-4-argon"],
             SupportedEfforts = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
             ModelSupportedEfforts = new Dictionary<string, IReadOnlyList<ThinkingEffort>>(StringComparer.OrdinalIgnoreCase)
             {
@@ -203,6 +203,10 @@ public static class CliCatalog
                 ["gemini-3.8-flash-high"] = [ThinkingEffort.Default],
                 ["gemini-3.8-flash-medium"] = [ThinkingEffort.Default],
                 ["gemini-3.8-flash-low"] = [ThinkingEffort.Default],
+                ["gemini-4-argon"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
+                ["gemini-4-argon-high"] = [ThinkingEffort.Default],
+                ["gemini-4-argon-medium"] = [ThinkingEffort.Default],
+                ["gemini-4-argon-low"] = [ThinkingEffort.Default],
                 ["gemini-3.7-flash"] = [ThinkingEffort.Default, ThinkingEffort.Low, ThinkingEffort.Medium, ThinkingEffort.High],
                 ["gemini-3.7-flash-high"] = [ThinkingEffort.Default],
                 ["gemini-3.7-flash-medium"] = [ThinkingEffort.Default],
@@ -226,7 +230,7 @@ public static class CliCatalog
             DefaultCommand = "agy",
             BaseArguments = [],
             PromptFlag = "--print",
-            TokenSaverArguments = ["--disable-slash-commands", "--mode", "plan"],
+            TokenSaverArguments = ["--disable-slash-commands"],
             // 2026-10-04 以 `agy models` 核對；使用包含思考程度的完整 ID，
             // 不再附加獨立 --effort，避免後綴與旗標互相衝突。
             DefaultModel = "claude-sonnet-5-5-low",

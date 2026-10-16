@@ -1,5 +1,17 @@
 # AI HANDOFF
 
+## 2026-10-16 Antigravity：更新 AGY 呼叫參數、預設模型與 Argon 額度視窗（完成）
+
+- 使用者目標「更新AGY的呼叫跟倒數讀取」。配合附圖中的 Antigravity 額度（含 Gemini Models 5h/每週、Claude/GPT 5h/每週、Gemini 4 Argon 每週 89%）。
+- 呼叫參數：CLI 1.4.0 在 `--disable-slash-commands` 時 `--mode plan` 會發出警告且無效；已從 C# (`CliCatalog.cs`) 與 Rust (`catalog.rs`) 的 `TokenSaverArguments` 移除 `"--mode", "plan"`。經真實 CLI 測試 `agy --model gemini-4-argon --effort low --disable-slash-commands --print-timeout 3m0s --print "OK"` 回傳 OK、結束碼 0。
+- 預設模型：參照 `agy models` 清除已淘汰模型（`gemini-3.7-flash`、`gemini-3.6-flash`、`gemini-3.1-pro`），加入新旗艦模型 `gemini-4-argon`（支援 Low、Medium、High 與 Default 思考程度），並保留既有相容對照。
+- 額度與倒數視窗修復：過去 `SelectMostConstrainedWindows` 僅依視窗長度（Duration 7天）分組，導致 Argon 每週視窗覆蓋並漏失 Gemini 共同每週視窗。已在 C# (`CliUsageReader.cs`) 與 Rust (`usage.rs`) 改為依 `(IsArgonWindow, Duration)` 分組，完整保留 5 小時、每週、Argon 每週 3 個視窗。
+- 額度看板呈現：C# (`UsageBoard.cs`) 與 Rust (`board.rs`) 將 Argon 每週視窗專屬標示為「Argon 每週」。
+- 驗證：
+  - C#：`dotnet build AI倒數喚醒.sln -c Release` 0 警告 0 錯誤；`AiWakeScheduler.Tests` deterministic 17/17 通過；真實 CLI 整合測試（`--integration`）讀取成功，`Antigravity (Gemini)` 正確顯示 3 個視窗（5h 91%、Weekly 97%、Argon Weekly 88%），`Antigravity (Claude / GPT)` 顯示 2 個視窗（5h 100%、Weekly 100%）。
+  - Rust：`cargo clippy --workspace --all-targets -- -D warnings` 通過；`cargo test -p aiwake-app --lib` 10/10 通過；`core_tests` 包含 Argon 視窗獨立保留之單元測試全數通過。
+- 狀態：已完成驗證並保持 C# 與 Rust 雙語言邏輯同步。依照授權執行 commit 與 push。
+
 ## 2026-10-14 Antigravity: automatic commit and push to GitHub policy
 
 - User authorized automatic local commits and automatic push to GitHub for all projects; AGENTS.md now records the standing policy. A Git post-commit hook has been installed in `.git/hooks/post-commit` to automatically push the current branch to `origin` upon commit. Destructive operations (force-push, release, merge, rebase, reset, branch deletion) still require separate authorization.

@@ -548,7 +548,14 @@ internal sealed class UsageBoard : Control
         var labels = new string[windows.Count];
         for (var i = 0; i < windows.Count; i++)
         {
-            labels[i] = DurationLabel(windows[i].Duration) ?? CleanWindowName(windows[i].Name, descriptor);
+            if (windows[i].Name.Contains("Argon", StringComparison.OrdinalIgnoreCase))
+            {
+                labels[i] = "Argon 每週";
+            }
+            else
+            {
+                labels[i] = DurationLabel(windows[i].Duration) ?? CleanWindowName(windows[i].Name, descriptor);
+            }
         }
 
         // 期間長度相同的視窗（例如 Claude 的多個 7 天額度）光看期間分不出來，改用原始名稱區分。
@@ -645,6 +652,11 @@ internal sealed class UsageBoard : Control
         while (text.Contains("  ", StringComparison.Ordinal))
         {
             text = text.Replace("  ", " ", StringComparison.Ordinal);
+        }
+
+        if (text.Contains("Argon", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Argon 每週";
         }
 
         if (text.Contains("Five Hour", StringComparison.OrdinalIgnoreCase))

@@ -739,13 +739,17 @@ public sealed class CliUsageReader : ICliUsageReader
 
     private static List<CliUsageWindow> SelectMostConstrainedWindows(IEnumerable<CliUsageWindow> candidates) =>
         candidates
-            .GroupBy(window => window.Duration)
+            .GroupBy(window => (IsArgonWindow(window), window.Duration))
             .Select(group => group
                 .OrderByDescending(window => window.UsedPercent)
                 .ThenBy(window => window.ResetsAt ?? DateTimeOffset.MaxValue)
                 .First())
-            .OrderBy(window => window.Duration ?? TimeSpan.MaxValue)
+            .OrderBy(window => IsArgonWindow(window) ? 1 : 0)
+            .ThenBy(window => window.Duration ?? TimeSpan.MaxValue)
             .ToList();
+
+    private static bool IsArgonWindow(CliUsageWindow window) =>
+        window.Name.Contains("Argon", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryGetAntigravityConfigs(JsonElement root, out JsonElement configs)
     {

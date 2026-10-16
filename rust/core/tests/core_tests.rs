@@ -405,7 +405,7 @@ fn cli_command_builder() {
     let saver_agy = build_args(CliKind::Antigravity, None, true, Some(Duration::from_secs(180)));
     assert!(has(&saver_agy, "--effort") && has(&saver_agy, "low"), "Antigravity 節省模式應包含 low effort。");
     assert!(has(&saver_agy, "--disable-slash-commands"), "Antigravity 節省模式應停用斜線指令。");
-    assert!(has(&saver_agy, "--mode") && has(&saver_agy, "plan"), "Antigravity 節省模式不可修改工作區。");
+    assert!(!has(&saver_agy, "--mode"), "Antigravity 節省模式停用斜線指令時不可帶 --mode plan 避免警告。");
     assert!(
         has(&saver_agy, "--print-timeout") && has(&saver_agy, "180s"),
         "應把應用程式逾時轉為 CLI 自身的 --print-timeout。"
@@ -417,10 +417,7 @@ fn cli_command_builder() {
         "AntigravityClaude 預設應使用 Claude Sonnet 模型 ID。"
     );
     assert!(has(&saver_agy_claude, "--disable-slash-commands"), "AntigravityClaude 節省模式應停用技能展開。");
-    assert!(
-        has(&saver_agy_claude, "--mode") && has(&saver_agy_claude, "plan"),
-        "AntigravityClaude 節省模式不可修改工作區。"
-    );
+    assert!(!has(&saver_agy_claude, "--mode"), "AntigravityClaude 節省模式停用技能展開時不可帶 --mode plan 避免警告。");
     // Claude 系列模型不接受 --effort，帶上去 agy 會直接拒絕整個呼叫
     assert!(!has(&saver_agy_claude, "--effort"), "AntigravityClaude 不可帶 --effort，Claude 模型不支援。");
     assert!(!has(&saver_agy_claude, "--print-timeout"), "未指定逾時時不應產生 --print-timeout。");
@@ -534,6 +531,13 @@ fn cli_catalog() {
 
     let agy = catalog::get(CliKind::Antigravity);
     assert!(agy.preset_models.contains(&"gemini-3.8-flash"), "Antigravity 推薦清單應包含 gemini-3.8-flash。");
+    assert!(agy.preset_models.contains(&"gemini-4-argon"), "Antigravity 推薦清單應包含 gemini-4-argon。");
+    assert!(agy.get_supported_efforts(Some("gemini-4-argon")).contains(&E::High), "gemini-4-argon 應支援 High。");
+    assert_eq!(
+        agy.get_supported_efforts(Some("gemini-4-argon-high")),
+        [E::Default],
+        "gemini-4-argon-high 應抑制額外 --effort 避免衝突。"
+    );
     assert!(agy.get_supported_efforts(Some("gemini-3.8-flash")).contains(&E::High), "gemini-3.8-flash 應支援 High。");
     assert_eq!(
         agy.get_supported_efforts(Some("gemini-3.8-flash-high")),
@@ -639,15 +643,25 @@ fn cli_usage_reader() {
             {{"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.999,"reset_time":"{}"}},
             {{"name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8,"reset_time":"{}"}}]}},
           {{"name":"Claude and GPT models","buckets":[
-            {{"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"{}"}}]}}]}}"#,
+            {{"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"{}"}}]}},
+          {{"name":"Gemini 4 Argon","buckets":[
+            {{"name":"Gemini 4 Argon Weekly Limit","window":"weekly","remaining_fraction":0.89,"reset_time":"{}"}}]}}]}}"#,
         iso(observed_at + Span::hours(2)),
         iso(observed_at + Span::days(3)),
         iso(observed_at + Span::hours(5)),
+        iso(observed_at + Span::days(6)),
     );
     let usage_gemini = usage::parse_antigravity_model_configs(&usage_data, CliKind::Antigravity, &observed_at);
     assert!(
-        usage_gemini.windows.len() == 2 && usage_gemini.windows[1].duration == Some(Span::days(7)),
-        "新版 usage 應解析 5h 與 weekly。"
+        usage_gemini.windows.len() == 3
+            && usage_gemini.windows[0].duration == Some(Span::hours(5))
+            && usage_gemini.windows[1].duration == Some(Span::days(7))
+            && usage_gemini.windows[2].duration == Some(Span::days(7)),
+        "新版 usage 應完整解析 5h、Gemini weekly 與獨立 Argon weekly 三個視窗。"
+    );
+    assert!(
+        usage_gemini.windows[2].name.contains("Argon"),
+        "Argon 視窗應被獨立保留而非覆蓋 Gemini 每週配額。"
     );
     assert!(
         usage_gemini.windows[0].used_percent == 0 && is_counting_down(Some(&usage_gemini), &observed_at),

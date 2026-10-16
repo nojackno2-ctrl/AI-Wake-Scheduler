@@ -846,11 +846,19 @@ fn parse_antigravity_model_configs_array(
     select_most_constrained_windows(candidates)
 }
 
-/// 每種視窗長度只保留最吃緊的一筆（已用最多；相同時取最早重置者），並依長度由短到長排列。
+fn is_argon_window(window: &CliUsageWindow) -> bool {
+    window.name.to_ascii_lowercase().contains("argon")
+}
+
+/// 每種視窗長度只保留最吃緊的一筆（已用最多；相同時取最早重置者），並依長度由短到長排列（Argon 視窗獨立保留）。
 fn select_most_constrained_windows(candidates: Vec<CliUsageWindow>) -> Vec<CliUsageWindow> {
     let mut selected: Vec<CliUsageWindow> = Vec::new();
     for candidate in candidates {
-        match selected.iter_mut().find(|window| window.duration == candidate.duration) {
+        let is_argon = is_argon_window(&candidate);
+        match selected
+            .iter_mut()
+            .find(|window| is_argon_window(window) == is_argon && window.duration == candidate.duration)
+        {
             Some(existing) => {
                 let more_constrained = candidate.used_percent > existing.used_percent
                     || (candidate.used_percent == existing.used_percent
@@ -866,7 +874,11 @@ fn select_most_constrained_windows(candidates: Vec<CliUsageWindow>) -> Vec<CliUs
             None => selected.push(candidate),
         }
     }
-    selected.sort_by_key(|window| window.duration.unwrap_or(Span::MAX));
+    selected.sort_by(|a, b| {
+        is_argon_window(a)
+            .cmp(&is_argon_window(b))
+            .then_with(|| a.duration.unwrap_or(Span::MAX).cmp(&b.duration.unwrap_or(Span::MAX)))
+    });
     selected
 }
 

@@ -499,7 +499,13 @@ fn build_rows(descriptor: &CliDescriptor, snapshot: &CliUsageSnapshot) -> Vec<Bo
     let windows = &snapshot.windows;
     let mut labels: Vec<String> = windows
         .iter()
-        .map(|window| duration_label(window.duration).unwrap_or_else(|| clean_window_name(&window.name, descriptor)))
+        .map(|window| {
+            if window.name.to_ascii_lowercase().contains("argon") {
+                "Argon 每週".to_string()
+            } else {
+                duration_label(window.duration).unwrap_or_else(|| clean_window_name(&window.name, descriptor))
+            }
+        })
         .collect();
 
     // 期間長度相同的視窗（例如 Claude 的多個 7 天額度）光看期間分不出來，改用原始名稱區分。
@@ -580,7 +586,9 @@ pub fn clean_window_name(name: &str, descriptor: &CliDescriptor) -> String {
     let text = text.split(' ').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
 
     let lower = text.to_ascii_lowercase();
-    if lower.contains("five hour") {
+    if lower.contains("argon") {
+        "Argon 每週".to_string()
+    } else if lower.contains("five hour") {
         "5 小時".to_string()
     } else if lower.contains("weekly") {
         "每週".to_string()
@@ -614,6 +622,7 @@ mod tests {
         let agy = catalog::get(CliKind::Antigravity);
         assert_eq!(clean_window_name("Antigravity (Gemini)（Five Hour Limit Remaining）", agy), "5 小時");
         assert_eq!(clean_window_name("Antigravity (Gemini)（Weekly Limit Remaining）", agy), "每週");
+        assert_eq!(clean_window_name("Antigravity (Gemini)（Gemini 4 Argon Weekly Limit）", agy), "Argon 每週");
         assert_eq!(clean_window_name("  ", agy), "額度");
         let claude = catalog::get(CliKind::Claude);
         assert_eq!(clean_window_name("Claude Opus（7 天）", claude), "Opus 7 天");
