@@ -1,5 +1,16 @@
 # AI HANDOFF
 
+## 2026-10-17 Claude：專案健康檢查（僅檢查，未改程式）
+
+- Git：`main` 乾淨，與 `d6b6180` 同步；GitHub CI 最近一次（d6b6180）成功，前一次 b83fcf5 失敗已由後續提交修復。
+- 本機驗證（rustc 1.99.0，與 CI 釘選版本相同）：
+  - `cargo fmt --all -- --check`：通過。
+  - `cargo clippy --workspace --all-targets --locked -- -D warnings`：通過。
+  - `cargo test --workspace --locked`：28 通過、2 項 opt-in 依設計忽略、0 失敗。
+- 靜態掃描：無 TODO/FIXME；非測試程式的 `expect` 僅用於靜態 regex 編譯與目錄查表，`time::local_wall_clock` 的 `expect` 只有測試呼叫。
+- 待處理：`docs/FEATURE_VERIFICATION.md` 仍描述 C#/WinForms 與 `dotnet build` 驗證，與純 Rust 架構不符，需改寫或標示為歷史紀錄。
+- 未驗證：本次未重跑 `build-release.ps1`、`build-installer.ps1`、`tests/Verify-Installer.ps1`。
+
 ## 2026-10-16 Antigravity：專案全面改為純 Rust 語言架構（完成）
 
 - 使用者目標「整個專案改成純Rust語言」。
