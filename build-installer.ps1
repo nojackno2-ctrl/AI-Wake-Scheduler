@@ -1,12 +1,12 @@
-# =====================================================================
-# AI 倒數喚醒 (AI Wake Scheduler) - Windows 安裝包一鍵自動建置腳本
+﻿# =====================================================================
+# AI 倒數喚醒 (AI Wake Scheduler) - Windows 安裝包一鍵自動建置腳本 (Pure Rust)
 # =====================================================================
 
 [CmdletBinding()]
 param(
-    [string]$Configuration = "Release",
     [switch]$SkipTests = $false,
     [switch]$RunIntegrationTests = $false,
+    [switch]$VerificationBuild = $false,
     [string]$OutputDirectory = ""
 )
 
@@ -14,21 +14,25 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
-$projectFile = Join-Path $ScriptDir "src\AiWakeScheduler.WinForms\AiWakeScheduler.WinForms.csproj"
+$cargoToml = Join-Path $ScriptDir "Cargo.toml"
 $installerScript = (Get-ChildItem -Path (Join-Path $ScriptDir "installer") -Filter "*.iss" | Select-Object -First 1).FullName
-[xml]$projectXml = Get-Content -Raw -LiteralPath $projectFile
-$projectVersion = [string]$projectXml.Project.PropertyGroup.Version
+$cargoContent = Get-Content -Raw -LiteralPath $cargoToml
+$versionMatch = [regex]::Match($cargoContent, '(?m)^version\s*=\s*"([^"]+)"')
+if (-not $versionMatch.Success) {
+    throw "Cannot parse version from Cargo.toml."
+}
+$projectVersion = $versionMatch.Groups[1].Value
 $installerVersionMatch = [regex]::Match(
     (Get-Content -Raw -LiteralPath $installerScript),
     '(?m)#define\s+MyAppVersion\s+"([^"]+)"')
 if ([string]::IsNullOrWhiteSpace($projectVersion) -or
     -not $installerVersionMatch.Success -or
     $installerVersionMatch.Groups[1].Value -ne $projectVersion) {
-    throw "Version mismatch: csproj=$projectVersion, installer=$($installerVersionMatch.Groups[1].Value)."
+    throw "Version mismatch: Cargo.toml=$projectVersion, installer=$($installerVersionMatch.Groups[1].Value)."
 }
 
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host "  AI Wake Scheduler - Building Windows Setup.exe" -ForegroundColor Cyan
+Write-Host "  AI Wake Scheduler - Building Windows Setup.exe (Rust)" -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan
 
 # 1. Locate Inno Setup compiler
@@ -63,21 +67,16 @@ Write-Host "[1/5] Inno Setup compiler found: $isccPath" -ForegroundColor Green
 
 # 2. Run tests
 if (-not $SkipTests) {
-    Write-Host "[2/5] Running deterministic tests..." -ForegroundColor Yellow
-    & dotnet run --project tests/AiWakeScheduler.Tests/AiWakeScheduler.Tests.csproj -c $Configuration
+    Write-Host "[2/5] Running deterministic Rust tests..." -ForegroundColor Yellow
+    & cargo test --workspace --locked
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Unit tests failed, build aborted."
+        Write-Error "Cargo tests failed, build aborted."
         exit $LASTEXITCODE
     }
     Write-Host "      Deterministic tests passed!" -ForegroundColor Green
-    $uiTestDir = Join-Path $ScriptDir "bin\verification-tests"
-    & dotnet publish tests/AiWakeScheduler.WinForms.Tests/AiWakeScheduler.WinForms.Tests.csproj -c $Configuration -r win-x64 --self-contained true -o $uiTestDir
-    if ($LASTEXITCODE -ne 0) { throw "WinForms test publish failed." }
-    & (Join-Path $uiTestDir "AiWakeScheduler.WinForms.Tests.exe")
-    if ($LASTEXITCODE -ne 0) { throw "WinForms tests failed." }
     if ($RunIntegrationTests) {
         Write-Host "      Running integration tests..." -ForegroundColor Yellow
-        & dotnet run --project tests/AiWakeScheduler.Tests/AiWakeScheduler.Tests.csproj -c $Configuration -- --integration
+        & cargo test -p aiwake-core --locked -- --ignored executable_locator_resolution
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Integration tests failed, build aborted."
             exit $LASTEXITCODE
@@ -87,50 +86,51 @@ if (-not $SkipTests) {
     Write-Host "[2/5] Skipping tests (SkipTests is active)" -ForegroundColor DarkGray
 }
 
-# 3. Publish Self-Contained Win-x64
-$publishDir = Join-Path $ScriptDir "bin\publish-selfcontained"
+# 3. Build release Rust binary
+$publishDir = Join-Path $ScriptDir "bin\publish-release"
 
-Write-Host "[3/5] Publishing Self-Contained Win-x64 binaries..." -ForegroundColor Yellow
-& dotnet publish src/AiWakeScheduler.WinForms/AiWakeScheduler.WinForms.csproj `
-    -c $Configuration `
-    -r win-x64 `
-    --self-contained true `
-    -p:PublishSingleFile=false `
-    -o $publishDir
+Write-Host "[3/5] Building release Rust binary..." -ForegroundColor Yellow
+& cargo build --release --locked -p aiwake-app
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "dotnet publish failed, build aborted."
+    Write-Error "cargo build failed, build aborted."
     exit $LASTEXITCODE
 }
-Write-Host "      Publish completed: $publishDir" -ForegroundColor Green
 
-$icoSource = Join-Path $ScriptDir "assets\app.ico"
-$icoDest = Join-Path $publishDir "app.ico"
-if ((Test-Path $icoSource) -and (-not (Test-Path $icoDest))) {
-    Copy-Item $icoSource $icoDest -Force
+if (Test-Path $publishDir) {
+    Remove-Item -Recurse -Force $publishDir
 }
+New-Item -ItemType Directory -Path $publishDir -Force | Out-Null
+$exeSource = Join-Path $ScriptDir "target\release\ai-wake-scheduler.exe"
+$exeDest = Join-Path $publishDir "AI倒數喚醒.exe"
+Copy-Item $exeSource $exeDest -Force
+Write-Host "      Release binary ready: $exeDest" -ForegroundColor Green
 
 # 4. Preserve existing installer outputs
 $distDir = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { Join-Path $ScriptDir "dist" } else { [IO.Path]::GetFullPath($OutputDirectory) }
 if (-not (Test-Path $distDir)) {
     New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 }
-$outputName = "AI倒數喚醒_Setup_v${projectVersion}_x64_$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$outputPrefix = if ($VerificationBuild) { "AI倒數喚醒_QA_Setup" } else { "AI倒數喚醒_Setup" }
+$outputName = "${outputPrefix}_v${projectVersion}_x64_$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
 # 5. Run Inno Setup Compiler
 $issScript = $installerScript
 Write-Host "[4/5] Compiling installer with Inno Setup..." -ForegroundColor Yellow
 
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = $isccPath
-$psi.Arguments = "/Q /O`"$distDir`" /F$outputName `"$issScript`""
-$psi.UseShellExecute = $false
-$psi.CreateNoWindow = $true
-$p = [System.Diagnostics.Process]::Start($psi)
-$p.WaitForExit()
-$exitCode = $p.ExitCode
-$p.Dispose()
+$isccArgs = @(
+    "/Q",
+    "/O$distDir",
+    "/F$outputName",
+    "/DPublishDir=$publishDir"
+)
+if ($VerificationBuild) {
+    $isccArgs += "/DVerificationBuild"
+}
+$isccArgs += $issScript
 
+& $isccPath @isccArgs
+$exitCode = $LASTEXITCODE
 if ($exitCode -ne 0) {
     Write-Error "Inno Setup compilation failed with exit code: $exitCode"
     exit $exitCode

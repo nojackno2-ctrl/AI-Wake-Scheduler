@@ -1,12 +1,12 @@
 # AI 倒數喚醒 (AI Wake Scheduler)
 
-[![.NET 8.0](https://img.shields.io/badge/.NET-8.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![Rust](https://img.shields.io/badge/Rust-2021-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com/windows)
-[![UI](https://img.shields.io/badge/UI-WinForms%20(Native)-blue)](https://learn.microsoft.com/dotnet/desktop/winforms/)
-[![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20NuGet-success)](#)
+[![UI](https://img.shields.io/badge/UI-Win32%20(Native)-blue)](#)
+[![Dependencies](https://img.shields.io/badge/Dependencies-Zero%20Runtime-success)](#)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](#)
 
-一個專為 AI 輔助開發者設計的 Windows 輕量排程工具。
+一個專為 AI 輔助開發者設計的 Windows 輕量排程工具，以純 Rust 語言與原生 Win32 API 打造。
 
 許多 AI 開發工具（如 Google Antigravity、Anthropic Claude Code、OpenAI Codex）採用**滾動時間窗口額度機制**（例如「5 小時重設窗口」，自發送第一次請求起算）。本工具可在每天指定的固定時間，自動向各大 AI CLI 發送極簡短語（預設為「早安」），自動觸發並啟動使用額度倒數，確保你在開始工作時，AI 的使用額度已經準備就緒。
 
@@ -23,10 +23,10 @@
   - 啟用 Codex 唯讀沙箱（`--sandbox read-only`）。
   - 隔離於空白專用工作區（`%LOCALAPPDATA%\AI倒數喚醒\workspace`），避免掃描本機龐大原始碼目錄。
   - 自動附加限制指令（「只回覆上面這句，不要使用工具」），將 Token 消耗降至極限。
-- 🛡️ **安全無注入設計**：透過 .NET 原生 `ProcessStartInfo.ArgumentList` 結構化傳遞參數，杜絕 Shell 注入與跳脫字元問題。
+- 🛡️ **安全無注入設計**：透過安全結構化傳遞參數，杜絕 Shell 注入與跳脫字元問題。
 - 🔍 **無損安全檢查**：提供「檢查全部 CLI」功能，僅執行 `--version` 探針檢查，絕不送出 AI 訊息或消耗對話額度。
-- 🪟 **輕量背景常駐與開機自啟**：原生 Windows Forms 打造，關閉主視窗時自動縮至系統匣（System Tray）持續倒數；支援登入 Windows 自動啟動。
-- 📦 **零外部 NuGet 相依**：100% 依賴 .NET 8 原生基礎類別庫（BCL），無任何第三方套件負擔，編譯乾淨且維護容易。
+- 🪟 **輕量背景常駐與開機自啟**：純 Rust 與原生 Win32 控制項打造，關閉主視窗時自動縮至系統匣（System Tray）持續倒數；支援登入 Windows 自動啟動。
+- 📦 **零外部執行階段相依**：100% 純 Rust 編譯為原生單一執行檔（約 2 MB），不需要安裝 .NET Runtime 或其他依賴，啟動速度極快且記憶體佔用極低。
 - 📜 **完整日誌追蹤**：完整留存每次執行的 stdout、stderr、結束代碼與錯誤記錄，排查問題一目了然。
 
 ---
@@ -35,15 +35,15 @@
 
 | AI 工具 / 額度池 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
 | :--- | :--- | :--- | :--- |
-| **Antigravity (Gemini)** | `agy` | `agy --model gemini-3.8-flash --effort low --disable-slash-commands --mode plan --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
-| **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-5-5-low --disable-slash-commands --mode plan --print <提示>` | 明確選擇 Claude 額度池；完整模型 ID 已包含 Low 思考程度，因此不另傳 `--effort` |
+| **Antigravity (Gemini)** | `agy` | `agy --model gemini-3.8-flash --effort low --disable-slash-commands --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
+| **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-5-5-low --disable-slash-commands --print <提示>` | 明確選擇 Claude 額度池；完整模型 ID 已包含 Low 思考程度，因此不另傳 `--effort` |
 | **OpenAI Codex** | `codex` | `codex exec --model gpt-6-luna --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
 | **Anthropic Claude** | `claude` | `claude --print --model claude-haiku-4-5-20251001 --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
 
 預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 4.5；AGY Claude 池使用 Sonnet 5.5 Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
 
 > [!TIP]
-> Google Antigravity 內部將額度切分為 **Gemini Models** 與 **Claude and GPT models** 兩組獨立計數器。勾選本工具中的這兩項目標，可同時喚醒兩邊的 5 小時滾動重設窗口！
+> Google Antigravity 內部將額度切分為 **Gemini Models**、**Claude and GPT models** 與 **Gemini 4 Argon** 等獨立計數器。勾選本工具中的這兩項目標，可同時喚醒兩邊的 5 小時滾動重設窗口！
 > 實際執行時，使用者訊息會以安全參數傳入，每個排程與每個 CLI 僅呼叫一次且失敗不自動重試，最大字數限制為 50 字元。
 
 ---
@@ -53,13 +53,13 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 [Releases](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/latest) 下載 **`AI-Wake-Scheduler_Setup_v1.10.0_x64.exe`**；`SHA256SUMS.txt` 提供校驗碼。
+1. 前往 [Releases](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/latest) 下載 **`AI倒數喚醒_Setup_v1.10.0_x64.exe`**；`SHA256SUMS.txt` 提供校驗碼。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
-4. 安裝版已內建完整獨立執行環境（Self-Contained），你的電腦**無須預先安裝 .NET 8 Runtime** 即可直接運行。
+4. 安裝版體積僅約 2.3 MB，原生獨立執行，電腦**無須預先安裝任何執行環境（如 .NET Runtime）**即可直接運行。
 
 #### 方法 B：綠色免安裝版 / 自行編譯
-- 下載 **`AI-Wake-Scheduler_Portable_v1.10.0_win-x64.zip`**，完整解壓縮後執行 `AI倒數喚醒.exe`；此版本內建 .NET 執行環境。也可從原始碼建置。
+- 下載或自行建置 `AI倒數喚醒.exe`，直接執行即可；為單一原生 Windows 執行檔，免安裝任何額外套件。
 
 ### 2. 初次設定與 CLI 檢查
 1. 點擊主畫面右下角的 **「CLI 設定…」** 按鈕。
@@ -67,8 +67,8 @@
 3. 若你的 CLI 安裝於特殊路徑（例如透過 npm、專屬安裝目錄等），可點擊 **「瀏覽…」** 自訂 `.exe` 完整路徑。
 4. （可選）勾選 **「登入 Windows 後自動啟動」**，確保開機或重啟後仍能在背景常駐。
 5. （可選）**「允許在背景無視窗查詢 Antigravity 額度（不需開啟 IDE）」**（預設開啟）：
-   透過新版 `agy --output-format json --print /usage` 內建指令讀取兩個額度池的五小時與每週倒數。
-   已於 agy 1.2.16 驗證為 0 模型回合、0 Token；讀完程序立即結束，沒有視窗。
+   透過新版 `agy --output-format json --print /usage` 內建指令讀取額度池的五小時與每週倒數。
+   已於 agy 驗證為 0 模型回合、0 Token；讀完程序立即結束，沒有視窗。
    關閉此選項時只查詢已啟動的 Antigravity IDE。
 6. 點擊 **「儲存」**。
 
@@ -85,7 +85,7 @@
 
 ### 4. 測試與常駐
 - 可選取排程並點擊 **「立即執行」** 進行手動測試（不會跳過或影響原定的下一次每日排程時間）。
-- 主畫面「剩餘流量與重置倒數」支援 Codex、Claude CLI、Antigravity (Gemini) 與 Antigravity (Claude / GPT) 即時額度查詢，在開啟時自動讀取，也可按 **「重新讀取額度」** 手動更新；本地每秒精準倒數。Claude CLI 必須先以 `claude auth login` 登入 Claude 訂閱帳號，程式只讀取本機短效 access token，不會輸出或記錄權杖，也不會為了查額度建立模型回合。
+- 主畫面「剩餘流量與重置倒數」支援 Codex、Claude CLI、Antigravity (Gemini) 與 Antigravity (Claude / GPT) 即時額度查詢，在開啟時自動讀取，也可按 **「重新讀取倒數」** 手動更新；本地每秒精準倒數。Claude CLI 必須先以 `claude auth login` 登入 Claude 訂閱帳號，程式只讀取本機短效 access token，不會輸出或記錄權杖，也不會為了查額度建立模型回合。
 - 點擊視窗右上角關閉按鈕，程式會自動最小化並縮至 Windows 右下角系統匣持續監控。
 - 雙擊系統匣圖示或右鍵選擇「開啟主視窗」即可還原主畫面。
 
@@ -95,105 +95,68 @@
 
 ### 系統需求
 - **作業系統**：Windows 10 / 11
-- **開發工具**：Visual Studio 2022（需勾選「.NET 桌面開發」工作負載）或 [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- **安裝包編譯工具（選用）**：[Inno Setup 6](https://jrsoftware.org/isinfo.php)（如需產出 Setup.exe）
+- **開發工具**：[Rust](https://rustup.rs/) stable（CI 固定使用 1.99.0）與 Visual Studio 的「使用 C++ 的桌面開發」工作負載（提供 MSVC 連結器與 Windows SDK 的資源編譯器）。
+- **安裝包編譯工具（選用）**：[Inno Setup 6](https://jrsoftware.org/isinfo.php)（如需編譯 Setup.exe 安裝程式）。
 
 ### 專案結構
 ```
 AI倒數喚醒/
-├── AI倒數喚醒.sln                # Visual Studio 方案檔
-├── Directory.Build.props         # 專案共用建置設定
-├── build-installer.ps1           # 一鍵自動測試、發布與編譯安裝包腳本
-├── assets/                       # 應用程式高解析度圖示 (app.ico)
-├── installer/                    # Inno Setup 6 繁中安裝腳本與語系檔
-├── src/
-│   ├── AiWakeScheduler.Core/     # 核心邏輯庫（排程引擎、CLI 執行器、參數建構器、JSON 儲存）
-│   └── AiWakeScheduler.WinForms/ # Windows Forms 繁體中文桌面使用者介面
+├── Cargo.toml                # Cargo Workspace 設定
+├── Cargo.lock
+├── rustfmt.toml              # 程式碼格式化規則
+├── build-release.ps1         # 測試並建置 Release 執行檔（dist\AI倒數喚醒.exe）
+├── build-installer.ps1       # 一鍵自動測試、建置與編譯 Inno Setup 安裝包腳本
+├── assets/                   # 應用程式高解析度圖示 (app.ico)
+├── installer/                # Inno Setup 6 繁中安裝腳本與語系檔
+├── core/                     # crate aiwake-core：排程引擎、CLI 執行、TokenSaver 參數、WinHTTP 額度讀取
+├── app/                      # crate aiwake-app：原生 Win32 控制項介面、RichEdit 終端機、系統匣、Run key 啟動
 └── tests/
-    ├── AiWakeScheduler.Tests/    # 核心與 CLI 整合測試（0 NuGet 相依）
-    └── AiWakeScheduler.WinForms.Tests/ # 視窗事件、設定、系統匣與終端輸出測試
+    └── Verify-Installer.ps1  # 安裝程式完整生命週期驗證腳本
 ```
 
 ### 命令列建置與測試
 
-**建置專案 (Release 模式)：**
-```powershell
-dotnet build '.\AI倒數喚醒.sln' --configuration Release
-```
-
 **執行測試套件：**
 ```powershell
-dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release
+cargo test --workspace --locked
 ```
+預設測試包含：
+- 核心單元測試（排程計算、Token 節省參數建構、JSON 持久化相容、適應性倒數）。
+- App 畫面元件文字與格式測試。
+- 啟動真正編譯產物並透過 Win32 視窗訊息驗證的**端對端 UI 測試**（使用隔離暫存資料與假 CLI，不影響本機設定與 Run key）。
 
-預設測試完全不依賴本機 CLI 或登入狀態，可在 CI 與隔離環境重現。若要額外驗證本機已安裝的 AGY、Codex、Claude 以及登入額度介面，請明確選用整合測試：
-
+**本機真實 CLI 整合測試（選用）：**
 ```powershell
-dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release -- --integration
+cargo test -p aiwake-core --locked -- --ignored executable_locator_resolution   # 唯讀：--version 與額度查詢，不消耗 Token
+cargo test -p aiwake-core --locked -- --ignored real_cli_wake_smoke             # 會各送出一次最小提示詞，消耗少量 Token
 ```
 
-**Windows 視窗測試（不需要另裝 Desktop Runtime）：**
+**建置發行版執行檔：**
 ```powershell
-dotnet publish '.\tests\AiWakeScheduler.WinForms.Tests\AiWakeScheduler.WinForms.Tests.csproj' -c Release -r win-x64 --self-contained true -o '.\bin\verification-tests'
-& '.\bin\verification-tests\AiWakeScheduler.WinForms.Tests.exe'
+powershell -ExecutionPolicy Bypass -File .\build-release.ps1
 ```
-預設使用暫存資料驗證設定、排程編輯、系統匣與輸出，不更改正式排程或 Windows 啟動項目。另加 `--startup-integration` 才會暫時測試真實開機啟動鍵並還原；已有舊版工作或啟動捷徑時拒絕執行此測試。
-主程式的 `--verify-ui` 可開啟獨立暫存資料與 mutex 的人工檢查視窗，不變更 Windows 啟動項目。
-
-要實際驗證四個目標模型喚醒，可使用以下測試（會各送出一次最小 OK 提示詞，消耗少量 Token）：
-
-```powershell
-dotnet run --project '.\tests\AiWakeScheduler.Tests\AiWakeScheduler.Tests.csproj' --configuration Release -- --wake-smoke
-```
+產出單一原生執行檔於 `dist\AI倒數喚醒.exe`（附 SHA256 校驗碼）。
 
 **一鍵打包 Windows 安裝版 (Setup.exe)：**
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.10.0_x64_<時間戳>.exe`，並附獨立 `.sha256`；保留之前的安裝包。可用 `-OutputDirectory <路徑>` 指定測試產物目錄。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.10.0_x64_<時間戳>.exe`，並附獨立 `.sha256`。
 
-**安裝生命週期驗證（會建立 Windows 安裝登錄與捷徑）：**
-
-先完成上述自包含輸出，再以 Inno Setup 編譯器加 `/DVerificationBuild` 編譯 `installer\AI倒數喚醒.iss`。此模式使用獨立 QA 名稱、AppId、啟動鍵及 `--verify-ui` 捷徑。
-
+**安裝生命週期驗證（可選）：**
 ```powershell
-./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase Install
-./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase UpgradeKeepStartup
-./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase UpgradeDisableStartup
-./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase UpgradeEnableStartup
-./tests/Verify-Installer.ps1 -SetupPath '<QA 安裝包完整路徑>' -Phase Uninstall
+# 1. 建置 QA 專用安裝包（使用獨立 AppId、捷徑與 Run key）
+powershell -ExecutionPolicy Bypass -File .\build-installer.ps1 -VerificationBuild -OutputDirectory bin\verification-installer
+
+# 2. 執行五階段驗證（Install -> UpgradeKeepStartup -> UpgradeDisableStartup -> UpgradeEnableStartup -> Uninstall）
+$qa = (Get-ChildItem -Path bin\verification-installer\*QA*.exe | Sort-Object LastWriteTime | Select-Object -Last 1).FullName
+powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath $qa -Phase Install
+powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath $qa -Phase UpgradeKeepStartup
+powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath $qa -Phase UpgradeDisableStartup
+powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath $qa -Phase UpgradeEnableStartup
+powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath $qa -Phase Uninstall
 ```
-
-腳本拒絕正式安裝包，固定安裝於 `bin\verification-installed`，每階段比對正式設定、排程與啟動鍵是否維持原值。實際驗證結果與未驗證範圍見 [功能驗證紀錄](docs/FEATURE_VERIFICATION.md)。
-
-### Rust 版（`rust/`）
-
-程式已另以 Rust 改寫，與上述 C# 版並存：`rust/core` 是核心邏輯（排程、CLI 執行、額度讀取），`rust/app` 是以原生 Win32 控制項實作的桌面程式。兩個版本使用相同的資料目錄、資料檔格式、單一執行個體鎖與開機啟動登錄值，因此**不能同時執行**，但可以互相接手既有的設定與排程。目前的安裝包仍打包 C# 版。
-
-- **開發工具**：[Rust](https://rustup.rs/) stable（CI 使用 1.99.0）與 Visual Studio 的「使用 C++ 的桌面開發」工作負載（提供 MSVC 連結器與 Windows SDK 的資源編譯器）。
-- **相依套件**：`serde_json`、`chrono`、`regex`、`windows`；HTTP 使用系統內建的 WinHTTP，沒有 async runtime。建置時另用 `winresource` 嵌入圖示與資訊清單。
-
-```
-rust/
-├── Cargo.toml              # workspace
-├── build-release.ps1       # 測試後建置 release，輸出 dist\rust\AI倒數喚醒.exe
-├── core/                   # crate aiwake-core：核心邏輯與測試
-└── app/                    # crate aiwake-app：Win32 主視窗、設定對話框、系統匣
-```
-
-```powershell
-cd rust
-cargo test --workspace          # 核心測試、畫面文字格式測試，以及啟動真正執行檔的端對端 UI 測試
-cargo build --release           # 產出 target\release\ai-wake-scheduler.exe（單一執行檔，免安裝執行階段）
-.\build-release.ps1             # 測試 + release 建置，並複製成 dist\rust\AI倒數喚醒.exe
-```
-
-端對端 UI 測試會以 `--verify-ui` 啟動程式（獨立暫存資料與 mutex，不變更 Windows 啟動項目），並把四個 CLI 指向假的批次檔，不會呼叫真正的 CLI；啟動時的額度看板仍會做一次唯讀的額度查詢。需要本機 CLI 與登入狀態的測試要明確選用：
-
-```powershell
-cargo test -p aiwake-core -- --ignored executable_locator_resolution   # 唯讀：--version 與額度查詢，不消耗 Token
-cargo test -p aiwake-core -- --ignored real_cli_wake_smoke             # 會各送出一次最小提示詞，消耗少量 Token
-```
+驗證腳本嚴格限制安裝路徑於 `bin\verification-installed`，每階段自動比對本機正式設定檔、排程檔與 Run key baseline，確保完全不變動正式環境資料。
 
 ---
 

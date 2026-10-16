@@ -28,38 +28,6 @@ jobs:
           persist-credentials: false
       - name: Set time zone
         run: tzutil /s "${{ matrix.timezone }}"
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
-      - run: dotnet restore AI倒數喚醒.sln
-      - run: dotnet build AI倒數喚醒.sln -c Release --no-restore
-      - name: Core tests
-        run: dotnet run --project tests/AiWakeScheduler.Tests -c Release --no-build
-      - name: WinForms tests
-        run: dotnet run --project tests/AiWakeScheduler.WinForms.Tests -c Release --no-build
-
-  rust-build-and-test:
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # The Rust port follows the same rule: schedule logic must not depend on the machine's time zone.
-        timezone:
-          - UTC
-          - Taipei Standard Time
-          - India Standard Time
-          - Pacific Standard Time
-          - AUS Eastern Standard Time
-    name: rust-build-and-test (${{ matrix.timezone }})
-    defaults:
-      run:
-        working-directory: rust
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Set time zone
-        run: tzutil /s "${{ matrix.timezone }}"
       # Pin the toolchain so a newer clippy cannot turn the lint gate red on its own.
       - name: Install Rust toolchain
         run: |
@@ -72,7 +40,5 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Build
         run: cargo build --workspace --locked
-      - name: Core tests
-        run: cargo test -p aiwake-core --locked
-      - name: App tests
-        run: cargo test -p aiwake-app --locked
+      - name: Test
+        run: cargo test --workspace --locked

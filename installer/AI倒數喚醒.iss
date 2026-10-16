@@ -23,7 +23,7 @@
   #define ShortcutArguments ""
 #endif
 #ifndef PublishDir
-  #define PublishDir "..\bin\publish-selfcontained"
+  #define PublishDir "..\bin\publish-release"
 #endif
 
 [Setup]

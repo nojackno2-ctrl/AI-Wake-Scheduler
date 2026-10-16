@@ -8,7 +8,7 @@
 #>
 param(
     [switch]$SkipTests,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\dist\rust')
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'dist')
 )
 
 $ErrorActionPreference = 'Stop'

@@ -2,10 +2,10 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=app.manifest");
-    println!("cargo:rerun-if-changed=../../assets/app.ico");
+    println!("cargo:rerun-if-changed=../assets/app.ico");
 
     let mut resource = winresource::WindowsResource::new();
-    resource.set_icon("../../assets/app.ico");
+    resource.set_icon("../assets/app.ico");
     resource.set_manifest_file("app.manifest");
     resource.set_language(0x0404);
     resource.set("ProductName", "AI 倒數喚醒");

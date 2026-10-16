@@ -1,11 +1,5 @@
-bin/
-obj/
-.vs/
+/target/
+/bin/
+/dist/
 *.user
 *.suo
-TestResults/
-dist/
-
-
-# Rust
-rust/target/

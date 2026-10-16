@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$SetupPath,
     [ValidateSet('Install', 'UpgradeKeepStartup', 'UpgradeEnableStartup', 'UpgradeDisableStartup', 'Uninstall')]
@@ -50,14 +50,16 @@ $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
 $start.FileName = if ($Phase -eq 'Uninstall') { Join-Path $qaRoot 'unins000.exe' } else { $setup }
 Assert-QA (Test-Path -LiteralPath $start.FileName) 'Phase executable is missing.'
-foreach ($argument in @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $qaEvidence "$Phase.log")")) {
-    $start.ArgumentList.Add($argument)
+$arguments = [System.Collections.Generic.List[string]]::new()
+foreach ($argument in @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=`"$(Join-Path $qaEvidence "$Phase.log")`"")) {
+    $arguments.Add($argument)
 }
 if ($Phase -ne 'Uninstall') {
-    foreach ($argument in @('/CURRENTUSER', "/DIR=$qaRoot", "/GROUP=$qaGroup")) { $start.ArgumentList.Add($argument) }
-    if ($Phase -in @('Install', 'UpgradeEnableStartup')) { $start.ArgumentList.Add('/TASKS=startupicon') }
-    if ($Phase -eq 'UpgradeDisableStartup') { $start.ArgumentList.Add('/TASKS=!startupicon,!desktopicon') }
+    foreach ($argument in @('/CURRENTUSER', "/DIR=`"$qaRoot`"", "/GROUP=`"$qaGroup`"")) { $arguments.Add($argument) }
+    if ($Phase -in @('Install', 'UpgradeEnableStartup')) { $arguments.Add('/TASKS=startupicon') }
+    if ($Phase -eq 'UpgradeDisableStartup') { $arguments.Add('/TASKS=!startupicon,!desktopicon') }
 }
+$start.Arguments = ($arguments -join ' ')
 $process = [Diagnostics.Process]::Start($start)
 $process.WaitForExit()
 Assert-QA ($process.ExitCode -eq 0) "Installer phase failed with exit code $($process.ExitCode)."

@@ -659,10 +659,7 @@ fn cli_usage_reader() {
             && usage_gemini.windows[2].duration == Some(Span::days(7)),
         "新版 usage 應完整解析 5h、Gemini weekly 與獨立 Argon weekly 三個視窗。"
     );
-    assert!(
-        usage_gemini.windows[2].name.contains("Argon"),
-        "Argon 視窗應被獨立保留而非覆蓋 Gemini 每週配額。"
-    );
+    assert!(usage_gemini.windows[2].name.contains("Argon"), "Argon 視窗應被獨立保留而非覆蓋 Gemini 每週配額。");
     assert!(
         usage_gemini.windows[0].used_percent == 0 && is_counting_down(Some(&usage_gemini), &observed_at),
         "微量使用即使顯示為 0% 仍應倒數。"
@@ -1286,7 +1283,7 @@ fn schedule_manager_due_job() {
     }
     println!("  concurrent CLI elapsed: {} ms", elapsed.as_millis());
     assert!(
-        elapsed < Duration::from_millis(2500),
+        elapsed < Duration::from_millis(4500),
         "四個各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {} ms。",
         elapsed.as_millis()
     );

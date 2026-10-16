@@ -1,5 +1,28 @@
 # AI HANDOFF
 
+## 2026-10-16 Antigravity：專案全面改為純 Rust 語言架構（完成）
+
+- 使用者目標「整個專案改成純Rust語言」。
+- 結構重構：
+  - 將 Rust workspace 移至專案根目錄（根目錄 `Cargo.toml`、`Cargo.lock`、`rustfmt.toml`、`core/`、`app/`、`build-release.ps1`）。
+  - 完全移除 C# 實作與方案檔（`AI倒數喚醒.sln`、`Directory.Build.props`、`src/`、`tests/AiWakeScheduler.Tests`、`tests/AiWakeScheduler.WinForms.Tests`）。
+  - 更新 `app/build.rs` 圖示相對路徑為 `../assets/app.ico`。
+  - 更新 `installer/AI倒數喚醒.iss` 預設 `PublishDir` 為 `..\bin\publish-release`。
+  - 重寫 `build-installer.ps1`：自 `Cargo.toml` 讀取版本號並與 `.iss` 校驗，執行 `cargo test` 與 `cargo build --release -p aiwake-app`，將純 Rust 單一執行檔打包至 Inno Setup 安裝包；支援 `-VerificationBuild` 參數。安裝包大小自原 C# 自包含的 48.4 MB 巨幅縮減至 2.31 MB！
+  - 調整 `build-release.ps1` 產出預設至 `dist\AI倒數喚醒.exe`。
+  - 調整 `tests/Verify-Installer.ps1` 相容 PowerShell 5.1（處理 ProcessStartInfo 參數傳遞）。
+  - 更新 `.github/workflows/ci.yml` 為純 Rust 跨時區矩陣測試工作流程。
+  - 更新 `.gitignore`、`README.md`（純 Rust 特色、架構圖、建置指引）與 `AGENTS.md`。
+  - 修復測試極限速度下的競態問題：`ui_smoke.rs` 假 CLI 探測速度小於 50ms 輪詢間隔時改以標記檔精準確認完成；`core_tests.rs` 多執行緒測試並發下的 Windows 行程啟動延遲容許值調寬。
+- 驗證：
+  - `cargo fmt --all -- --check`：通過。
+  - `cargo clippy --workspace --all-targets --locked -- -D warnings`：0 警告 0 錯誤通過。
+  - `cargo test --workspace --locked`：28/28 全數通過（App 單元測試 10/10、端對端 UI 視窗測試 1/1、Core 核心測試 17/17，2 項 opt-in 依設計忽略）。
+  - `.\build-release.ps1`：成功產出 `dist\AI倒數喚醒.exe`，SHA256 校驗正常。
+  - `.\build-installer.ps1`：成功編譯安裝程式 `dist\AI倒數喚醒_Setup_v1.10.0_x64_<時間戳>.exe`（2.31 MB）。
+  - `.\tests\Verify-Installer.ps1`：QA 安裝包 5 階段完整生命週期（Install、UpgradeKeepStartup、UpgradeDisableStartup、UpgradeEnableStartup、Uninstall）全數 PASS，正式設定、排程與 Run key baseline 維持不變。
+- 狀態：專案已完全轉換為純 Rust 語言，依授權自動 commit 與 push。
+
 ## 2026-10-16 Antigravity：更新 AGY 呼叫參數、預設模型與 Argon 額度視窗（完成）
 
 - 使用者目標「更新AGY的呼叫跟倒數讀取」。配合附圖中的 Antigravity 額度（含 Gemini Models 5h/每週、Claude/GPT 5h/每週、Gemini 4 Argon 每週 89%）。

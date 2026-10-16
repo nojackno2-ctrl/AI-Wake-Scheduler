@@ -359,9 +359,11 @@ fn main_window_editor_settings_and_tray() {
     set_text(control(content, settings::ID_TIMEOUT), "7");
     // 把四個 CLI 都指向假的批次檔，之後的「立即執行」才不會呼叫真正的 CLI。
     let fake_cli = data_directory.join("fake-cli.cmd");
+    let probe_marker = data_directory.join("fake-cli-probed.txt");
     std::fs::write(
         &fake_cli,
         "@echo off
+echo PROBED >> \"%~dp0fake-cli-probed.txt\"
 echo FAKE-CLI-OK
 ",
     )
@@ -373,8 +375,7 @@ echo FAKE-CLI-OK
     // 連線檢查：對輸入框中的（假）CLI 執行 --version，結束後按鈕恢復可用。
     let probe = control(content, settings::ID_PROBE);
     notify(content, settings::ID_PROBE, BN_CLICKED);
-    wait_until("連線檢查開始", short, || !is_enabled(probe));
-    wait_until("連線檢查結束", long, || is_enabled(probe));
+    wait_until("連線檢查完成", long, || probe_marker.is_file() && is_enabled(probe));
     screenshot(dialog, "03b-settings-probed");
 
     notify(dialog, settings::ID_OK, BN_CLICKED);

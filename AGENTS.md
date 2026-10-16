@@ -5,7 +5,7 @@
 - 不得覆蓋或捨棄使用者及其他代理人的未提交變更。
 - 未經明確授權，不得進行破壞性操作（force-push、merge、rebase、reset、刪除分支或發布版本）；完成任務驗證後自動 commit 與 push 已獲授權（詳見後文）。
 - 未實際執行驗證前，不得宣稱建置、測試或功能成功。
-- 專案以繁體中文 UI、Visual Studio 可直接開啟、無額外 NuGet 相依為優先。
+- 專案以繁體中文 UI、純 Rust 語言（Cargo workspace、原生 Win32 API 控制項）、零額外執行階段依賴為優先。
 
 ## Automatic commits and push to GitHub (user authorization, 2026-10-14)
 
