@@ -26,3 +26,5 @@
 - 執行檔與安裝程式版本資訊皆為 2.0.0；免安裝 ZIP 內的執行檔與建置產物 SHA256 相同。
 
 未實測：以真正的 v1.10.0 安裝版直接升級（清理規則以模擬殘留檔驗證）、Windows 重開機後自動啟動、真實系統匣通知外觀、Argon 以外各 CLI 在 v2.0.0 的真實喚醒。
+
+已發布：[v2.0.0](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v2.0.0)（2026-10-17，Latest）。標籤與執行檔來源：85e9e79feae831240c71941ee8c077a46b9915f2，該提交 CI 五時區通過。GitHub 三項資產的官方 SHA256 digest 與本機一致；重新下載後 `sha256sum -c SHA256SUMS.txt` 兩項 OK。
