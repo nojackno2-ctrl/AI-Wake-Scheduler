@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-10-17 Codex：Rust／發布稽核（程式唯讀）
+
+- 稽核子任務未 commit/push/merge/刪分支/tag/publish/改程式；父代理負責依使用者授權提交最終紀錄；開始工作樹乾淨。`fetch origin`（不 prune）成功，實際遠端僅 main，HEAD/origin=`15f0220bf93b95d2af4840ba32403d02fff5d5df`，無分支待合併。
+- 最新正式 Release API=v2.0.0，現存 annotated tag peel=`85e9e79feae831240c71941ee8c077a46b9915f2`。tag..HEAD 僅 AI_HANDOFF.md、docs/RELEASE_v2.0.0.md 兩份文件；沒有新增 executable code，建議維持 v2.0.0，無須為本輪稽核重發版。
+- gh CI：HEAD run 38988237514、release commit run 38988000420 均 success；HEAD UTC/Taipei/India/Pacific/AUS Eastern 五 job 全成功。
+- 本輪 Windows Rust 1.99.0：`cargo fmt --all -- --check` exit 0；`cargo clippy --workspace --all-targets --locked --offline -- -D warnings` exit 0；`cargo test --workspace --locked --offline` 28 pass（app10/UI1/core17）、3 opt-in ignored、0 fail；`cargo build --release --locked --offline -p aiwake-app` exit 0。未跑真實 CLI、安裝、重開機測試。
+- 三項遠端資產已全部重新下載至 `dist/audit-rust-2026-10-17`；SHA256 與 API digest/校驗檔完全一致。ZIP 僅 EXE+LICENSE，EXE 1,798,144 bytes、2.0.0，SHA256=F7E98974C3CC2198C09131E2266050A190B237DFF36BC799604E441D18F36CF8，與本輪本機 Release 產物相同。詳見 `D:/Github/audit-rust-2026-10-17.md`；Rust workspace/core/app 已取代追蹤中的 C#，仍依賴 Windows API 與外部已登入 CLI，不能宣稱跨平台。
+
 ## 2026-10-17 Claude：發布 v2.0.0（完成）
 
 - 使用者要求「發布執行檔」，經詢問選擇版本 v2.0.0、發布到 GitHub Release（明確授權發布）。
