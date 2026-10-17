@@ -20,8 +20,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 use windows::Win32::UI::Controls::{
-    ImageList_Create, DRAWITEMSTRUCT, ILC_COLOR32, LIST_VIEW_ITEM_FLAGS, LIST_VIEW_ITEM_STATE_FLAGS, LVCOLUMNW,
-    LVCOLUMNW_MASK, LVITEMW, NMHDR, NMLVCUSTOMDRAW,
+    ImageList_Create, ImageList_Destroy, DRAWITEMSTRUCT, HIMAGELIST, ILC_COLOR32, LIST_VIEW_ITEM_FLAGS,
+    LIST_VIEW_ITEM_STATE_FLAGS, LVCOLUMNW, LVCOLUMNW_MASK, LVITEMW, NMHDR, NMLVCUSTOMDRAW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::ShellExecuteW;
@@ -84,7 +84,6 @@ const TIMER_CLOCK: usize = 1;
 const TIMER_TERMINAL: usize = 2;
 
 const COLUMN_COUNTDOWN: usize = 2;
-const COLUMN_TARGETS: usize = 3;
 const COLUMN_HEADERS: [&str; 5] = ["名稱", "時間 / 週期", "倒數", "CLI", "狀態"];
 
 const LVM_SETIMAGELIST: u32 = 0x1003;
@@ -115,6 +114,12 @@ const TIME_LABELS: [&str; 3] = ["每天時間", "首次喚醒時間", "開始偵
 const WIDE_LAYOUT_WIDTH: i32 = 940;
 /// 編輯面板至少這麼寬時「排程內容」與「額度看板」左右並排。
 const EDITOR_TWO_COLUMN_WIDTH: i32 = 680;
+/// 內容區至少這麼寬、且高度放得下時改用大螢幕版面：右欄上下堆疊排程內容與額度看板，
+/// 左欄上下分配排程清單與終端機。
+const LARGE_LAYOUT_WIDTH: i32 = 2000;
+/// 介面設計時的基準工作區大小；視窗比這更大時整體放大（最多 1.5 倍），維持相同比例。
+const DESIGN_CLIENT_SIZE: (i32, i32) = (1440, 860);
+const MAX_ZOOM: f64 = 1.5;
 const USAGE_TITLE: &str = "剩餘流量與重置倒數";
 const TERMINAL_TITLE: &str = "即時終端輸出";
 
@@ -178,6 +183,8 @@ pub struct MainWindow {
     editor: HWND,
     host: Arc<AppHost>,
     fonts: RefCell<Rc<Fonts>>,
+    /// 螢幕實際 DPI；`fonts` 的 DPI 為此值乘上依視窗大小決定的放大倍率。
+    base_dpi: Cell<i32>,
     queue: UiQueue<MainWindow>,
     icon: HICON,
     title: String,
@@ -227,6 +234,8 @@ pub struct MainWindow {
     editor_layout: RefCell<EditorLayout>,
     editor_scroll: VScroll,
     in_editor_layout: Cell<bool>,
+    /// 編輯面板是否強制上下堆疊（大螢幕版面）。
+    editor_stacked: Cell<bool>,
     /// 使用者拖曳後的終端機高度；None 表示使用預設。
     terminal_height: Cell<Option<i32>>,
     drag: Cell<Drag>,
@@ -336,6 +345,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         hwnd,
         editor,
         host,
+        base_dpi: Cell::new(fonts.dpi),
         fonts: RefCell::new(fonts),
         queue: UiQueue::new(hwnd),
         icon,
@@ -383,6 +393,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         editor_layout: RefCell::new(EditorLayout::default()),
         editor_scroll: VScroll::default(),
         in_editor_layout: Cell::new(false),
+        editor_stacked: Cell::new(false),
         terminal_height: Cell::new(None),
         drag: Cell::new(Drag::None),
         tray_added: Cell::new(false),
@@ -511,7 +522,10 @@ impl MainWindow {
         // 以高度為列高的影像清單撐開清單列高。
         unsafe {
             let image_list = ImageList_Create(1, fonts.scale(34), ILC_COLOR32, 1, 0);
-            w32::send(self.list, LVM_SETIMAGELIST, 1, image_list.0);
+            let previous = w32::send(self.list, LVM_SETIMAGELIST, 1, image_list.0);
+            if previous != 0 {
+                let _ = ImageList_Destroy(Some(HIMAGELIST(previous)));
+            }
         }
     }
 
@@ -542,8 +556,18 @@ impl MainWindow {
         let content_height = (height - header_height - status_height).max(0);
         let content_width = (width - pad * 2).max(0);
 
+        let toolbar_height = button_height + s(8);
+        let minimum_terminal = toolbar_height + s(56);
+        let top = content_top + pad;
+        let column_bottom = content_top + content_height - s(8);
+
+        let large_editor_width = ((content_width as f64 * 0.3) as i32).clamp(s(560), s(760));
+        let large = content_width >= s(LARGE_LAYOUT_WIDTH)
+            && self.arrange_editor(large_editor_width, 0, None, true).1 <= column_bottom - top;
         let wide = content_width >= s(WIDE_LAYOUT_WIDTH);
-        let editor_width = if wide {
+        let editor_width = if large {
+            large_editor_width
+        } else if wide {
             ((content_width as f64 * 0.64) as i32).clamp(s(EDITOR_TWO_COLUMN_WIDTH), s(1080))
         } else {
             content_width
@@ -552,21 +576,27 @@ impl MainWindow {
         let list_minimum = s(180);
 
         // 終端機：預設取上方內容放完後剩下的高度，但至少保留幾行輸出。
-        let toolbar_height = button_height + s(8);
-        let available_height = (content_height - pad - splitter).max(0);
-        let editor_needed = self.arrange_editor(editor_width, 0, None).1;
+        // 大螢幕版面中終端機只在左欄，預設佔左欄約四成五。
+        let available_height = (column_bottom - top - splitter).max(0);
+        let editor_needed = if large { 0 } else { self.arrange_editor(editor_width, 0, None, false).1 };
         let needed = if wide { editor_needed } else { editor_needed + gap + list_minimum };
-        let minimum_terminal = toolbar_height + s(56);
-        let default_terminal =
-            (available_height - needed).clamp(minimum_terminal, (available_height / 2).max(minimum_terminal));
+        let default_terminal = if large {
+            ((available_height as f64 * 0.45) as i32).max(minimum_terminal)
+        } else {
+            (available_height - needed).clamp(minimum_terminal, (available_height / 2).max(minimum_terminal))
+        };
         let terminal_height = self.terminal_height.get().unwrap_or(default_terminal).clamp(
             minimum_terminal.min(available_height),
             (available_height - s(240)).max(minimum_terminal).min(available_height),
         );
         let top_height = (available_height - terminal_height).max(0);
-        let top = content_top + pad;
 
-        let (left_panel, editor_bounds) = if wide {
+        let (left_panel, editor_bounds) = if large {
+            (
+                w32::rect(pad, top, list_width, top_height),
+                w32::rect(pad + list_width + gap, top, editor_width, column_bottom - top),
+            )
+        } else if wide {
             (
                 w32::rect(pad, top, list_width, top_height),
                 w32::rect(pad + list_width + gap, top, editor_width, top_height),
@@ -579,7 +609,11 @@ impl MainWindow {
                 w32::rect(pad, editor_top, content_width, (top + top_height - editor_top).max(0)),
             )
         };
+        let stacked_changed = self.editor_stacked.replace(large) != large;
         w32::move_window(self.editor, &editor_bounds);
+        if stacked_changed {
+            self.layout_editor();
+        }
 
         // 左側面板：標題、清單與按鈕列。
         let panel_pad = s(16);
@@ -630,9 +664,12 @@ impl MainWindow {
         self.resize_columns();
 
         // 終端機：工具列與輸出。
-        let horizontal_splitter = w32::rect(0, top + top_height, width, splitter);
-        let terminal_left = pad;
-        let terminal_width = content_width;
+        let (terminal_left, terminal_width) = if large { (pad, list_width) } else { (pad, content_width) };
+        let horizontal_splitter = if large {
+            w32::rect(terminal_left, top + top_height, terminal_width, splitter)
+        } else {
+            w32::rect(0, top + top_height, width, splitter)
+        };
         let toolbar_top = horizontal_splitter.bottom;
         let title_width = fonts.table_header.measure(TERMINAL_TITLE).0 + s(16);
         let terminal_title = w32::rect(terminal_left, toolbar_top, title_width, toolbar_height);
@@ -649,12 +686,7 @@ impl MainWindow {
         let output_top = toolbar_top + toolbar_height;
         w32::move_window(
             self.terminal.output,
-            &w32::rect(
-                terminal_left,
-                output_top,
-                terminal_width,
-                (content_top + content_height - s(8) - output_top).max(0),
-            ),
+            &w32::rect(terminal_left, output_top, terminal_width, (column_bottom - output_top).max(0)),
         );
 
         self.frame.set(FrameLayout {
@@ -669,7 +701,7 @@ impl MainWindow {
         w32::invalidate(self.hwnd);
     }
 
-    /// 清單欄寬依清單寬度自動分配：「CLI」欄吃掉多出的寬度，寬度不夠時各欄等比例縮小。
+    /// 清單欄寬依清單寬度自動分配：多出的寬度依權重分配，寬度不夠時各欄等比例縮小。
     fn resize_columns(&self) {
         let fonts = self.fonts();
         let preferred = [135, 115, 100, 125, 80].map(|value| fonts.scale(value));
@@ -678,7 +710,13 @@ impl MainWindow {
         let available = w32::width_of(&w32::client_rect(self.list)).max(0);
         let mut widths = preferred;
         if available >= total {
-            widths[COLUMN_TARGETS] += available - total;
+            // 多出的寬度依權重分給各欄，倒數與 CLI 欄拿得最多。
+            const WEIGHTS: [i32; 5] = [2, 1, 3, 3, 1];
+            let extra = available - total;
+            let weight_sum: i32 = WEIGHTS.iter().sum();
+            for (width, weight) in widths.iter_mut().zip(WEIGHTS) {
+                *width += extra * weight / weight_sum;
+            }
         } else {
             let minimum = fonts.scale(48);
             widths = preferred.map(|value| (value * available / total).max(minimum));
@@ -701,8 +739,12 @@ impl MainWindow {
         }
         let client = w32::client_rect(self.editor);
         let offset = self.editor_scroll.position();
-        let (layout, content_height) =
-            self.arrange_editor(w32::width_of(&client), offset, Some(w32::height_of(&client)));
+        let (layout, content_height) = self.arrange_editor(
+            w32::width_of(&client),
+            offset,
+            Some(w32::height_of(&client)),
+            self.editor_stacked.get(),
+        );
         *self.editor_layout.borrow_mut() = layout;
         let scrolled = self.editor_scroll.update(self.editor, content_height, w32::height_of(&client));
         self.in_editor_layout.set(false);
@@ -718,7 +760,7 @@ impl MainWindow {
     ///
     /// 寬度足夠時「排程內容」與「額度看板」左右並排，否則上下堆疊；
     /// CLI 勾選框與額度看板也會依可用寬度自動分欄。
-    fn arrange_editor(&self, width: i32, offset: i32, viewport: Option<i32>) -> (EditorLayout, i32) {
+    fn arrange_editor(&self, width: i32, offset: i32, viewport: Option<i32>, stacked: bool) -> (EditorLayout, i32) {
         let fonts = self.fonts();
         let colors = palette();
         let s = |value: i32| fonts.scale(value);
@@ -732,7 +774,7 @@ impl MainWindow {
         let gap = s(12);
         let card_pad = s(16);
         // 預留捲軸寬度的容差，避免出現捲軸後又退回堆疊而來回切換。
-        let two_columns = width >= s(EDITOR_TWO_COLUMN_WIDTH - 24);
+        let two_columns = !stacked && width >= s(EDITOR_TWO_COLUMN_WIDTH - 24);
         let form_width = if two_columns { (((width - gap) as f64 * 0.46) as i32).clamp(s(330), s(500)) } else { width };
         let input_height = fonts.body.height() + s(10);
         let check_height = fonts.body.height() + s(6);
@@ -1801,7 +1843,28 @@ impl MainWindow {
         self.layout_frame();
     }
 
+    /// 依工作區大小決定整體放大倍率（以 0.1 為級距），倍率改變時重建字型。回傳是否改變。
+    fn update_zoom(&self) -> bool {
+        let client = w32::client_rect(self.hwnd);
+        let (width, height) = (w32::width_of(&client), w32::height_of(&client));
+        if width <= 0 || height <= 0 {
+            return false;
+        }
+        let base_dpi = self.base_dpi.get();
+        let ratio = (width as f64 / w32::scale(DESIGN_CLIENT_SIZE.0, base_dpi) as f64)
+            .min(height as f64 / w32::scale(DESIGN_CLIENT_SIZE.1, base_dpi) as f64);
+        let zoom = ((ratio.clamp(1.0, MAX_ZOOM) * 10.0).floor() / 10.0).max(1.0);
+        let dpi = (base_dpi as f64 * zoom).round() as i32;
+        if dpi == self.fonts().dpi {
+            return false;
+        }
+        *self.fonts.borrow_mut() = Rc::new(Fonts::new(dpi));
+        self.apply_fonts();
+        true
+    }
+
     fn on_dpi_changed(&self, dpi: i32, suggested: &RECT) {
+        self.base_dpi.set(dpi);
         *self.fonts.borrow_mut() = Rc::new(Fonts::new(dpi));
         self.apply_fonts();
         unsafe {
@@ -1860,7 +1923,11 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_SIZE => {
+            let zoomed = window.update_zoom();
             window.layout_frame();
+            if zoomed {
+                window.layout_editor();
+            }
             // 還原視窗後補上縮小期間略過的更新。
             if window.is_visible() {
                 if window.refresh_deferred.get() {
@@ -1873,11 +1940,14 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_GETMINMAXINFO => {
-            let fonts = window.fonts();
+            // 最小尺寸以螢幕實際 DPI 計算，不受視窗放大倍率影響。
+            let dpi = window.base_dpi.get();
             let work = work_area(hwnd);
             let info = &mut *(lparam.0 as *mut MINMAXINFO);
-            info.ptMinTrackSize =
-                POINT { x: fonts.scale(980).min(w32::width_of(&work)), y: fonts.scale(650).min(w32::height_of(&work)) };
+            info.ptMinTrackSize = POINT {
+                x: w32::scale(980, dpi).min(w32::width_of(&work)),
+                y: w32::scale(650, dpi).min(w32::height_of(&work)),
+            };
             LRESULT(0)
         }
         WM_DPICHANGED => {
