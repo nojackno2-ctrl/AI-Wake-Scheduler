@@ -148,6 +148,7 @@ cargo test --workspace --locked
 ```powershell
 cargo test -p aiwake-core --locked -- --ignored executable_locator_resolution   # 唯讀：--version 與額度查詢，不消耗 Token
 cargo test -p aiwake-core --locked -- --ignored real_cli_wake_smoke             # 會各送出一次最小提示詞，消耗少量 Token
+cargo test -p aiwake-core --locked -- --ignored --exact real_argon_wake_smoke   # 只喚醒 Argon 並確認每週倒數開始
 ```
 
 **建置發行版執行檔：**

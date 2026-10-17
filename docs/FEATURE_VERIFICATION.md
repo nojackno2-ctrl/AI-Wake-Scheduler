@@ -22,7 +22,7 @@ CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，
 - `cargo fmt --check`、`cargo clippy -D warnings` 通過；`cargo test --workspace --locked` 28 通過、2 項 opt-in 忽略。
 - 新增測試：Argon 指令組成與 `--print` 位置、Argon 目錄與 effort、Gemini 不再列出 Argon、Gemini／Argon 額度池分流（含 Argon bucket 放在 Gemini 群組內的格式）、舊設定檔補上 Argon 設定、UI 預設勾選與執行數量依目錄計算。
 - 真實唯讀額度（`--ignored executable_locator_resolution`）：Gemini 2 視窗（5h、每週）、Argon 1 視窗（每週）、Claude / GPT 2 視窗、Codex 與 Claude 各 2 視窗，全部可讀。
-- 未驗證：本次未實際送出 Argon 喚醒（會消耗 Argon 每週額度）；2026-10-16 曾以 `agy --model gemini-4-argon --effort low --disable-slash-commands --print-timeout 3m0s --print "OK"` 驗證回傳 OK。
+- 真實喚醒（使用者同意後執行 opt-in `real_argon_wake_smoke`）：經 `ProcessCliRunner` 實際呼叫 `agy --model gemini-4-argon --effort low --disable-slash-commands --print-timeout 180s --print "只回 OK…"`，exit 0、回覆 OK；隨後重讀額度，Argon 每週視窗 `is_active_countdown=true`，重置時間由 2026-10-24T00:37:57Z 變為 00:39:51Z（呼叫當下＋7 天），剩餘仍四捨五入為 100%。
 
 ## 2026-10-17 專案健康檢查（Claude）
 
@@ -53,7 +53,7 @@ CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，
 | 自動間隔、依額度調整、每日自動倒數模式 | `core_tests::schedule_manager_auto_interval`、`_quota_aware_interval`、`_adaptive_wait`、`_countdown` | 通過（可控時鐘）；未實測全天真實 CLI 運行或休眠恢復 |
 | JSON 持久化 | `core_tests::json_file_store` | 通過 |
 | 安裝程式約定 | `core_tests::installer_contract` | 通過 |
-| 執行檔定位、真實喚醒 | `core_tests::executable_locator_resolution`、`real_cli_wake_smoke`（opt-in） | 本次未執行 |
+| 執行檔定位、真實喚醒 | `core_tests::executable_locator_resolution`、`real_cli_wake_smoke`、`real_argon_wake_smoke`（opt-in） | 2026-10-17 唯讀額度與 Argon 單獨喚醒通過；其他 CLI 的真實喚醒本次未執行 |
 | 額度看板文字、倒數與更新時間 | `board` 單元測試 4 項 | 通過 |
 | 排程清單呈現與倒數欄 | `presenter` 單元測試 4 項 | 通過 |
 | 開機啟動指令引號、主控台輸出解碼 | `startup` 單元測試 2 項 | 通過；未實測重開機登入 |

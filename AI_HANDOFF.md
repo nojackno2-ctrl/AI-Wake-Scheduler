@@ -12,7 +12,8 @@
   - `models.rs`：新排程預設目標與空目標補回改用 `catalog::kinds()`；舊設定由 `ensure_defaults` 自動補上 Argon 設定。
   - 既有排程的目標不會自動加入 Argon，需使用者自行勾選。
 - 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked` 28 通過、2 opt-in 忽略；opt-in `executable_locator_resolution`（唯讀，不耗 Token）真實讀到 Gemini 2 視窗、Argon 1 視窗（每週 100%）、Claude/GPT 2 視窗。
-- 未驗證：未實際送出 Argon 喚醒（會消耗 Argon 每週額度）；未在 VS／桌面手動檢視新增的第五個勾選框與設定列版面（UI 端對端測試已涵蓋控制項存在與執行數量）。
+- 真實 Argon 喚醒（使用者明確同意）：新增 opt-in 測試 `real_argon_wake_smoke`（只喚醒 Argon，走 `ProcessCliRunner`，再重讀額度）；實際呼叫 `agy --model gemini-4-argon --effort low --disable-slash-commands --print-timeout 180s --print …` exit 0、回覆 OK，額度重讀 `is_active_countdown=true`，重置時間更新為呼叫時間＋7 天（2026-10-24T00:39:51Z）。`real_cli_wake_smoke` 案例清單也加入 Argon，但本次未執行（會喚醒全部 CLI）。
+- 未驗證：未在 VS／桌面手動檢視新增的第五個勾選框與設定列版面（UI 端對端測試已涵蓋控制項存在與執行數量）。
 
 ## 2026-10-17 Claude：新增 Visual Studio 方案，可在 VS 內編譯與測試（完成）
 

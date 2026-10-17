@@ -2199,6 +2199,7 @@ fn real_cli_wake_smoke() {
     let runner = Arc::new(ProcessCliRunner::new(AppDataPaths::new(Some(&directory.join("data").to_string_lossy()))));
     let cases = [
         (CliKind::Antigravity, "gemini-3.8-flash"),
+        (CliKind::AntigravityArgon, "gemini-4-argon"),
         (CliKind::AntigravityClaude, "claude-sonnet-5-5-low"),
         (CliKind::Codex, "gpt-6-luna"),
         (CliKind::Claude, "claude-haiku-4-5-20251001"),
@@ -2234,5 +2235,64 @@ fn real_cli_wake_smoke() {
         let (kind, result, output) = handle.join().unwrap();
         assert!(result.succeeded, "{kind} 實際喚醒失敗：{}", result.error);
         assert!(output.contains("OK"), "{kind} 應回覆 OK。");
+    }
+}
+
+/// 只喚醒 Argon：走與排程相同的 ProcessCliRunner，再重讀額度確認每週倒數已開始。
+#[test]
+#[ignore = "會呼叫真實 agy 並消耗少量 Argon 每週額度"]
+fn real_argon_wake_smoke() {
+    let directory = TempDir::new();
+    let runner = ProcessCliRunner::new(AppDataPaths::new(Some(&directory.join("data").to_string_lossy())));
+    let profile = CliProfile { executable: "agy".to_string(), ..CliProfile::default() };
+    let working_directory = directory.text();
+    let cancel = CancelToken::none();
+
+    let output = Mutex::new(String::new());
+    let result = runner.run(
+        CliKind::AntigravityArgon,
+        &profile,
+        "只回 OK",
+        &working_directory,
+        Duration::from_secs(180),
+        true,
+        &cancel,
+        Some(&|is_error, chunk| {
+            if !is_error {
+                output.lock().unwrap().push_str(chunk);
+            }
+        }),
+    );
+    let output = output.into_inner().unwrap();
+    println!("  Argon: Exit={:?}, Success={}, Output={}", result.exit_code, result.succeeded, output.trim());
+    println!("  Log: {}", result.log_path);
+    if let Ok(log) = std::fs::read_to_string(&result.log_path) {
+        for line in log.lines().filter(|line| line.contains("agy") || line.contains("--model")).take(3) {
+            println!("  {line}");
+        }
+    }
+    assert!(result.succeeded, "Argon 實際喚醒失敗：{}", result.error);
+    assert!(output.contains("OK"), "Argon 應回覆 OK。");
+
+    // agy 回報用量可能略有延遲；最多等 60 秒。
+    usage::clear_antigravity_connection_cache();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let snapshot =
+            CliUsageReader::new().read(CliKind::AntigravityArgon, &profile, &working_directory, &cancel).unwrap();
+        for window in &snapshot.windows {
+            println!(
+                "  -> {}: 剩餘 {}%, 倒數中={}, 重置時間: {:?}",
+                window.name,
+                window.remaining_percent(),
+                window.is_active_countdown,
+                window.resets_at
+            );
+        }
+        if is_counting_down(Some(&snapshot), &time::now()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "Argon 喚醒後 60 秒內額度仍未開始倒數：{}", snapshot.message);
     }
 }
