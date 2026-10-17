@@ -16,6 +16,14 @@
 
 CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，於 UTC、台北、印度、太平洋、澳洲東部五個時區矩陣執行 fmt、clippy、build、test。
 
+## 2026-10-17 AGY Argon 獨立目標（Claude）
+
+- 新增 `CliKind::AntigravityArgon`（顯示「Antigravity (Argon)」），預設 `gemini-4-argon`，畫面排在 Gemini 之後；列舉值加在最後以保留舊版整數序號。
+- `cargo fmt --check`、`cargo clippy -D warnings` 通過；`cargo test --workspace --locked` 28 通過、2 項 opt-in 忽略。
+- 新增測試：Argon 指令組成與 `--print` 位置、Argon 目錄與 effort、Gemini 不再列出 Argon、Gemini／Argon 額度池分流（含 Argon bucket 放在 Gemini 群組內的格式）、舊設定檔補上 Argon 設定、UI 預設勾選與執行數量依目錄計算。
+- 真實唯讀額度（`--ignored executable_locator_resolution`）：Gemini 2 視窗（5h、每週）、Argon 1 視窗（每週）、Claude / GPT 2 視窗、Codex 與 Claude 各 2 視窗，全部可讀。
+- 未驗證：本次未實際送出 Argon 喚醒（會消耗 Argon 每週額度）；2026-10-16 曾以 `agy --model gemini-4-argon --effort low --disable-slash-commands --print-timeout 3m0s --print "OK"` 驗證回傳 OK。
+
 ## 2026-10-17 專案健康檢查（Claude）
 
 - 提交：`d6b6180`，本機 rustc 1.99.0（與 CI 相同）。
@@ -39,7 +47,7 @@ CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，
 | --- | --- | --- |
 | 參數切分與安全參數 | `core_tests::argument_tokenizer`、`cli_runner_safe_arguments` | 通過 |
 | 各 CLI 指令組成、模型與 effort | `core_tests::cli_command_builder`、`cli_catalog` | 通過；未逐一實測每個候選模型的推論 |
-| 額度讀取與倒數解析 | `core_tests::cli_usage_reader`、`antigravity_usage_source_cache` | 通過（假資料來源）；真實帳號額度需另行手動確認 |
+| 額度讀取與倒數解析（含 Gemini／Argon／Claude-GPT 三個 AGY 額度池分流） | `core_tests::cli_usage_reader`、`antigravity_usage_source_cache`、opt-in `executable_locator_resolution` | 通過；2026-10-17 真實唯讀額度五個目標皆可讀 |
 | 排程計算（每日、跨日、DST） | `core_tests::schedule_calculator`、CI 五時區矩陣 | 通過 |
 | 排程管理：到期執行、重啟不重複、逾期合併、邊界 | `core_tests::schedule_manager_due_job`、`_restart_does_not_refire`、`_coalesces_overdue_jobs`、`_boundaries_and_state` | 通過（可控時鐘） |
 | 自動間隔、依額度調整、每日自動倒數模式 | `core_tests::schedule_manager_auto_interval`、`_quota_aware_interval`、`_adaptive_wait`、`_countdown` | 通過（可控時鐘）；未實測全天真實 CLI 運行或休眠恢復 |

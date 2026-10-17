@@ -446,7 +446,7 @@ impl MainWindow {
         self.apply_fonts();
         self.reset_editor();
 
-        // 排程異動可能連續觸發數次（四個 CLI 平行完成），合併成一次實際更新。
+        // 排程異動可能連續觸發數次（多個 CLI 平行完成），合併成一次實際更新。
         let refresh_requested = Arc::clone(&self.refresh_requested);
         let hwnd = self.hwnd.0 as isize;
         self.manager().on_jobs_changed(move || {
@@ -1228,7 +1228,7 @@ impl MainWindow {
     fn on_login_finished(&self, kind: CliKind) {
         self.login_in_progress.borrow_mut().remove(&kind);
         self.set_login_in_progress(kind, false);
-        if matches!(kind, CliKind::Antigravity | CliKind::AntigravityClaude) {
+        if matches!(kind, CliKind::Antigravity | CliKind::AntigravityArgon | CliKind::AntigravityClaude) {
             // 登入後 language server 會換一輪連接埠。
             usage::clear_antigravity_connection_cache();
         }

@@ -33,7 +33,7 @@ pub fn get_arguments(kind: CliKind) -> &'static [&'static str] {
     match kind {
         CliKind::Claude => &["auth", "login"],
         CliKind::Codex => &["login"],
-        CliKind::Antigravity | CliKind::AntigravityClaude => &[],
+        CliKind::Antigravity | CliKind::AntigravityArgon | CliKind::AntigravityClaude => &[],
     }
 }
 

@@ -292,6 +292,10 @@ fn cli_command_builder() {
         build_args(CliKind::Antigravity, None, false, None)
     );
     assert_eq!(
+        strings(&["--model", "gemini-4-argon", "--print", "早安"]),
+        build_args(CliKind::AntigravityArgon, None, false, None)
+    );
+    assert_eq!(
         strings(&["--model", "claude-sonnet-5-5-low", "--print", "早安"]),
         build_args(CliKind::AntigravityClaude, None, false, None)
     );
@@ -369,7 +373,7 @@ fn cli_command_builder() {
 
     // 迴歸測試：Antigravity 的旗標絕不能出現在 --print 之後，
     // 否則會被當成提示詞送出，其餘旗標則全部失效。
-    for agy_kind in [CliKind::Antigravity, CliKind::AntigravityClaude] {
+    for agy_kind in [CliKind::Antigravity, CliKind::AntigravityArgon, CliKind::AntigravityClaude] {
         let built = build_args(agy_kind, Some("--add-dir C:\\tmp"), true, Some(Duration::from_secs(120)));
         let print_index = built.iter().position(|argument| argument == "--print").unwrap();
         assert_eq!(print_index, built.len() - 2, "{agy_kind}：--print 必須是倒數第二個參數。");
@@ -531,12 +535,33 @@ fn cli_catalog() {
 
     let agy = catalog::get(CliKind::Antigravity);
     assert!(agy.preset_models.contains(&"gemini-3.8-flash"), "Antigravity 推薦清單應包含 gemini-3.8-flash。");
-    assert!(agy.preset_models.contains(&"gemini-4-argon"), "Antigravity 推薦清單應包含 gemini-4-argon。");
-    assert!(agy.get_supported_efforts(Some("gemini-4-argon")).contains(&E::High), "gemini-4-argon 應支援 High。");
+    assert!(
+        !agy.preset_models.iter().any(|model| model.contains("argon")),
+        "Argon 已獨立成目標，Gemini 推薦清單不應再列出 Argon。"
+    );
+    let argon = catalog::get(CliKind::AntigravityArgon);
+    assert_eq!(argon.default_model, Some("gemini-4-argon"), "Argon 目標預設應使用 gemini-4-argon。");
+    assert_eq!(argon.default_command, "agy", "Argon 目標應呼叫 agy。");
+    assert!(argon.get_supported_efforts(Some("gemini-4-argon")).contains(&E::High), "gemini-4-argon 應支援 High。");
     assert_eq!(
-        agy.get_supported_efforts(Some("gemini-4-argon-high")),
+        argon.get_supported_efforts(Some("gemini-4-argon-high")),
         [E::Default],
         "gemini-4-argon-high 應抑制額外 --effort 避免衝突。"
+    );
+    let argon_low = build_profile(CliKind::AntigravityArgon, "OK", "gemini-4-argon", E::Low, "", true);
+    assert!(
+        has(&argon_low, "gemini-4-argon") && has(&argon_low, "--effort") && has(&argon_low, "low"),
+        "Argon 基底模型應附加 --effort low。"
+    );
+    assert_eq!(catalog::kinds()[1], CliKind::AntigravityArgon, "Argon 應緊接在 Gemini 之後顯示。");
+    assert_eq!(
+        CliKind::ALL[..4],
+        [CliKind::Antigravity, CliKind::AntigravityClaude, CliKind::Codex, CliKind::Claude],
+        "舊種類的序號不可變動，否則舊版以整數保存的目標會錯位。"
+    );
+    assert!(
+        AppSettings::create_default().cli_profiles.contains_key(&CliKind::AntigravityArgon),
+        "預設設定應包含 Argon 設定。"
     );
     assert!(agy.get_supported_efforts(Some("gemini-3.8-flash")).contains(&E::High), "gemini-3.8-flash 應支援 High。");
     assert_eq!(
@@ -545,7 +570,7 @@ fn cli_catalog() {
         "gemini-3.8-flash-high 應抑制額外 --effort 避免衝突。"
     );
 
-    for kind in [CliKind::Antigravity, CliKind::Codex, CliKind::Claude] {
+    for kind in [CliKind::Antigravity, CliKind::AntigravityArgon, CliKind::Codex, CliKind::Claude] {
         assert!(catalog::get(kind).supported_efforts.len() >= 3, "{kind} 應至少支援 3 種思考程度選項。");
     }
     assert_eq!(catalog::all().len(), CliKind::ALL.len(), "目錄應涵蓋所有 CliKind。");
@@ -653,13 +678,42 @@ fn cli_usage_reader() {
     );
     let usage_gemini = usage::parse_antigravity_model_configs(&usage_data, CliKind::Antigravity, &observed_at);
     assert!(
-        usage_gemini.windows.len() == 3
+        usage_gemini.windows.len() == 2
             && usage_gemini.windows[0].duration == Some(Span::hours(5))
             && usage_gemini.windows[1].duration == Some(Span::days(7))
-            && usage_gemini.windows[2].duration == Some(Span::days(7)),
-        "新版 usage 應完整解析 5h、Gemini weekly 與獨立 Argon weekly 三個視窗。"
+            && usage_gemini.windows[1].used_percent == 20,
+        "Gemini 額度池應只有 5h 與 Gemini weekly，不可混入 Argon。"
     );
-    assert!(usage_gemini.windows[2].name.contains("Argon"), "Argon 視窗應被獨立保留而非覆蓋 Gemini 每週配額。");
+    assert!(!usage_gemini.windows.iter().any(|window| window.name.contains("Argon")), "Gemini 不應含 Argon 視窗。");
+    let usage_argon = usage::parse_antigravity_model_configs(&usage_data, CliKind::AntigravityArgon, &observed_at);
+    assert!(
+        usage_argon.availability == CliUsageAvailability::Available
+            && usage_argon.windows.len() == 1
+            && usage_argon.windows[0].duration == Some(Span::days(7))
+            && usage_argon.windows[0].remaining_percent() == 89
+            && usage_argon.windows[0].name.starts_with("Antigravity (Argon)"),
+        "Argon 額度池應獨立解析出每週 89% 的視窗。"
+    );
+    assert!(is_counting_down(Some(&usage_argon), &observed_at), "Argon 已使用時應倒數至每週重置。");
+    // 部分版本把 Argon bucket 放在 Gemini 群組內；仍需依 bucket 名稱分流。
+    let nested_argon = format!(
+        r#"{{"groups":[{{"name":"Gemini Models","buckets":[
+            {{"name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.5,"reset_time":"{}"}},
+            {{"name":"Gemini 4 Argon Weekly Limit","window":"weekly","remaining_fraction":0.7,"reset_time":"{}"}}]}}]}}"#,
+        iso(observed_at + Span::days(2)),
+        iso(observed_at + Span::days(4)),
+    );
+    let nested_gemini = usage::parse_antigravity_model_configs(&nested_argon, CliKind::Antigravity, &observed_at);
+    let nested_only_argon =
+        usage::parse_antigravity_model_configs(&nested_argon, CliKind::AntigravityArgon, &observed_at);
+    assert!(
+        nested_gemini.windows.len() == 1 && nested_gemini.windows[0].remaining_percent() == 50,
+        "Gemini 群組內的 Argon bucket 不可蓋掉 Gemini 每週額度。"
+    );
+    assert!(
+        nested_only_argon.windows.len() == 1 && nested_only_argon.windows[0].remaining_percent() == 70,
+        "Gemini 群組內的 Argon bucket 應歸給 Argon。"
+    );
     assert!(
         usage_gemini.windows[0].used_percent == 0 && is_counting_down(Some(&usage_gemini), &observed_at),
         "微量使用即使顯示為 0% 仍應倒數。"
@@ -1004,7 +1058,12 @@ fn json_file_store() {
     assert_eq!(settings.cli_profiles.len(), 1, "資料檔中的 CLI 設定應取代預設值。");
     assert_eq!(settings.cli_profiles[&CliKind::Codex].thinking_effort, ThinkingEffort::Max);
     settings.ensure_defaults();
-    assert_eq!(settings.cli_profiles.len(), 4, "ensure_defaults 應補齊缺少的 CLI 設定。");
+    assert_eq!(settings.cli_profiles.len(), CliKind::ALL.len(), "ensure_defaults 應補齊缺少的 CLI 設定。");
+    assert_eq!(
+        settings.cli_profiles[&CliKind::AntigravityArgon].model,
+        "gemini-4-argon",
+        "舊設定檔升級後應補上 Argon 預設設定。"
+    );
     settings_store.save(&settings).unwrap();
     assert_eq!(settings_store.load().unwrap(), settings, "設定應完整往返保存。");
 
@@ -1269,22 +1328,22 @@ fn schedule_manager_due_job() {
     manager.initialize().unwrap();
     let done = wait_until(Duration::from_secs(20), || {
         let finished = &manager.get_jobs().unwrap()[0];
-        finished.status == ScheduleStatus::Pending && finished.last_results.len() == 4
+        finished.status == ScheduleStatus::Pending && finished.last_results.len() == CliKind::ALL.len()
     });
     let elapsed = concurrent_stopwatch.elapsed();
     let finished = manager.get_jobs().unwrap().remove(0);
     assert!(done && finished.enabled, "舊排程應轉為每日排程並繼續等待。");
     assert_eq!(finished.recurrence, ScheduleRecurrence::Daily, "舊排程載入後應轉為每日排程。");
     assert!(finished.scheduled_at > time::now(), "每日排程執行後應排到下一個未來時分。");
-    assert_eq!(finished.last_results.len(), 4, "排程器應記錄四個 CLI 的結果。");
-    assert!(finished.last_results.iter().all(|result| result.succeeded), "四個假 CLI 都應成功。");
+    assert_eq!(finished.last_results.len(), CliKind::ALL.len(), "排程器應記錄每個 CLI 的結果。");
+    assert!(finished.last_results.iter().all(|result| result.succeeded), "每個假 CLI 都應成功。");
     for output_path in output_paths.values() {
-        assert!(output_path.is_file(), "排程器應真的啟動四個假 CLI。");
+        assert!(output_path.is_file(), "排程器應真的啟動每個假 CLI。");
     }
     println!("  concurrent CLI elapsed: {} ms", elapsed.as_millis());
     assert!(
         elapsed < Duration::from_millis(4500),
-        "四個各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {} ms。",
+        "各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {} ms。",
         elapsed.as_millis()
     );
     {
@@ -2073,9 +2132,10 @@ fn executable_locator_resolution() {
     let cancel = CancelToken::none();
     let named = |name: &str| CliProfile { executable: name.to_string(), ..CliProfile::default() };
 
-    // 1. 測試解析本機已安裝的 CLI（四者均應成功解析）
+    // 1. 測試解析本機已安裝的 CLI（每個目標均應成功解析）
     for (kind, name) in [
         (CliKind::Antigravity, "agy"),
+        (CliKind::AntigravityArgon, "agy"),
         (CliKind::AntigravityClaude, "agy"),
         (CliKind::Codex, "codex"),
         (CliKind::Claude, "claude"),
@@ -2102,6 +2162,7 @@ fn executable_locator_resolution() {
     let runner = ProcessCliRunner::new(AppDataPaths::new(Some(&temp_dir.join("data").to_string_lossy())));
     for (kind, name) in [
         (CliKind::Antigravity, "agy"),
+        (CliKind::AntigravityArgon, "agy"),
         (CliKind::AntigravityClaude, "agy"),
         (CliKind::Codex, "codex"),
         (CliKind::Claude, "claude"),

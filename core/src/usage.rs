@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde_json::Value;
 
+use crate::catalog;
 use crate::error::{CoreError, CoreResult};
 use crate::http::{self, HttpResponse};
 use crate::locator;
@@ -129,8 +130,8 @@ const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 
 const AGY_CACHE_DURATION: Duration = Duration::from_secs(3);
 /// 自行啟動 agy 取得的結果要快取久一點。
-/// 兩個 Antigravity 額度池（Gemini 與 Claude / GPT）是分開讀的，
-/// 快取太短會讓第二次讀取又啟動一次 agy。
+/// 三個 Antigravity 額度池（Gemini、Argon 與 Claude / GPT）是分開讀的，
+/// 快取太短會讓後續讀取又啟動一次 agy。
 const AGY_LAUNCHED_CACHE_DURATION: Duration = Duration::from_secs(20);
 const AGY_QUOTA_RPC_METHODS: [&str; 4] = [
     // Antigravity 2.x：提供 Gemini／Claude+GPT 的 5 小時與每週 buckets。
@@ -474,7 +475,7 @@ impl UsageReader for CliUsageReader {
     ) -> CoreResult<CliUsageSnapshot> {
         let mut snapshot = match kind {
             CliKind::Codex => read_codex(profile, working_directory, cancel)?,
-            CliKind::Antigravity | CliKind::AntigravityClaude => {
+            CliKind::Antigravity | CliKind::AntigravityArgon | CliKind::AntigravityClaude => {
                 self.read_antigravity(kind, profile, working_directory, cancel)?
             }
             CliKind::Claude => self.read_claude(cancel)?,
@@ -723,19 +724,20 @@ pub fn extract_antigravity_token(text: &str) -> Option<String> {
 }
 
 fn pool_name(kind: CliKind) -> &'static str {
-    if kind == CliKind::Antigravity {
-        "Antigravity (Gemini)"
-    } else {
-        "Antigravity (Claude / GPT)"
-    }
+    catalog::get(kind).display_name
 }
 
-fn matches_pool(kind: CliKind, label: &str) -> bool {
-    let label = label.to_ascii_lowercase();
-    if kind == CliKind::Antigravity {
-        label.contains("gemini")
-    } else {
-        label.contains("claude") || label.contains("gpt")
+/// 判斷額度群組／bucket 屬於哪個 Antigravity 額度池。
+/// Argon 群組名稱同樣含有「Gemini」（例如 Gemini 4 Argon），必須先排除，
+/// 否則它的每週額度會混進 Gemini Models；bucket 名稱也一併檢查，
+/// 以涵蓋 Argon bucket 被放在 Gemini 群組內的回應格式。
+fn matches_pool(kind: CliKind, group_label: &str, bucket_label: &str) -> bool {
+    let group = group_label.to_ascii_lowercase();
+    let is_argon = group.contains("argon") || bucket_label.to_ascii_lowercase().contains("argon");
+    match kind {
+        CliKind::AntigravityArgon => is_argon,
+        CliKind::Antigravity => !is_argon && group.contains("gemini"),
+        _ => !is_argon && (group.contains("claude") || group.contains("gpt")),
     }
 }
 
@@ -787,7 +789,7 @@ fn parse_antigravity_summary(root: &Value, kind: CliKind, observed_at: &Moment) 
     let mut windows = Vec::new();
     for group in groups {
         let group_name = get_string_any(group, &["displayName", "display_name", "name"]).unwrap_or_default();
-        let Some(buckets) = array_property(group, "buckets").filter(|_| matches_pool(kind, &group_name)) else {
+        let Some(buckets) = array_property(group, "buckets") else {
             continue;
         };
 
@@ -802,6 +804,9 @@ fn parse_antigravity_summary(root: &Value, kind: CliKind, observed_at: &Moment) 
                 &["displayName", "display_name", "name", "window", "bucketId", "bucket_id", "id"],
             )
             .unwrap_or_else(|| "額度".to_string());
+            if !matches_pool(kind, &group_name, &bucket_label) {
+                continue;
+            }
             let duration = infer_antigravity_duration(bucket, &bucket_label);
             let resets_at = reset_time(bucket);
             windows.push(CliUsageWindow::new(
@@ -826,7 +831,7 @@ fn parse_antigravity_model_configs_array(
     let mut candidates = Vec::new();
     for config in configs {
         let label = get_string_any(config, &["label", "displayName", "display_name"]).unwrap_or_default();
-        let Some(quota_info) = object_property(config, "quotaInfo").filter(|_| matches_pool(kind, &label)) else {
+        let Some(quota_info) = object_property(config, "quotaInfo").filter(|_| matches_pool(kind, &label, "")) else {
             continue;
         };
         let Some(fraction) = remaining_fraction(quota_info) else {

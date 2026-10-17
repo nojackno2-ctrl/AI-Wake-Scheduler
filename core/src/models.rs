@@ -46,7 +46,10 @@ macro_rules! named_enum {
 
 named_enum! {
     /// 支援的 AI CLI 工具種類。
-    CliKind { Antigravity, AntigravityClaude, Codex, Claude }
+    ///
+    /// 新種類一律加在最後：舊版資料檔可能以整數序號保存目標。
+    /// 畫面與預設目標的順序由 `catalog::all()` 決定，不依賴這裡的宣告順序。
+    CliKind { Antigravity, AntigravityClaude, Codex, Claude, AntigravityArgon }
 }
 
 named_enum! {
@@ -473,7 +476,7 @@ impl Default for ScheduledJob {
             scheduled_at: time::now() + Span::minutes(5),
             message: DEFAULT_JOB_MESSAGE.to_string(),
             working_directory: user_profile_directory(),
-            targets: CliKind::ALL.to_vec(),
+            targets: catalog::kinds(),
             recurrence: ScheduleRecurrence::Daily,
             initial_time_of_day: None,
             enabled: true,
@@ -490,7 +493,7 @@ impl ScheduledJob {
     pub fn snapshot(&self) -> Self {
         let mut clone = self.clone();
         if clone.targets.is_empty() {
-            clone.targets = CliKind::ALL.to_vec();
+            clone.targets = catalog::kinds();
         }
         clone
     }

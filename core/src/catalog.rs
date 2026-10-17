@@ -167,7 +167,7 @@ const CODEX_ULTRA: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High,
 const CODEX_MAX: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max];
 const CODEX_XHIGH: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh];
 
-static DESCRIPTORS: [CliDescriptor; 4] = [
+static DESCRIPTORS: [CliDescriptor; 5] = [
     CliDescriptor {
         kind: CliKind::Antigravity,
         display_name: "Antigravity (Gemini)",
@@ -180,18 +180,15 @@ static DESCRIPTORS: [CliDescriptor; 4] = [
         token_saver_arguments: &["--disable-slash-commands"],
         // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
         // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
+        // Gemini 4 Argon 另有獨立的每週額度，由 AntigravityArgon 負責喚醒與倒數。
         default_model: Some("gemini-3.8-flash"),
-        preset_models: &["", "gemini-3.8-flash", "gemini-4-argon"],
+        preset_models: &["", "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-high"],
         supported_efforts: AGY_FLASH,
         model_supported_efforts: &[
             ("gemini-3.8-flash", AGY_FLASH),
             ("gemini-3.8-flash-high", ONLY_DEFAULT),
             ("gemini-3.8-flash-medium", ONLY_DEFAULT),
             ("gemini-3.8-flash-low", ONLY_DEFAULT),
-            ("gemini-4-argon", AGY_FLASH),
-            ("gemini-4-argon-high", ONLY_DEFAULT),
-            ("gemini-4-argon-medium", ONLY_DEFAULT),
-            ("gemini-4-argon-low", ONLY_DEFAULT),
             ("gemini-3.7-flash", AGY_FLASH),
             ("gemini-3.7-flash-high", ONLY_DEFAULT),
             ("gemini-3.7-flash-medium", ONLY_DEFAULT),
@@ -203,6 +200,28 @@ static DESCRIPTORS: [CliDescriptor; 4] = [
             ("gemini-3.1-pro", AGY_PRO),
             ("gemini-3.1-pro-high", ONLY_DEFAULT),
             ("gemini-3.1-pro-low", ONLY_DEFAULT),
+        ],
+        timeout_arguments: Some(agy_timeout_arguments),
+        executable_candidates: antigravity_candidates,
+    },
+    CliDescriptor {
+        kind: CliKind::AntigravityArgon,
+        display_name: "Antigravity (Argon)",
+        short_name: "AGY(Argon)",
+        default_command: "agy",
+        base_arguments: &[],
+        prompt_flag: Some("--print"),
+        token_saver_arguments: &["--disable-slash-commands"],
+        // Gemini 4 Argon 的額度與 Gemini Models 分開計算（只有每週視窗），
+        // 獨立成一個目標才能各自喚醒、各自倒數。基底 ID 搭配獨立 --effort。
+        default_model: Some("gemini-4-argon"),
+        preset_models: &["", "gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-high"],
+        supported_efforts: AGY_FLASH,
+        model_supported_efforts: &[
+            ("gemini-4-argon", AGY_FLASH),
+            ("gemini-4-argon-high", ONLY_DEFAULT),
+            ("gemini-4-argon-medium", ONLY_DEFAULT),
+            ("gemini-4-argon-low", ONLY_DEFAULT),
         ],
         timeout_arguments: Some(agy_timeout_arguments),
         executable_candidates: antigravity_candidates,
@@ -326,6 +345,11 @@ static DESCRIPTORS: [CliDescriptor; 4] = [
 
 pub fn all() -> &'static [CliDescriptor] {
     &DESCRIPTORS
+}
+
+/// 依畫面顯示順序列出全部 CLI 種類（新排程的預設目標）。
+pub fn kinds() -> Vec<CliKind> {
+    DESCRIPTORS.iter().map(|descriptor| descriptor.kind).collect()
 }
 
 pub fn get(kind: CliKind) -> &'static CliDescriptor {

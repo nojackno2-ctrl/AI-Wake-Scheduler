@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use aiwake_app::{main_window as main, settings_window as settings, w32};
 use aiwake_core::{
-    AppSettings, CliKind, DataStore, JsonFileStore, ScheduleRecurrence, ScheduleStatus, ScheduledJob, ThinkingEffort,
+    catalog, AppSettings, CliKind, DataStore, JsonFileStore, ScheduleRecurrence, ScheduleStatus, ScheduledJob,
+    ThinkingEffort,
 };
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT};
@@ -272,7 +273,7 @@ fn main_window_editor_settings_and_tray() {
     assert_eq!(created[0].recurrence, ScheduleRecurrence::Countdown);
     assert!(created[0].initial_time_of_day.is_some(), "自動倒數模式應保存開始偵測時間。");
     assert!(!created[0].enabled && created[0].status == ScheduleStatus::Disabled, "取消啟用的排程應為已停用。");
-    assert_eq!(created[0].targets, CliKind::ALL);
+    assert_eq!(created[0].targets, catalog::kinds(), "新排程預設應依畫面順序包含全部 CLI。");
     assert_eq!(created[0].message, "早安");
 
     // ── 修改同一筆排程 ──
@@ -285,7 +286,7 @@ fn main_window_editor_settings_and_tray() {
     });
     let modified = load_jobs(&data_directory);
     assert_eq!(modified[0].id, created[0].id, "儲存修改不應建立新排程。");
-    assert_eq!(modified[0].targets, &CliKind::ALL[1..], "取消勾選的 CLI 不應保留在目標中。");
+    assert_eq!(modified[0].targets, &catalog::kinds()[1..], "取消勾選的 CLI 不應保留在目標中。");
     assert!(!modified[0].enabled, "修改後仍應維持停用。");
     w32::send(editor, WM_VSCROLL, 7, 0);
     screenshot(window, "02-editor-bottom");
@@ -304,8 +305,8 @@ fn main_window_editor_settings_and_tray() {
         top_window(process_id, settings::WINDOW_CLASS).filter(|hwnd| is_visible(*hwnd))
     });
     let content = child_of_class(dialog, "AiWakeSettingsContent");
-    let codex = CliKind::ALL.iter().position(|kind| *kind == CliKind::Codex).unwrap() as i32;
-    let agy = CliKind::ALL.iter().position(|kind| *kind == CliKind::Antigravity).unwrap() as i32;
+    let codex = catalog::kinds().iter().position(|kind| *kind == CliKind::Codex).unwrap() as i32;
+    let agy = catalog::kinds().iter().position(|kind| *kind == CliKind::Antigravity).unwrap() as i32;
     let model = control(content, settings::ID_MODEL_BASE + codex);
     let effort = control(content, settings::ID_EFFORT_BASE + codex);
     let effort_count = |combo: HWND| w32::send(combo, CB_GETCOUNT, 0, 0);
@@ -357,7 +358,7 @@ fn main_window_editor_settings_and_tray() {
     wait_until("Luna 不提供 Ultra", short, || effort_count(effort) == 6);
     set_checked(control(content, settings::ID_TRAY), false);
     set_text(control(content, settings::ID_TIMEOUT), "7");
-    // 把四個 CLI 都指向假的批次檔，之後的「立即執行」才不會呼叫真正的 CLI。
+    // 把每個 CLI 都指向假的批次檔，之後的「立即執行」才不會呼叫真正的 CLI。
     let fake_cli = data_directory.join("fake-cli.cmd");
     let probe_marker = data_directory.join("fake-cli-probed.txt");
     std::fs::write(
@@ -400,9 +401,11 @@ echo FAKE-CLI-OK
     assert!(!question.contains("Antigravity (Gemini)"), "已取消勾選的 CLI 不應出現在確認訊息：{question}");
     w32::post(confirm, WM_COMMAND, 6, 0);
 
-    wait_until("三個假 CLI 執行完成", long, || {
+    // 第一個目標（Gemini）已取消勾選，其餘目標都要執行。
+    let expected_runs = catalog::kinds().len() - 1;
+    wait_until("其餘假 CLI 執行完成", long, || {
         let jobs = load_jobs(&data_directory);
-        jobs[0].status == ScheduleStatus::Pending && jobs[0].last_results.len() == 3
+        jobs[0].status == ScheduleStatus::Pending && jobs[0].last_results.len() == expected_runs
     });
     let finished = load_jobs(&data_directory).remove(0);
     assert!(finished.enabled, "立即執行會啟用排程。");
@@ -413,7 +416,7 @@ echo FAKE-CLI-OK
     let terminal = control(window, main::ID_TERMINAL_OUTPUT);
     wait_until("終端機顯示執行過程", short, || {
         let output = text_of(terminal);
-        output.matches("✓").count() == 3 && output.contains("FAKE-CLI-OK")
+        output.matches("✓").count() == expected_runs && output.contains("FAKE-CLI-OK")
     });
     let output = text_of(terminal);
     assert!(output.contains("▶ Codex 開始執行，訊息：早安"), "終端機應顯示開始事件：{output}");

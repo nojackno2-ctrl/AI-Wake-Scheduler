@@ -130,7 +130,7 @@ fn append_effort_arguments(arguments: &mut Vec<String>, kind: CliKind, effort: T
     match kind {
         // 以 `agy --help` 實測核對：--effort 只接受 low|medium|high，
         // 沒有 minimal/xhigh/max，超出範圍一律夾到最接近的合法值。
-        CliKind::Antigravity => match effort {
+        CliKind::Antigravity | CliKind::AntigravityArgon => match effort {
             E::Default => {}
             E::Minimal | E::Low => push("--effort", "low"),
             E::Medium => push("--effort", "medium"),

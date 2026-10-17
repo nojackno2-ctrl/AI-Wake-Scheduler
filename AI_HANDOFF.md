@@ -1,5 +1,19 @@
 # AI HANDOFF
 
+## 2026-10-17 Claude：AGY Argon 呼叫獨立成第五個目標（完成）
+
+- 使用者目標「agy 的 argon 呼叫獨立出來」。
+- 設計：新增 `CliKind::AntigravityArgon`，加在列舉最後（舊版資料檔可能以整數序號保存目標，Antigravity=0…Claude=3 不可變動）；畫面與新排程預設目標順序改由 `catalog::kinds()`（目錄順序：Gemini、Argon、Claude/GPT、Codex、Claude）決定，不再依賴 `CliKind::ALL`。
+- 變更：
+  - `catalog.rs`：新增 Argon 描述（`agy`、預設 `gemini-4-argon`、AGY_FLASH effort、`--print` 結尾）；Gemini 推薦清單移除 Argon，改列 `gemini-3.8-flash-low/high`（維持 ≥3 項）；新增 `kinds()`。
+  - `usage.rs`：`matches_pool` 改以群組＋bucket 名稱分流，Argon 先排除再判斷 Gemini（群組名「Gemini 4 Argon」也含 gemini）；`pool_name` 改取目錄顯示名稱。
+  - `command_builder.rs`、`login.rs`、`main_window.rs`（登入後清除 AGY 連線快取）納入 Argon。
+  - `board.rs`：移除「Argon 每週」特例，Argon 群組內直接顯示「每週」。
+  - `models.rs`：新排程預設目標與空目標補回改用 `catalog::kinds()`；舊設定由 `ensure_defaults` 自動補上 Argon 設定。
+  - 既有排程的目標不會自動加入 Argon，需使用者自行勾選。
+- 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked` 28 通過、2 opt-in 忽略；opt-in `executable_locator_resolution`（唯讀，不耗 Token）真實讀到 Gemini 2 視窗、Argon 1 視窗（每週 100%）、Claude/GPT 2 視窗。
+- 未驗證：未實際送出 Argon 喚醒（會消耗 Argon 每週額度）；未在 VS／桌面手動檢視新增的第五個勾選框與設定列版面（UI 端對端測試已涵蓋控制項存在與執行數量）。
+
 ## 2026-10-17 Claude：新增 Visual Studio 方案，可在 VS 內編譯與測試（完成）
 
 - 使用者目標「可以直接在 Visual Studio 編譯測試」。

@@ -15,7 +15,7 @@
 ## ✨ 核心特色
 
 - ⏰ **極簡每日排程**：直接設定每天固定觸發時分（`HH:mm`），支援多組排程管理，主畫面即時顯示距離下一次執行的倒數計時。
-- 🚀 **四大多模型目標平行喚醒**：同時支援 **Google Antigravity (`agy`) Gemini 額度池**、**Antigravity Claude / GPT 額度池**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
+- 🚀 **五個額度池目標平行喚醒**：同時支援 **Google Antigravity (`agy`) Gemini 額度池**、**Antigravity Gemini 4 Argon 額度池**、**Antigravity Claude / GPT 額度池**、**Anthropic Claude (`claude`)** 與 **OpenAI Codex (`codex`)**。多個 CLI 到點時平行獨立啟動，互不等待與阻塞。
 - 📊 **真實額度與重置倒數**：透過 Codex 官方 app-server、Claude Code OAuth usage 端點與 Antigravity CLI 內建 `/usage`，唯讀取得剩餘百分比及重置時間；關閉背景查詢時可讀取已開啟 IDE 的 Language Server。
 - 💡 **極致 Token 節省模式 (Token Saver)**：
   - 自動套用最低推理與簡短模式（`--effort low`、`model_reasoning_effort=low`）。
@@ -36,14 +36,15 @@
 | AI 工具 / 額度池 | 預設執行檔命令 | 喚醒呼叫範例（節省 Token 模式） | 預設節省機制說明 |
 | :--- | :--- | :--- | :--- |
 | **Antigravity (Gemini)** | `agy` | `agy --model gemini-3.8-flash --effort low --disable-slash-commands --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
+| **Antigravity (Argon)** | `agy` | `agy --model gemini-4-argon --effort low --disable-slash-commands --print <提示>` | 獨立的 Gemini 4 Argon 每週額度池，單獨勾選、單獨倒數；旗標同樣置於 `--print` 前 |
 | **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-5-5-low --disable-slash-commands --print <提示>` | 明確選擇 Claude 額度池；完整模型 ID 已包含 Low 思考程度，因此不另傳 `--effort` |
 | **OpenAI Codex** | `codex` | `codex exec --model gpt-6-luna --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
 | **Anthropic Claude** | `claude` | `claude --print --model claude-haiku-4-5-20251001 --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
 
-預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 4.5；AGY Claude 池使用 Sonnet 5.5 Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
+預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 4.5；AGY Claude 池使用 Sonnet 5.5 Low；AGY Argon 池使用 Gemini 4 Argon Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
 
 > [!TIP]
-> Google Antigravity 內部將額度切分為 **Gemini Models**、**Claude and GPT models** 與 **Gemini 4 Argon** 等獨立計數器。勾選本工具中的這兩項目標，可同時喚醒兩邊的 5 小時滾動重設窗口！
+> Google Antigravity 內部將額度切分為 **Gemini Models**、**Claude and GPT models** 與 **Gemini 4 Argon** 三個獨立計數器，本工具各以一個目標對應：Gemini 與 Claude / GPT 各有 5 小時與每週視窗，Argon 只有每週視窗。三個目標可分別勾選、分別倒數；Argon 喚醒會消耗它自己的每週額度。
 > 實際執行時，使用者訊息會以安全參數傳入，每個排程與每個 CLI 僅呼叫一次且失敗不自動重試，最大字數限制為 50 字元。
 
 ---
