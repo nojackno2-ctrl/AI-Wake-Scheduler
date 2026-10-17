@@ -1,6 +1,6 @@
 ; AI 倒數喚醒 (AI Wake Scheduler) Inno Setup 6 腳本
 #define MyAppName "AI 倒數喚醒"
-#define MyAppVersion "1.10.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "AI Wake Scheduler"
 #define MyAppURL "https://github.com/nojackno2-ctrl/AI-Wake-Scheduler"
 #define MyAppExeName "AI倒數喚醒.exe"
@@ -79,6 +79,16 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "startupicon"; Description: "登入 Windows 時自動在背景啟動 (常駐系統匣)"; GroupDescription: "系統啟動選項:"; Flags: unchecked
+
+[InstallDelete]
+; v1.x 為 .NET 自包含版，安裝目錄留有執行階段 DLL 與資源資料夾；
+; v2 起只安裝單一原生執行檔與圖示，升級時清掉這些殘留（使用者資料不在安裝目錄）。
+Type: files; Name: "{app}\*.dll"
+Type: files; Name: "{app}\*.pdb"
+Type: files; Name: "{app}\*.deps.json"
+Type: files; Name: "{app}\*.runtimeconfig.json"
+Type: files; Name: "{app}\createdump.exe"
+Type: filesandordirs; Name: "{app}\zh-Hant"
 
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

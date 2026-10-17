@@ -1153,7 +1153,13 @@ fn query_codex_rate_limits(profile: &CliProfile, working_directory: &str, cancel
 
         // JSONL 第一個位元組不可有 UTF-8 BOM；否則 initialize 會被視為無效訊息。
         stdin.write_all(
-            b"{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",\"title\":\"AI Wake Scheduler\",\"version\":\"1.10.0\"}}}\n",
+            concat!(
+                "{\"method\":\"initialize\",\"id\":0,\"params\":{\"clientInfo\":{\"name\":\"ai_wake_scheduler\",",
+                "\"title\":\"AI Wake Scheduler\",\"version\":\"",
+                env!("CARGO_PKG_VERSION"),
+                "\"}}}\n"
+            )
+            .as_bytes(),
         )?;
         stdin.flush()?;
 

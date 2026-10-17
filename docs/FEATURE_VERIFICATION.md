@@ -16,6 +16,14 @@
 
 CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，於 UTC、台北、印度、太平洋、澳洲東部五個時區矩陣執行 fmt、clippy、build、test。
 
+## 2026-10-17 v2.0.0 發布檢查（Claude）
+
+- 版本 2.0.0（`Cargo.toml`、`.iss`；HTTP User-Agent 與 Codex app-server clientInfo 改取 `CARGO_PKG_VERSION`）。
+- `build-installer.ps1`：測試 28 通過、3 opt-in 略過；正式安裝程式 2,425,162 bytes，ProductVersion 2.0.0.0；執行檔 1,798,144 bytes，FileVersion／ProductVersion 2.0.0，兩次建置 SHA256 相同（F7E98974…6CF8）。
+- 安裝程式新增 `[InstallDelete]`，清除 v1.x .NET 自包含版殘留。QA 安裝包五階段全 PASS；在 Install 後放入模擬殘留（DLL、PDB、deps.json、runtimeconfig.json、createdump.exe、`zh-Hant\`），UpgradeKeepStartup 後全部移除，只留 exe、ico、LICENSE、README 與解除安裝程式；解除安裝後 QA 目錄為空。
+- 免安裝 ZIP 解壓後執行檔 SHA256 與建置產物相同。
+- 未驗證：以真正的 v1.10.0 安裝版升級、重開機自動啟動、系統匣通知外觀、Argon 以外 CLI 的 v2.0.0 真實喚醒。
+
 ## 2026-10-17 AGY Argon 獨立目標（Claude）
 
 - 新增 `CliKind::AntigravityArgon`（顯示「Antigravity (Argon)」），預設 `gemini-4-argon`，畫面排在 Gemini 之後；列舉值加在最後以保留舊版整數序號。

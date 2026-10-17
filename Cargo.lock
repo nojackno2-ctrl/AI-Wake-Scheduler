@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "aiwake-app"
-version = "1.10.0"
+version = "2.0.0"
 dependencies = [
  "aiwake-core",
  "chrono",
@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "aiwake-core"
-version = "1.10.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "regex",

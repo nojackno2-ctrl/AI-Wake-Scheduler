@@ -54,7 +54,7 @@
 ### 1. 下載與安裝
 
 #### 方法 A：使用 Windows 安裝版（推薦）
-1. 前往 [Releases](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/latest) 下載 **`AI倒數喚醒_Setup_v1.10.0_x64.exe`**；`SHA256SUMS.txt` 提供校驗碼。
+1. 前往 [Releases](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/latest) 下載 **`AI-Wake-Scheduler_Setup_v2.0.0_x64.exe`**（免安裝版為 `AI-Wake-Scheduler_Portable_v2.0.0_win-x64.zip`）；`SHA256SUMS.txt` 提供校驗碼。
 2. 執行安裝程式，依照精靈指示選擇安裝位置；桌面捷徑與登入 Windows 後自動啟動皆為可選項，預設不勾選。
 3. 安裝程式會固定在開始功能表建立啟動與解除安裝捷徑；可在啟動捷徑上按右鍵，自行釘選到「開始」或工作列。
 4. 安裝版體積僅約 2.3 MB，原生獨立執行，電腦**無須預先安裝任何執行環境（如 .NET Runtime）**即可直接運行。
@@ -161,7 +161,7 @@ powershell -ExecutionPolicy Bypass -File .\build-release.ps1
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-installer.ps1
 ```
-產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v1.10.0_x64_<時間戳>.exe`，並附獨立 `.sha256`。
+產出之安裝程式將位於 `dist\AI倒數喚醒_Setup_v<版本>_x64_<時間戳>.exe`，並附獨立 `.sha256`。
 
 **安裝生命週期驗證（可選）：**
 ```powershell

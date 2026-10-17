@@ -102,7 +102,7 @@ pub fn send(request: &HttpRequest<'_>) -> Result<HttpResponse, String> {
     let is_loopback = url.host == "127.0.0.1" || url.host.eq_ignore_ascii_case("localhost");
 
     unsafe {
-        let agent = to_wide("ai-wake-scheduler/1.10.0");
+        let agent = to_wide(concat!("ai-wake-scheduler/", env!("CARGO_PKG_VERSION")));
         let session = Handle::new(
             WinHttpOpen(
                 PCWSTR(agent.as_ptr()),

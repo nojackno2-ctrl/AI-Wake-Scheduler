@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-10-17 Claude：發布 v2.0.0（進行中→見下方狀態）
+
+- 使用者要求「發布執行檔」，經詢問選擇版本 v2.0.0、發布到 GitHub Release（明確授權發布）。
+- 變更：版本 1.10.0→2.0.0（`Cargo.toml`、`Cargo.lock`、`.iss`）；`http.rs` User-Agent 與 `usage.rs` Codex initialize clientInfo 改用 `env!("CARGO_PKG_VERSION")`；`.iss` 新增 `[InstallDelete]` 清除 v1.x .NET 殘留（`*.dll`、`*.pdb`、`*.deps.json`、`*.runtimeconfig.json`、`createdump.exe`、`zh-Hant\`）；README 下載檔名改為 Release 資產名稱；新增 `docs/RELEASE_v2.0.0.md`。
+- 資產（`dist\v2.0.0\release\`，dist 不納入版控）：`AI-Wake-Scheduler_Setup_v2.0.0_x64.exe`（sha256 8152b6f0…6e15）、`AI-Wake-Scheduler_Portable_v2.0.0_win-x64.zip`（0a15b00c…7d8f，內含 `AI倒數喚醒.exe`＋LICENSE）、`SHA256SUMS.txt`。
+- 驗證：見 `docs/FEATURE_VERIFICATION.md`「v2.0.0 發布檢查」。Inno Setup 編譯器為 Antigravity IDE 內附的 innosetup npm 套件版本（build-installer.ps1 自動找到）。
+- 未驗證：真正 v1.10.0 安裝版直接升級、重開機自動啟動、系統匣通知外觀、Argon 以外 CLI 的真實喚醒。
+
 ## 2026-10-17 Claude：AGY Argon 呼叫獨立成第五個目標（完成）
 
 - 使用者目標「agy 的 argon 呼叫獨立出來」。
