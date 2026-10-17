@@ -8,7 +8,7 @@
   - `cargo clippy --workspace --all-targets --locked -- -D warnings`：通過。
   - `cargo test --workspace --locked`：28 通過、2 項 opt-in 依設計忽略、0 失敗。
 - 靜態掃描：無 TODO/FIXME；非測試程式的 `expect` 僅用於靜態 regex 編譯與目錄查表，`time::local_wall_clock` 的 `expect` 只有測試呼叫。
-- 待處理：`docs/FEATURE_VERIFICATION.md` 仍描述 C#/WinForms 與 `dotnet build` 驗證，與純 Rust 架構不符，需改寫或標示為歷史紀錄。
+- 已處理：`docs/FEATURE_VERIFICATION.md` 改寫為純 Rust 驗證紀錄（現行指令、2026-10-16／10-17 結果、測試覆蓋對照、未驗證項目），C#/WinForms 舊內容原文移至文末「歷史紀錄」。已確認文件中的 opt-in 指令 `cargo test -p aiwake-core --test core_tests -- --ignored` 可正確解析（列出 19 項測試）；未實際執行 opt-in 真實 CLI 測試。
 - 未驗證：本次未重跑 `build-release.ps1`、`build-installer.ps1`、`tests/Verify-Installer.ps1`。
 
 ## 2026-10-16 Antigravity：專案全面改為純 Rust 語言架構（完成）
