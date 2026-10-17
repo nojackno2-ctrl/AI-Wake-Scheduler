@@ -3,3 +3,4 @@
 /dist/
 *.user
 *.suo
+/.vs/

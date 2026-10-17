@@ -1,0 +1,85 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Cargo">
+      <UniqueIdentifier>{3D31A5F6-977A-5E50-B067-D20C7DD88D51}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="core\src">
+      <UniqueIdentifier>{C75F95CB-8541-5E78-89B2-BE0791BC59E6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="core\tests">
+      <UniqueIdentifier>{64222C5F-2A76-56E6-9EC2-ECE1B33FEDE6}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="app\src">
+      <UniqueIdentifier>{DC785590-85F2-5697-B381-1A70083BA855}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="app\tests">
+      <UniqueIdentifier>{5F888777-8FB1-5B74-832E-EE7FD18416A9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="scripts">
+      <UniqueIdentifier>{99EAB5A5-A79F-54C7-AA5E-D11262233110}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="docs">
+      <UniqueIdentifier>{3E9A11CA-B177-506F-BB1E-2FFFFF640EB9}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Cargo.toml">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="Cargo.lock">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="rustfmt.toml">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="core\Cargo.toml">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="app\Cargo.toml">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="app\build.rs">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="app\app.manifest">
+      <Filter>Cargo</Filter>
+    </None>
+    <None Include="core\src\*.rs">
+      <Filter>core\src</Filter>
+    </None>
+    <None Include="core\tests\*.rs">
+      <Filter>core\tests</Filter>
+    </None>
+    <None Include="app\src\*.rs">
+      <Filter>app\src</Filter>
+    </None>
+    <None Include="app\tests\*.rs">
+      <Filter>app\tests</Filter>
+    </None>
+    <None Include="build-release.ps1">
+      <Filter>scripts</Filter>
+    </None>
+    <None Include="build-installer.ps1">
+      <Filter>scripts</Filter>
+    </None>
+    <None Include="tests\Verify-Installer.ps1">
+      <Filter>scripts</Filter>
+    </None>
+    <None Include="tools\vs-cargo.ps1">
+      <Filter>scripts</Filter>
+    </None>
+    <None Include="README.md">
+      <Filter>docs</Filter>
+    </None>
+    <None Include="AGENTS.md">
+      <Filter>docs</Filter>
+    </None>
+    <None Include="AI_HANDOFF.md">
+      <Filter>docs</Filter>
+    </None>
+    <None Include="docs\*.md">
+      <Filter>docs</Filter>
+    </None>
+  </ItemGroup>
+</Project>

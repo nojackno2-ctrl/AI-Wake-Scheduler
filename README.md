@@ -106,12 +106,30 @@ AI倒數喚醒/
 ├── rustfmt.toml              # 程式碼格式化規則
 ├── build-release.ps1         # 測試並建置 Release 執行檔（dist\AI倒數喚醒.exe）
 ├── build-installer.ps1       # 一鍵自動測試、建置與編譯 Inno Setup 安裝包腳本
+├── AI倒數喚醒.sln            # Visual Studio 方案（NMake 專案，實際建置交給 cargo）
+├── AI倒數喚醒.vcxproj
+├── tools/vs-cargo.ps1        # VS 用 cargo 包裝腳本，把診斷轉成「錯誤清單」格式
 ├── assets/                   # 應用程式高解析度圖示 (app.ico)
 ├── installer/                # Inno Setup 6 繁中安裝腳本與語系檔
 ├── core/                     # crate aiwake-core：排程引擎、CLI 執行、TokenSaver 參數、WinHTTP 額度讀取
 ├── app/                      # crate aiwake-app：原生 Win32 控制項介面、RichEdit 終端機、系統匣、Run key 啟動
 └── tests/
     └── Verify-Installer.ps1  # 安裝程式完整生命週期驗證腳本
+```
+
+### 在 Visual Studio 中建置與測試
+
+以 Visual Studio 2026（或 2022）開啟 `AI倒數喚醒.sln`，需安裝「使用 C++ 的桌面開發」工作負載。方案組態下拉選單有三種設定：
+
+| 組態 | 建置（Ctrl+Shift+B）時執行 | F5 啟動 |
+| --- | --- | --- |
+| `Debug` | `cargo build` | `target\debug\ai-wake-scheduler.exe`（含 PDB，可下中斷點） |
+| `Release` | `cargo build --release` | `target\release\ai-wake-scheduler.exe` |
+| `Test` | `cargo fmt --check` → `cargo clippy -D warnings` → `cargo test` | `target\debug\ai-wake-scheduler.exe` |
+
+編譯錯誤、clippy 警告、格式差異與失敗測試的 panic 位置會出現在「錯誤清單」，點兩下即可跳到原始碼；完整輸出在「輸出」視窗。測試不會出現在「測試總管」。同樣的建置也可在命令列以 MSBuild 執行：
+```powershell
+msbuild AI倒數喚醒.sln /p:Configuration=Test /p:Platform=x64
 ```
 
 ### 命令列建置與測試

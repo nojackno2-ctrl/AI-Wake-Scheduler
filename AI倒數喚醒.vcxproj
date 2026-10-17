@@ -1,0 +1,82 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Visual Studio 用的 NMake 外殼專案：建置、測試與清除都交給 cargo（tools\vs-cargo.ps1）。
+  方案設定：Debug／Release 執行 cargo build；Test 執行 fmt 檢查、clippy 與 cargo test。
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Test|x64">
+      <Configuration>Test</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{00ACE46C-856C-4711-8739-0C81F3F4485E}</ProjectGuid>
+    <Keyword>MakeFileProj</Keyword>
+    <RootNamespace>aiwake</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <PlatformToolset Condition="'$(VisualStudioVersion)'=='17.0'">v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildProjectDirectory)\target\vs\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildProjectDirectory)\target\vs\$(Configuration)\obj\</IntDir>
+    <VsCargo>powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(MSBuildProjectDirectory)\tools\vs-cargo.ps1"</VsCargo>
+    <NMakeCleanCommandLine>$(VsCargo) -Action Clean</NMakeCleanCommandLine>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <NMakeBuildCommandLine>$(VsCargo) -Action Build -Configuration Debug</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(VsCargo) -Action Clean &amp;&amp; $(VsCargo) -Action Build -Configuration Debug</NMakeReBuildCommandLine>
+    <NMakeOutput>$(MSBuildProjectDirectory)\target\debug\ai-wake-scheduler.exe</NMakeOutput>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <NMakeBuildCommandLine>$(VsCargo) -Action Build -Configuration Release</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(VsCargo) -Action Clean &amp;&amp; $(VsCargo) -Action Build -Configuration Release</NMakeReBuildCommandLine>
+    <NMakeOutput>$(MSBuildProjectDirectory)\target\release\ai-wake-scheduler.exe</NMakeOutput>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Test|x64'">
+    <NMakeBuildCommandLine>$(VsCargo) -Action Test -Configuration Debug</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(VsCargo) -Action Clean &amp;&amp; $(VsCargo) -Action Test -Configuration Debug</NMakeReBuildCommandLine>
+    <NMakeOutput>$(MSBuildProjectDirectory)\target\debug\ai-wake-scheduler.exe</NMakeOutput>
+  </PropertyGroup>
+  <PropertyGroup>
+    <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
+    <LocalDebuggerCommand>$(NMakeOutput)</LocalDebuggerCommand>
+    <LocalDebuggerWorkingDirectory>$(MSBuildProjectDirectory)</LocalDebuggerWorkingDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="Cargo.toml" />
+    <None Include="Cargo.lock" />
+    <None Include="rustfmt.toml" />
+    <None Include="core\Cargo.toml" />
+    <None Include="app\Cargo.toml" />
+    <None Include="app\build.rs" />
+    <None Include="app\app.manifest" />
+    <None Include="core\src\*.rs" />
+    <None Include="core\tests\*.rs" />
+    <None Include="app\src\*.rs" />
+    <None Include="app\tests\*.rs" />
+    <None Include="build-release.ps1" />
+    <None Include="build-installer.ps1" />
+    <None Include="tests\Verify-Installer.ps1" />
+    <None Include="tools\vs-cargo.ps1" />
+    <None Include="README.md" />
+    <None Include="AGENTS.md" />
+    <None Include="AI_HANDOFF.md" />
+    <None Include="docs\*.md" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

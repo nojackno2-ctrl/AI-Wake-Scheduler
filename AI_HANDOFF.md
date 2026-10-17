@@ -1,5 +1,19 @@
 # AI HANDOFF
 
+## 2026-10-17 Claude：新增 Visual Studio 方案，可在 VS 內編譯與測試（完成）
+
+- 使用者目標「可以直接在 Visual Studio 編譯測試」。
+- 新增：
+  - `AI倒數喚醒.sln`、`AI倒數喚醒.vcxproj`（NMake/Makefile 專案，PlatformToolset v145，VS 2022 自動改用 v143）、`AI倒數喚醒.vcxproj.filters`（方案總管分資料夾顯示 .rs、Cargo、腳本、文件）。
+  - 組態：`Debug`＝cargo build、`Release`＝cargo build --release、`Test`＝fmt --check → clippy -D warnings → cargo test；F5 啟動對應的 `target\<profile>\ai-wake-scheduler.exe`。VS 中繼檔放在 `target\vs\`。
+  - `tools/vs-cargo.ps1`（UTF-8 BOM，相容 PowerShell 5.1）：以 `--message-format=short` 執行 cargo，把診斷、rustfmt 差異、測試 panic 位置轉為 `檔案(行,欄): error 代碼: 訊息`，供 VS 錯誤清單點擊跳轉。已處理新版 Rust panic 訊息中的執行緒 ID `(12345)`。
+  - `.gitignore` 加入 `/.vs/`；README 新增「在 Visual Studio 中建置與測試」。
+- 驗證（VS 2026 Community 18.10.4 的 MSBuild 命令列）：
+  - `msbuild AI倒數喚醒.sln /p:Configuration=Debug|Release|Test /p:Platform=x64`：三者皆 exit 0；Test 組態 28 通過、2 opt-in 忽略；繁中輸出不亂碼。
+  - 負向測試（暫時修改後已還原並確認 `git diff` 乾淨）：型別錯誤 → `fake_cli.rs(23,5): error E0308`；rustfmt 差異 → `fake_cli.rs(19): error rustfmt`；失敗單元測試 → `tokenizer.rs(59,9): error test`；三者 MSBuild 均失敗。
+  - 注意：以舊時間戳的備份還原原始碼時，cargo 會因 mtime 判定未變而沿用舊產物；需更新檔案時間。
+- 未驗證：VS IDE 介面內的實際操作（Ctrl+Shift+B、錯誤清單點擊、F5 除錯）只以同一 MSBuild 目標推定；Rebuild／Clean（會執行 cargo clean）未執行；VS 2022 v143 分支未測。測試不會出現在測試總管。
+
 ## 2026-10-17 Claude：專案健康檢查（僅檢查，未改程式）
 
 - Git：`main` 乾淨，與 `d6b6180` 同步；GitHub CI 最近一次（d6b6180）成功，前一次 b83fcf5 失敗已由後續提交修復。
