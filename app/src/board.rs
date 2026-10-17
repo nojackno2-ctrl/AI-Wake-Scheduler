@@ -179,13 +179,21 @@ impl UsageBoard {
         let bar_x = label_width + gap;
         let percent_x = bar_x + bar_width + gap;
         let countdown_x = percent_x + percent_width + gap;
-        let at = |x: i32, y: i32, w: i32, h: i32| w32::rect(origin_x + x, origin_y + y, w, h);
 
-        let mut y = 0;
+        // 寬度足夠時各 CLI 分欄排列（依目錄順序由左而右、由上而下），每一橫列取最高者。
+        let columns = columns_for(fonts, width);
+        let column_gap = scale(20);
+        let column_width = (width - column_gap * (columns as i32 - 1)) / columns as i32;
+        let (mut row_top, mut row_bottom) = (0, 0);
         for (index, descriptor) in catalog::all().iter().enumerate() {
-            if index > 0 {
-                y += scale(9);
+            let column = index % columns;
+            if column == 0 && index > 0 {
+                row_top = row_bottom + scale(9);
             }
+            let origin_x = origin_x + column as i32 * (column_width + column_gap);
+            let width = column_width;
+            let at = |x: i32, y: i32, w: i32, h: i32| w32::rect(origin_x + x, origin_y + y, w, h);
+            let mut y = row_top;
             let group = self.groups.get(&descriptor.kind);
 
             if let Some(dc) = target {
@@ -218,6 +226,7 @@ impl UsageBoard {
                     origin_y + y,
                     width,
                 );
+                row_bottom = row_bottom.max(y);
                 continue;
             };
 
@@ -240,6 +249,7 @@ impl UsageBoard {
                         links,
                     );
                 }
+                row_bottom = row_bottom.max(y);
                 continue;
             }
 
@@ -286,8 +296,9 @@ impl UsageBoard {
                 }
                 y += row_height;
             }
+            row_bottom = row_bottom.max(y);
         }
-        y
+        row_bottom
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -388,6 +399,13 @@ impl UsageBoard {
         }
         height + fonts.scale(4)
     }
+}
+
+/// 看板依寬度自動決定的欄數：每欄至少約 320px，最多 3 欄。
+pub fn columns_for(fonts: &Fonts, width: i32) -> usize {
+    let minimum = fonts.scale(320);
+    let gap = fonts.scale(20);
+    (((width + gap) / (minimum + gap)).max(1) as usize).min(3)
 }
 
 /// 畫一段說明文字（尚未讀取、不支援或錯誤訊息），回傳佔用高度。

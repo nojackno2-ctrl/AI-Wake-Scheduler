@@ -28,11 +28,11 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, DestroyMenu, DestroyWindow, GetCursorPos, IsIconic, IsWindowVisible, KillTimer,
     LoadCursorW, PostQuitMessage, RegisterWindowMessageW, SetCursor, SetForegroundWindow, SetTimer, SetWindowPos,
-    ShowWindow, TrackPopupMenu, HICON, IDC_HAND, IDC_SIZENS, IDC_SIZEWE, MF_SEPARATOR, MF_STRING, MINMAXINFO,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, TPM_RIGHTBUTTON, WM_CLOSE, WM_COMMAND,
-    WM_CONTEXTMENU, WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY,
-    WM_NOTIFY, WM_PAINT, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL,
+    ShowWindow, TrackPopupMenu, HICON, IDC_HAND, IDC_SIZENS, MF_SEPARATOR, MF_STRING, MINMAXINFO, SWP_NOACTIVATE,
+    SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNORMAL, TPM_RIGHTBUTTON, WM_CLOSE, WM_COMMAND, WM_CONTEXTMENU,
+    WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_GETMINMAXINFO,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_NOTIFY, WM_PAINT,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE, WM_TIMER, WM_VSCROLL,
 };
 
 use crate::board::UsageBoard;
@@ -111,6 +111,10 @@ const EDITOR_NOTE: &str = "自動倒數模式從指定時間偵測至 24:00，�
 const RECURRENCE_ITEMS: [&str; 3] =
     ["每天固定時間", "自動模式（每 5 小時 1 分鐘）", "自動倒數模式（每日偵測至 24:00）"];
 const TIME_LABELS: [&str; 3] = ["每天時間", "首次喚醒時間", "開始偵測時間"];
+/// 內容區至少這麼寬時改用三欄（清單｜排程內容｜額度看板）。
+const WIDE_LAYOUT_WIDTH: i32 = 940;
+/// 編輯面板至少這麼寬時「排程內容」與「額度看板」左右並排。
+const EDITOR_TWO_COLUMN_WIDTH: i32 = 680;
 const USAGE_TITLE: &str = "剩餘流量與重置倒數";
 const TERMINAL_TITLE: &str = "即時終端輸出";
 
@@ -128,7 +132,6 @@ pub fn work_area(hwnd: HWND) -> RECT {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
     None,
-    Vertical,
     Horizontal,
 }
 
@@ -154,7 +157,6 @@ struct FrameLayout {
     left_panel: RECT,
     list_title: RECT,
     list_area: RECT,
-    vertical_splitter: RECT,
     horizontal_splitter: RECT,
     terminal_title: RECT,
     status: RECT,
@@ -164,6 +166,8 @@ struct FrameLayout {
 #[derive(Default)]
 struct EditorLayout {
     labels: Vec<Label>,
+    /// 白底卡片（排程內容、額度看板）。
+    cards: Vec<RECT>,
     board_box: RECT,
     board_origin: (i32, i32),
     board_width: i32,
@@ -223,8 +227,7 @@ pub struct MainWindow {
     editor_layout: RefCell<EditorLayout>,
     editor_scroll: VScroll,
     in_editor_layout: Cell<bool>,
-    /// 使用者拖曳後的左側寬度比例與終端機高度；None 表示使用預設。
-    left_ratio: Cell<Option<f64>>,
+    /// 使用者拖曳後的終端機高度；None 表示使用預設。
     terminal_height: Cell<Option<i32>>,
     drag: Cell<Drag>,
     tray_added: Cell<bool>,
@@ -252,7 +255,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         WINDOW_CLASS,
         &title,
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-        w32::rect(0, 0, 1180, 760),
+        w32::rect(0, 0, 1480, 900),
         None,
         0,
         std::ptr::null(),
@@ -264,8 +267,8 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
     // 依目前螢幕工作區決定視窗大小並置中，避免在小螢幕或高 DPI 下超出畫面。
     let fonts = Rc::new(Fonts::new(w32::dpi_of(hwnd)));
     let work = work_area(hwnd);
-    let width = fonts.scale(1180).min(w32::width_of(&work));
-    let height = fonts.scale(760).min(w32::height_of(&work));
+    let width = fonts.scale(1480).min(w32::width_of(&work));
+    let height = fonts.scale(900).min(w32::height_of(&work));
     unsafe {
         let _ = SetWindowPos(
             hwnd,
@@ -380,7 +383,6 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         editor_layout: RefCell::new(EditorLayout::default()),
         editor_scroll: VScroll::default(),
         in_editor_layout: Cell::new(false),
-        left_ratio: Cell::new(None),
         terminal_height: Cell::new(None),
         drag: Cell::new(Drag::None),
         tray_added: Cell::new(false),
@@ -516,6 +518,10 @@ impl MainWindow {
     // ── 版面 ──────────────────────────────────────────────────────
 
     /// 擺放主視窗的子控制項並記下自繪區域。
+    ///
+    /// 欄位依寬度自動調整：夠寬時排程清單、排程內容、額度看板排成三欄；
+    /// 較窄時清單移到上方，排程內容與額度看板在下方並排。終端機預設只拿
+    /// 上方內容用剩的高度，讓所有資訊盡量在同一頁看完。
     fn layout_frame(&self) {
         let fonts = self.fonts();
         let s = |value: i32| fonts.scale(value);
@@ -525,39 +531,54 @@ impl MainWindow {
             return;
         }
 
-        let header_height = s(16) + fonts.header_title.height() + s(5) + fonts.body.height() + s(18);
+        let header_height = fonts.header_title.height() + s(18);
         let status_height = fonts.body.height() + s(12);
         let splitter = s(6);
         let button_height = theme::button_height(&fonts);
+        let pad = s(12);
+        let gap = s(12);
 
         let content_top = header_height;
         let content_height = (height - header_height - status_height).max(0);
+        let content_width = (width - pad * 2).max(0);
 
-        // 終端機面板常駐在下方，預設給它三分之一高度（120～220px 之間）。
-        let available_height = content_height - splitter;
-        let default_terminal = (available_height / 3).clamp(s(120), s(220));
+        let wide = content_width >= s(WIDE_LAYOUT_WIDTH);
+        let editor_width = if wide {
+            ((content_width as f64 * 0.64) as i32).clamp(s(EDITOR_TWO_COLUMN_WIDTH), s(1080))
+        } else {
+            content_width
+        };
+        let list_width = (content_width - gap - editor_width).max(0);
+        let list_minimum = s(180);
+
+        // 終端機：預設取上方內容放完後剩下的高度，但至少保留幾行輸出。
+        let toolbar_height = button_height + s(8);
+        let available_height = (content_height - pad - splitter).max(0);
+        let editor_needed = self.arrange_editor(editor_width, 0, None).1;
+        let needed = if wide { editor_needed } else { editor_needed + gap + list_minimum };
+        let minimum_terminal = toolbar_height + s(56);
+        let default_terminal =
+            (available_height - needed).clamp(minimum_terminal, (available_height / 2).max(minimum_terminal));
         let terminal_height = self.terminal_height.get().unwrap_or(default_terminal).clamp(
-            s(90).min(available_height.max(0)),
-            (available_height - s(200)).max(s(90)).min(available_height.max(0)).max(0),
+            minimum_terminal.min(available_height),
+            (available_height - s(240)).max(minimum_terminal).min(available_height),
         );
         let top_height = (available_height - terminal_height).max(0);
+        let top = content_top + pad;
 
-        let pad = s(12);
-        let inner = w32::rect(pad, content_top + pad, (width - pad * 2).max(0), (top_height - pad * 2).max(0));
-        let available_width = w32::width_of(&inner) - splitter;
-        let left_minimum = s(520).min((available_width / 2).max(0));
-        let right_minimum = s(360).min((available_width - left_minimum).max(0));
-        let left_width = ((available_width as f64 * self.left_ratio.get().unwrap_or(0.62)) as i32)
-            .clamp(left_minimum, (available_width - right_minimum).max(left_minimum));
-
-        let left_panel = w32::rect(inner.left, inner.top, left_width, w32::height_of(&inner));
-        let vertical_splitter = w32::rect(left_panel.right, inner.top, splitter, w32::height_of(&inner));
-        let editor_bounds = w32::rect(
-            vertical_splitter.right,
-            inner.top,
-            (available_width - left_width).max(0),
-            w32::height_of(&inner),
-        );
+        let (left_panel, editor_bounds) = if wide {
+            (
+                w32::rect(pad, top, list_width, top_height),
+                w32::rect(pad + list_width + gap, top, editor_width, top_height),
+            )
+        } else {
+            let list_height = (top_height - gap - editor_needed).max(list_minimum.min(top_height));
+            let editor_top = top + list_height + gap;
+            (
+                w32::rect(pad, top, content_width, list_height),
+                w32::rect(pad, editor_top, content_width, (top + top_height - editor_top).max(0)),
+            )
+        };
         w32::move_window(self.editor, &editor_bounds);
 
         // 左側面板：標題、清單與按鈕列。
@@ -572,7 +593,7 @@ impl MainWindow {
             w32::rect(panel_inner.left, panel_inner.top, w32::width_of(&panel_inner), fonts.section_title.height());
 
         // 按鈕由左而右排列，寬度不夠時換行。
-        let gap = s(6);
+        let button_gap = s(6);
         let mut positions = Vec::with_capacity(self.list_buttons.len());
         let (mut x, mut row) = (0, 0);
         for button in self.list_buttons {
@@ -582,17 +603,17 @@ impl MainWindow {
                 row += 1;
             }
             positions.push((button, x, row, button_width));
-            x += button_width + gap;
+            x += button_width + button_gap;
         }
         let button_rows = row + 1;
-        let buttons_height = button_rows * button_height + (button_rows - 1) * gap;
+        let buttons_height = button_rows * button_height + (button_rows - 1) * button_gap;
         let buttons_top = panel_inner.bottom - buttons_height;
         for (button, x, row, button_width) in positions {
             w32::move_window(
                 button,
                 &w32::rect(
                     panel_inner.left + x,
-                    buttons_top + row * (button_height + gap),
+                    buttons_top + row * (button_height + button_gap),
                     button_width,
                     button_height,
                 ),
@@ -609,11 +630,10 @@ impl MainWindow {
         self.resize_columns();
 
         // 終端機：工具列與輸出。
-        let horizontal_splitter = w32::rect(0, content_top + top_height, width, splitter);
+        let horizontal_splitter = w32::rect(0, top + top_height, width, splitter);
         let terminal_left = pad;
-        let terminal_width = (width - pad * 2).max(0);
+        let terminal_width = content_width;
         let toolbar_top = horizontal_splitter.bottom;
-        let toolbar_height = button_height + s(8);
         let title_width = fonts.table_header.measure(TERMINAL_TITLE).0 + s(16);
         let terminal_title = w32::rect(terminal_left, toolbar_top, title_width, toolbar_height);
         let clear_width = theme::button_width(&fonts, "清除");
@@ -642,7 +662,6 @@ impl MainWindow {
             left_panel,
             list_title,
             list_area,
-            vertical_splitter,
             horizontal_splitter,
             terminal_title,
             status: w32::rect(0, height - status_height, width, status_height),
@@ -650,39 +669,82 @@ impl MainWindow {
         w32::invalidate(self.hwnd);
     }
 
+    /// 清單欄寬依清單寬度自動分配：「CLI」欄吃掉多出的寬度，寬度不夠時各欄等比例縮小。
     fn resize_columns(&self) {
         let fonts = self.fonts();
-        let fixed = [fonts.scale(135), fonts.scale(115), fonts.scale(100), 0, fonts.scale(80)];
-        let used: i32 = fixed.iter().sum();
-        // 「CLI」欄吃掉剩餘寬度；工作區寬度已扣除外框與捲軸。
-        let fill = (w32::width_of(&w32::client_rect(self.list)) - used).max(fonts.scale(125));
-        for (index, column_width) in fixed.iter().enumerate() {
-            let column_width = if index == COLUMN_TARGETS { fill } else { *column_width };
-            w32::send(self.list, LVM_SETCOLUMNWIDTH, index, column_width as isize);
+        let preferred = [135, 115, 100, 125, 80].map(|value| fonts.scale(value));
+        let total: i32 = preferred.iter().sum();
+        // 工作區寬度已扣除外框與捲軸。
+        let available = w32::width_of(&w32::client_rect(self.list)).max(0);
+        let mut widths = preferred;
+        if available >= total {
+            widths[COLUMN_TARGETS] += available - total;
+        } else {
+            let minimum = fonts.scale(48);
+            widths = preferred.map(|value| (value * available / total).max(minimum));
+        }
+        for (index, column_width) in widths.iter().enumerate() {
+            w32::send(self.list, LVM_SETCOLUMNWIDTH, index, *column_width as isize);
         }
     }
 
-    /// 計算編輯面板的版面：移動控制項，並記下要自繪的文字與看板位置。
+    /// 重排主視窗與編輯面板；額度看板內容高度改變時使用。
+    fn relayout(&self) {
+        self.layout_frame();
+        self.layout_editor();
+    }
+
+    /// 擺放編輯面板的控制項，並記下要自繪的文字、卡片與看板位置。
     fn layout_editor(&self) {
         if self.in_editor_layout.replace(true) {
             return;
         }
+        let client = w32::client_rect(self.editor);
+        let offset = self.editor_scroll.position();
+        let (layout, content_height) =
+            self.arrange_editor(w32::width_of(&client), offset, Some(w32::height_of(&client)));
+        *self.editor_layout.borrow_mut() = layout;
+        let scrolled = self.editor_scroll.update(self.editor, content_height, w32::height_of(&client));
+        self.in_editor_layout.set(false);
+        if scrolled {
+            // 內容變短使捲動位置被拉回時，依新的位置重排一次。
+            self.layout_editor();
+            return;
+        }
+        w32::invalidate(self.editor);
+    }
+
+    /// 計算編輯面板的版面與內容總高度。`viewport` 為 None 時只量測、不移動控制項。
+    ///
+    /// 寬度足夠時「排程內容」與「額度看板」左右並排，否則上下堆疊；
+    /// CLI 勾選框與額度看板也會依可用寬度自動分欄。
+    fn arrange_editor(&self, width: i32, offset: i32, viewport: Option<i32>) -> (EditorLayout, i32) {
         let fonts = self.fonts();
         let colors = palette();
         let s = |value: i32| fonts.scale(value);
-        let client = w32::client_rect(self.editor);
-        let width = w32::width_of(&client);
-        let offset = self.editor_scroll.position();
+        let apply = viewport.is_some();
+        let place = |control: HWND, bounds: RECT| {
+            if apply {
+                w32::move_window(control, &bounds);
+            }
+        };
 
-        let left = s(18);
-        let right = (width - s(14)).max(left + s(120));
+        let gap = s(12);
+        let card_pad = s(16);
+        // 預留捲軸寬度的容差，避免出現捲軸後又退回堆疊而來回切換。
+        let two_columns = width >= s(EDITOR_TWO_COLUMN_WIDTH - 24);
+        let form_width = if two_columns { (((width - gap) as f64 * 0.46) as i32).clamp(s(330), s(500)) } else { width };
         let input_height = fonts.body.height() + s(10);
         let check_height = fonts.body.height() + s(6);
         let button_height = theme::button_height(&fonts);
-        let mut labels: Vec<Label> = Vec::new();
-        let mut y = s(16) - offset;
-
         let section_height = fonts.section_title.height();
+        let mut labels: Vec<Label> = Vec::new();
+
+        // ── 排程內容 ──
+        let top = -offset;
+        let left = card_pad;
+        let right = (form_width - card_pad).max(left + s(120));
+        let mut y = top + card_pad;
         labels.push(Label {
             bounds: w32::rect(left, y, right - left, section_height),
             text: "排程內容".to_string(),
@@ -690,7 +752,7 @@ impl MainWindow {
             color: colors.primary_text,
             wrap: false,
         });
-        y += section_height + s(16);
+        y += section_height + s(12);
 
         let label_width = ["名稱", "排程模式", "訊息", "工作目錄", "傳送至"]
             .iter()
@@ -719,60 +781,67 @@ impl MainWindow {
             (time_label, self.time_input, 0),
             ("訊息", self.message_input, 0),
         ] {
-            row_label(&mut labels, label, y + s(4), input_height);
-            w32::move_window(control, &w32::rect(control_left, y + s(4), control_width, input_height + extra_height));
-            y += s(4) + input_height + s(12);
+            row_label(&mut labels, label, y, input_height);
+            place(control, w32::rect(control_left, y, control_width, input_height + extra_height));
+            y += input_height + s(8);
         }
 
-        row_label(&mut labels, "工作目錄", y + s(4), input_height);
+        row_label(&mut labels, "工作目錄", y, input_height);
         let browse_width = theme::button_width(&fonts, "瀏覽…");
-        w32::move_window(
+        place(
             self.working_directory_input,
-            &w32::rect(control_left, y + s(4), (control_width - browse_width - s(6)).max(s(40)), input_height),
+            w32::rect(control_left, y, (control_width - browse_width - s(6)).max(s(40)), input_height),
         );
-        w32::move_window(
+        place(
             self.browse_button,
-            &w32::rect(control_left + control_width - browse_width, y + s(4), browse_width, input_height),
+            w32::rect(control_left + control_width - browse_width, y, browse_width, input_height),
         );
-        y += s(4) + input_height + s(12);
+        y += input_height + s(10);
 
-        row_label(&mut labels, "傳送至", y + s(4), check_height);
-        y += s(4);
-        for (_, check) in &self.target_checks {
-            y += s(2);
-            w32::move_window(*check, &w32::rect(control_left, y, control_width, check_height));
-            y += check_height + s(5);
+        // CLI 勾選框排成格狀，欄數依寬度決定。
+        row_label(&mut labels, "傳送至", y, check_height);
+        let check_width = self
+            .target_checks
+            .iter()
+            .map(|(_, check)| fonts.body.measure(&w32::get_text(*check)).0 + s(30))
+            .max()
+            .unwrap_or(s(120));
+        let check_columns = (control_width / check_width.max(1)).clamp(1, self.target_checks.len().max(1) as i32);
+        let cell_width = control_width / check_columns;
+        let check_rows = (self.target_checks.len() as i32 + check_columns - 1) / check_columns;
+        for (index, (_, check)) in self.target_checks.iter().enumerate() {
+            let (column, row) = (index as i32 % check_columns, index as i32 / check_columns);
+            place(
+                *check,
+                w32::rect(
+                    control_left + column * cell_width,
+                    y + row * (check_height + s(2)),
+                    cell_width,
+                    check_height,
+                ),
+            );
         }
-        y += s(12);
+        y += check_rows * (check_height + s(2)) + s(6);
 
-        y += s(4);
-        w32::move_window(self.enabled_check, &w32::rect(control_left, y, control_width, check_height));
-        y += check_height + s(12);
+        // 「啟用此排程」放得下時與按鈕同列，否則自成一列。
+        let save_width = theme::button_width(&fonts, "建立排程").max(theme::button_width(&fonts, "儲存修改"));
+        let settings_width = theme::button_width(&fonts, "CLI 設定…");
+        let enabled_width = fonts.body.measure(&w32::get_text(self.enabled_check)).0 + s(30);
+        let enabled_left = left + save_width + s(6) + settings_width + s(16);
+        if enabled_left + enabled_width <= right {
+            place(
+                self.enabled_check,
+                w32::rect(enabled_left, y + (button_height - check_height) / 2, enabled_width, check_height),
+            );
+        } else {
+            place(self.enabled_check, w32::rect(control_left, y, control_width, check_height));
+            y += check_height + s(12);
+        }
+        place(self.save_button, w32::rect(left, y, save_width, button_height));
+        place(self.settings_button, w32::rect(left + save_width + s(6), y, settings_width, button_height));
+        y += button_height + s(12);
 
-        // 額度看板：高度由內容決定。
-        y += s(10);
-        let usage_title_height = fonts.table_header.height();
-        labels.push(Label {
-            bounds: w32::rect(left, y, right - left, usage_title_height),
-            text: USAGE_TITLE.to_string(),
-            font: FontKind::TableHeader,
-            color: colors.primary_text,
-            wrap: false,
-        });
-        y += usage_title_height + s(6);
-        let board_width = (right - left - s(28)).max(s(120));
-        let board_height = self.board.borrow().measure(&fonts, board_width);
-        let board_box = w32::rect(left, y, right - left, board_height + s(26));
-        let board_origin = (left + s(14), y + s(12));
-        y = board_box.bottom + s(6);
-
-        let refresh_text = w32::get_text(self.refresh_usage_button);
-        let refresh_width = theme::button_width(&fonts, "重新讀取倒數").max(theme::button_width(&fonts, &refresh_text));
-        w32::move_window(self.refresh_usage_button, &w32::rect(left, y + s(2), refresh_width, button_height));
-        y += button_height + s(8);
-
-        y += s(14);
-        let note_width = (right - left).min(s(420));
+        let note_width = right - left;
         let note_height = fonts.caption.measure_wrapped(EDITOR_NOTE, note_width);
         labels.push(Label {
             bounds: w32::rect(left, y, note_width, note_height),
@@ -781,25 +850,60 @@ impl MainWindow {
             color: colors.secondary_text,
             wrap: true,
         });
-        y += note_height + s(14);
+        y += note_height;
+        let form_bottom = y + card_pad;
 
-        let save_width = theme::button_width(&fonts, "建立排程").max(theme::button_width(&fonts, "儲存修改"));
-        w32::move_window(self.save_button, &w32::rect(left, y, save_width, button_height));
-        w32::move_window(
-            self.settings_button,
-            &w32::rect(left + save_width + s(6), y, theme::button_width(&fonts, "CLI 設定…"), button_height),
-        );
-        y += button_height + s(16);
+        // ── 額度看板 ──
+        let (board_left, board_top, board_card_width) =
+            if two_columns { (form_width + gap, top, width - form_width - gap) } else { (0, form_bottom + gap, width) };
+        let board_inner_left = board_left + card_pad;
+        let board_inner_right = (board_left + board_card_width - card_pad).max(board_inner_left + s(120));
+        let mut y = board_top + card_pad;
 
-        *self.editor_layout.borrow_mut() = EditorLayout { labels, board_box, board_origin, board_width };
-        let scrolled = self.editor_scroll.update(self.editor, y + offset, w32::height_of(&client));
-        self.in_editor_layout.set(false);
-        if scrolled {
-            // 內容變短使捲動位置被拉回時，依新的位置重排一次。
-            self.layout_editor();
-            return;
-        }
-        w32::invalidate(self.editor);
+        let refresh_text = w32::get_text(self.refresh_usage_button);
+        let refresh_width = theme::button_width(&fonts, "重新讀取倒數").max(theme::button_width(&fonts, &refresh_text));
+        let title_row_height = section_height.max(button_height);
+        labels.push(Label {
+            bounds: w32::rect(
+                board_inner_left,
+                y,
+                (board_inner_right - board_inner_left - refresh_width - s(8)).max(0),
+                title_row_height,
+            ),
+            text: USAGE_TITLE.to_string(),
+            font: FontKind::SectionTitle,
+            color: colors.primary_text,
+            wrap: false,
+        });
+        place(self.refresh_usage_button, w32::rect(board_inner_right - refresh_width, y, refresh_width, button_height));
+        y += title_row_height + s(12);
+
+        let board_width = board_inner_right - board_inner_left;
+        let board_height = self.board.borrow().measure(&fonts, board_width);
+        let board_origin = (board_inner_left, y);
+        y += board_height;
+        let board_bottom = y + card_pad;
+
+        // 卡片延伸到可見區域底部，左右並排時兩張卡片等高。
+        let content_bottom = form_bottom.max(board_bottom);
+        let fill_bottom = viewport.map_or(content_bottom, |height| content_bottom.max(height));
+        let (form_card, board_card) = if two_columns {
+            (
+                w32::rect(0, top, form_width, fill_bottom - top),
+                w32::rect(board_left, top, board_card_width, fill_bottom - top),
+            )
+        } else {
+            (w32::rect(0, top, width, form_bottom - top), w32::rect(0, board_top, width, fill_bottom - board_top))
+        };
+
+        let layout = EditorLayout {
+            labels,
+            cards: vec![form_card, board_card],
+            board_box: board_card,
+            board_origin,
+            board_width,
+        };
+        (layout, content_bottom + offset)
     }
 
     // ── 繪製 ──────────────────────────────────────────────────────
@@ -811,14 +915,15 @@ impl MainWindow {
         let frame = self.frame.get();
         w32::fill(dc, bounds, colors.canvas);
 
-        // 標題列
+        // 標題列：主標題與說明並排在同一行。
         w32::fill(dc, &frame.header, colors.banner);
-        let title_height = fonts.header_title.height();
+        let title_width = fonts.header_title.measure(APP_TITLE).0;
+        let header_inner = RECT { left: s(24), right: frame.header.right - s(24), ..frame.header };
         draw_text(
             dc,
             &fonts.header_title,
             APP_TITLE,
-            &w32::rect(s(24), s(16), w32::width_of(&frame.header) - s(48), title_height),
+            &RECT { right: header_inner.left + title_width, ..header_inner },
             colors.banner_text,
             DT_LINE | DT_LEFT,
         );
@@ -826,7 +931,7 @@ impl MainWindow {
             dc,
             &fonts.body,
             HEADER_SUBTITLE,
-            &w32::rect(s(25), s(16) + title_height + s(5), w32::width_of(&frame.header) - s(49), fonts.body.height()),
+            &RECT { left: header_inner.left + title_width + s(18), ..header_inner },
             colors.banner_subtitle,
             DT_LINE | DT_LEFT,
         );
@@ -879,8 +984,11 @@ impl MainWindow {
         let colors = palette();
         w32::fill(dc, bounds, colors.canvas);
 
-        let (board_box, board_origin, board_width) = {
+        let (board_origin, board_width) = {
             let layout = self.editor_layout.borrow();
+            for card in &layout.cards {
+                w32::fill(dc, card, colors.panel);
+            }
             for label in &layout.labels {
                 let font = match label.font {
                     FontKind::Caption => &fonts.caption,
@@ -890,11 +998,9 @@ impl MainWindow {
                 let format = if label.wrap { DT_WORDBREAK | DT_NOPREFIX } else { DT_LINE | DT_LEFT };
                 draw_text(dc, font, &label.text, &label.bounds, label.color, format);
             }
-            (layout.board_box, layout.board_origin, layout.board_width)
+            (layout.board_origin, layout.board_width)
         };
 
-        w32::fill(dc, &board_box, colors.panel);
-        w32::frame(dc, &board_box, colors.divider);
         self.board.borrow_mut().paint(dc, &fonts, board_origin.0, board_origin.1, board_width);
     }
 
@@ -1148,7 +1254,7 @@ impl MainWindow {
     fn update_usage_labels(&self, now: &Moment) {
         let changed = self.board.borrow_mut().apply(&self.usage_snapshots.borrow(), *now);
         if changed {
-            self.layout_editor();
+            self.relayout();
         } else {
             w32::invalidate_rect(self.editor, &self.editor_layout.borrow().board_box);
         }
@@ -1238,7 +1344,7 @@ impl MainWindow {
     fn set_login_in_progress(&self, kind: CliKind, in_progress: bool) {
         let changed = self.board.borrow_mut().set_login_in_progress(kind, in_progress);
         if changed {
-            self.layout_editor();
+            self.relayout();
         }
     }
 
@@ -1676,26 +1782,17 @@ impl MainWindow {
 
     fn splitter_at(&self, x: i32, y: i32) -> Drag {
         let frame = self.frame.get();
-        if w32::contains(&frame.vertical_splitter, x, y) {
-            Drag::Vertical
-        } else if w32::contains(&frame.horizontal_splitter, x, y) {
+        if w32::contains(&frame.horizontal_splitter, x, y) {
             Drag::Horizontal
         } else {
             Drag::None
         }
     }
 
-    fn drag_to(&self, x: i32, y: i32) {
+    fn drag_to(&self, y: i32) {
         let fonts = self.fonts();
         let frame = self.frame.get();
         match self.drag.get() {
-            Drag::Vertical => {
-                let pad = fonts.scale(12);
-                let available = w32::width_of(&w32::client_rect(self.hwnd)) - pad * 2 - fonts.scale(6);
-                if available > 0 {
-                    self.left_ratio.set(Some(((x - pad) as f64 / available as f64).clamp(0.2, 0.8)));
-                }
-            }
             Drag::Horizontal => {
                 self.terminal_height.set(Some((frame.status.top - y - fonts.scale(3)).max(0)));
             }
@@ -1813,7 +1910,6 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             let _ = GetCursorPos(&mut cursor);
             let _ = windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut cursor);
             let shape = match window.splitter_at(cursor.x, cursor.y) {
-                Drag::Vertical => Some(IDC_SIZEWE),
                 Drag::Horizontal => Some(IDC_SIZENS),
                 Drag::None => None,
             };
@@ -1834,7 +1930,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            window.drag_to(w32::x_of(lparam), w32::y_of(lparam));
+            window.drag_to(w32::y_of(lparam));
             LRESULT(0)
         }
         WM_LBUTTONUP => {
@@ -1895,10 +1991,11 @@ unsafe extern "system" fn editor_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             w32::paint_buffered(hwnd, |dc, bounds| window.paint_editor(dc, bounds));
             LRESULT(0)
         }
-        WM_DRAWITEM => handle_draw_item(window, lparam, palette().canvas),
+        // 編輯面板的控制項都放在白底卡片上。
+        WM_DRAWITEM => handle_draw_item(window, lparam, palette().panel),
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
             SetBkMode(HDC(wparam.0 as *mut _), TRANSPARENT);
-            LRESULT(window.canvas_brush.0 as isize)
+            LRESULT(window.panel_brush.0 as isize)
         }
         WM_COMMAND => {
             let (id, code, _) = ui::command_parts(wparam, lparam);
