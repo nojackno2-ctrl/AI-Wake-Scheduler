@@ -188,6 +188,8 @@ powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath
 - **排程設定**：`%LOCALAPPDATA%\AI倒數喚醒\schedules.json`
 - **CLI 設定**：`%LOCALAPPDATA%\AI倒數喚醒\settings.json`
 - **執行日誌**：`%LOCALAPPDATA%\AI倒數喚醒\logs\`（包含每次執行的標準輸出與錯誤訊息）
+- **除錯日誌**：`%LOCALAPPDATA%\AI倒數喚醒\logs\debug-YYYYMMDD.log`（排程判斷、每次額度讀取結果、CLI 呼叫與錯誤，保留 14 天）
+- **匯出除錯日誌**：主視窗或系統匣選單的「匯出除錯日誌…」會把目前額度、設定、排程與所有日誌合併成一個 `.txt`，回報問題時附上即可。檔案包含 CLI 輸出與工作目錄路徑，分享前請自行檢查。
 - **隔離工作區**：`%LOCALAPPDATA%\AI倒數喚醒\workspace\`（喚醒執行時的專用空白目錄）
 
 ---

@@ -13,6 +13,7 @@ use std::time::Duration;
 use chrono::NaiveTime;
 
 use crate::calculator;
+use crate::debug_log;
 use crate::error::{CoreError, CoreResult};
 use crate::models::{
     AppSettings, CliActivityEvent, CliActivityKind, CliKind, CliProfile, CliRunResult, Guid, ScheduleRecurrence,
@@ -53,6 +54,31 @@ fn local_date(moment: &Moment) -> chrono::NaiveDate {
 
 fn initial_time_of(job: &ScheduledJob) -> Span {
     job.initial_time_of_day.unwrap_or_else(|| time::local_time_of_day(&job.scheduled_at))
+}
+
+/// 除錯日誌用的本機時間文字。
+fn local_text(moment: &Moment) -> String {
+    time::local_naive(moment).format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+fn kinds_text(kinds: &[CliKind]) -> String {
+    kinds.iter().map(|kind| kind.short_name()).collect::<Vec<_>>().join("、")
+}
+
+fn describe_job(job: &ScheduledJob) -> String {
+    let start = job
+        .initial_time_of_day
+        .map(|start| format!("{:02}:{:02}", start.num_hours(), start.num_minutes() % 60))
+        .unwrap_or_else(|| "無".to_string());
+    format!(
+        "「{}」{} 開始 {start} 目標 [{}] 狀態 {}{} 下次 {}",
+        job.name,
+        job.recurrence.display_name(),
+        kinds_text(&job.targets),
+        job.status,
+        if job.enabled { "" } else { "（停用）" },
+        local_text(&job.scheduled_at)
+    )
 }
 
 fn is_countdown_active(job: &ScheduledJob, now: &Moment) -> bool {
@@ -201,6 +227,10 @@ impl ScheduleManager {
             }
         }
 
+        debug_log::write("排程", format!("載入 {} 個排程（現在 {}）", loaded.len(), local_text(&now)));
+        for job in &loaded {
+            debug_log::write("排程", format!("載入 {}", describe_job(job)));
+        }
         {
             let mut jobs = lock(&inner.jobs);
             *jobs = loaded;
@@ -263,6 +293,9 @@ impl ScheduleManager {
                 }
                 None => jobs.push(saved),
             }
+            if let Some(stored) = jobs.iter().find(|item| item.id == job.id) {
+                debug_log::write("排程", format!("儲存 {}", describe_job(stored)));
+            }
 
             inner.job_store.save(&jobs)?;
         }
@@ -279,6 +312,9 @@ impl ScheduleManager {
             let mut jobs = lock(&inner.jobs);
             if jobs.iter().any(|job| job.id == id && job.status == ScheduleStatus::Running) {
                 return Err(CoreError::InvalidOperation("排程正在執行，暫時不能刪除。".to_string()));
+            }
+            if let Some(job) = jobs.iter().find(|job| job.id == id) {
+                debug_log::write("排程", format!("刪除「{}」", job.name));
             }
             jobs.retain(|job| job.id != id);
             inner.job_store.save(&jobs)?;
@@ -320,6 +356,10 @@ impl ScheduleManager {
             }
         }
 
+        debug_log::write(
+            "執行",
+            format!("手動立即執行「{}」目標 [{}]", execution.name, kinds_text(&execution.targets)),
+        );
         inner.raise_jobs_changed();
         let targets = execution.targets.clone();
         inner.start_execution(execution, targets, CancelToken::none(), false);
@@ -486,6 +526,15 @@ impl Inner {
                             *last_quota_probe_at = Some(now);
                         }
                         if !due_targets.is_empty() {
+                            debug_log::write(
+                                "自動模式",
+                                format!(
+                                    "「{}」讀取倒數 [{}]（{}）",
+                                    job.name,
+                                    kinds_text(&due_targets),
+                                    if probe_all { "每 10 分鐘例行讀取" } else { "上次倒數已結束" }
+                                ),
+                            );
                             interval_job_to_probe = Some(job.snapshot());
                             targets_to_probe = due_targets;
                         }
@@ -512,6 +561,7 @@ impl Inner {
                 for &index in &overdue {
                     let job = &mut jobs[index];
                     if index == primary {
+                        debug_log::write("執行", format!("到期執行 {}", describe_job(job)));
                         due_jobs.push((job.snapshot(), job.targets.clone()));
                         job.status = ScheduleStatus::Running;
                         job.started_at = Some(now);
@@ -522,6 +572,7 @@ impl Inner {
                         } else {
                             calculator::get_next_daily_occurrence(time::local_time_of_day(&job.scheduled_at), &now)?
                         };
+                        debug_log::write("執行", format!("同時逾時，略過補做並改排 {}", describe_job(job)));
                     }
                 }
 
@@ -559,15 +610,21 @@ impl Inner {
         let now = self.now();
         let mut non_counting_down = Vec::new();
         for kind in targets_to_probe {
-            if self.in_wakeup_cooldown(kind, &now).is_some() {
+            if let Some(last) = self.in_wakeup_cooldown(kind, &now) {
+                debug_log::write(
+                    "自動模式",
+                    format!("{} 於 {} 剛呼叫過，冷卻中不重讀", kind.short_name(), local_text(&last)),
+                );
                 continue;
             }
 
             match usage_reader.read(kind, &settings.profile(kind), &probe_job.working_directory, &self.stop) {
                 Ok(snapshot) => {
-                    if snapshot.availability == CliUsageAvailability::Available
-                        && !is_counting_down(Some(&snapshot), &now)
-                    {
+                    if snapshot.availability != CliUsageAvailability::Available {
+                        debug_log::write("自動模式", format!("{} 額度無法讀取，不呼叫", kind.short_name()));
+                    } else if is_counting_down(Some(&snapshot), &now) {
+                        debug_log::write("自動模式", format!("{} 倒數中，不呼叫", kind.short_name()));
+                    } else {
                         non_counting_down.push(kind);
                     }
                 }
@@ -596,6 +653,10 @@ impl Inner {
             };
 
             if let Some(job) = job_to_start {
+                debug_log::write(
+                    "自動模式",
+                    format!("「{}」沒有倒數 [{}]，立即呼叫", job.name, kinds_text(&non_counting_down)),
+                );
                 self.mark_wakeup(&non_counting_down, now);
                 self.raise_jobs_changed();
                 self.start_execution(job, non_counting_down, self.stop.clone(), false);
@@ -612,6 +673,10 @@ impl Inner {
                     Some(stored) => {
                         let next = calculator::get_next_auto_probe_occurrence(initial_time_of(stored), &probed_at)?;
                         let changed = stored.scheduled_at != next;
+                        debug_log::write(
+                            "自動模式",
+                            format!("「{}」沒有需要呼叫的 CLI，下次讀取 {}", stored.name, local_text(&next)),
+                        );
                         if changed {
                             stored.scheduled_at = next;
                             self.job_store.save(&jobs)?;
@@ -734,6 +799,10 @@ impl Inner {
             };
 
             if let Some(execution) = execution {
+                debug_log::write(
+                    "倒數模式",
+                    format!("「{}」沒有倒數 [{}]，立即呼叫", execution.name, kinds_text(&targets)),
+                );
                 self.raise_jobs_changed();
                 self.start_execution(execution, targets, self.stop.clone(), true);
             }
@@ -912,6 +981,7 @@ impl Inner {
                 timestamp: self.now(),
             });
         };
+        debug_log::write("執行", format!("「{}」{} 開始執行，訊息：{}", job.name, target.short_name(), job.message));
         activity(CliActivityKind::Started, format!("開始執行，訊息：{}", job.message));
 
         let on_output = |is_error: bool, text: &str| {
@@ -928,6 +998,18 @@ impl Inner {
             Some(&on_output),
         );
 
+        debug_log::write(
+            "執行",
+            format!(
+                "「{}」{} {}，結束碼 {}，錯誤：{}，日誌：{}",
+                job.name,
+                target.short_name(),
+                if result.succeeded { "成功" } else { "失敗" },
+                result.exit_code.map(|code| code.to_string()).unwrap_or_else(|| "無".to_string()),
+                if result.error.is_empty() { "無" } else { &result.error },
+                if result.log_path.is_empty() { "無" } else { &result.log_path }
+            ),
+        );
         if result.succeeded {
             activity(
                 CliActivityKind::Completed,
@@ -991,6 +1073,7 @@ impl Inner {
                 };
             }
 
+            debug_log::write("執行", format!("完成 {}", describe_job(stored)));
             self.job_store.save(&jobs)?;
         }
 
@@ -1007,6 +1090,7 @@ impl Inner {
     }
 
     fn raise_background_error(&self, error: &CoreError) {
+        debug_log::write("錯誤", format!("背景錯誤：{}", error.message()));
         let listeners = lock(&self.background_error).clone();
         for listener in listeners {
             listener(error);

@@ -14,6 +14,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::catalog;
+use crate::debug_log;
 use crate::error::{CoreError, CoreResult};
 use crate::http::{self, HttpResponse};
 use crate::locator;
@@ -85,6 +86,33 @@ impl CliUsageSnapshot {
             .iter()
             .find(|window| window.duration.is_some_and(|duration| duration <= Span::hours(6)))
             .or_else(|| self.windows.first())
+    }
+
+    /// 除錯日誌用的單行摘要：可用狀態、各視窗用量與重置時間、訊息。
+    pub fn describe(&self) -> String {
+        let windows: Vec<String> = self
+            .windows
+            .iter()
+            .map(|window| {
+                let resets = window
+                    .resets_at
+                    .map(|reset| time::local_naive(&reset).format("%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_else(|| "無".to_string());
+                format!(
+                    "{} 已用 {}% 重置 {resets}{}",
+                    window.name,
+                    window.used_percent,
+                    if window.is_active_countdown { " 倒數中" } else { " 未倒數" }
+                )
+            })
+            .collect();
+        format!(
+            "{:?}{}；視窗 [{}]；訊息：{}",
+            self.availability,
+            if self.requires_login { "（需要登入）" } else { "" },
+            windows.join("、"),
+            self.message
+        )
     }
 }
 
@@ -473,12 +501,19 @@ impl UsageReader for CliUsageReader {
         working_directory: &str,
         cancel: &CancelToken,
     ) -> CoreResult<CliUsageSnapshot> {
-        let mut snapshot = match kind {
-            CliKind::Codex => read_codex(profile, working_directory, cancel)?,
+        let result = match kind {
+            CliKind::Codex => read_codex(profile, working_directory, cancel),
             CliKind::Antigravity | CliKind::AntigravityArgon | CliKind::AntigravityClaude => {
-                self.read_antigravity(kind, profile, working_directory, cancel)?
+                self.read_antigravity(kind, profile, working_directory, cancel)
             }
-            CliKind::Claude => self.read_claude(cancel)?,
+            CliKind::Claude => self.read_claude(cancel),
+        };
+        let mut snapshot = match result {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                debug_log::write("額度", format!("{} 讀取失敗：{}", kind.short_name(), error.message()));
+                return Err(error);
+            }
         };
 
         // Codex 與 Antigravity 的登入失效只會以錯誤文字呈現；Claude 已在讀取時明確標記。
@@ -489,6 +524,7 @@ impl UsageReader for CliUsageReader {
             snapshot.requires_login = true;
         }
 
+        debug_log::write("額度", format!("{} 讀取：{}", kind.short_name(), snapshot.describe()));
         self.latest_snapshots.lock().unwrap_or_else(|e| e.into_inner()).insert(kind, snapshot.clone());
         Ok(snapshot)
     }

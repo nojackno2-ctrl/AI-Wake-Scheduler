@@ -10,7 +10,8 @@ use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC
 use windows::Win32::UI::Controls::SetScrollInfo;
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
-    FileOpenDialog, IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, FILEOPENDIALOGOPTIONS, SIGDN_FILESYSPATH,
+    FileOpenDialog, FileSaveDialog, IFileOpenDialog, IFileSaveDialog, IShellItem, SHCreateItemFromParsingName,
+    FILEOPENDIALOGOPTIONS, SIGDN_FILESYSPATH,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetAncestor, GetMessageW, IsDialogMessageW, PostQuitMessage, TranslateMessage, GA_ROOT, MSG,
@@ -448,6 +449,44 @@ pub fn pick_file(owner: HWND, title: &str, filters: &[(&str, &str)]) -> Option<S
     const FOS_FORCEFILESYSTEM: u32 = 0x40;
     const FOS_FILEMUSTEXIST: u32 = 0x1000;
     open_dialog(owner, title, FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST, filters, None)
+}
+
+/// 選擇要儲存的檔案位置；使用者取消時回傳 None。
+pub fn save_file(
+    owner: HWND,
+    title: &str,
+    default_name: &str,
+    default_extension: &str,
+    filters: &[(&str, &str)],
+) -> Option<String> {
+    const FOS_OVERWRITEPROMPT: u32 = 0x2;
+    const FOS_FORCEFILESYSTEM: u32 = 0x40;
+    unsafe {
+        let dialog: IFileSaveDialog = CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let title = wide(title);
+        let _ = dialog.SetTitle(PCWSTR(title.as_ptr()));
+        if let Ok(current) = dialog.GetOptions() {
+            let _ = dialog.SetOptions(FILEOPENDIALOGOPTIONS(current.0 | FOS_OVERWRITEPROMPT | FOS_FORCEFILESYSTEM));
+        }
+        let buffers: Vec<(Vec<u16>, Vec<u16>)> = filters.iter().map(|(name, spec)| (wide(name), wide(spec))).collect();
+        if !buffers.is_empty() {
+            let specs: Vec<COMDLG_FILTERSPEC> = buffers
+                .iter()
+                .map(|(name, spec)| COMDLG_FILTERSPEC {
+                    pszName: PCWSTR(name.as_ptr()),
+                    pszSpec: PCWSTR(spec.as_ptr()),
+                })
+                .collect();
+            let _ = dialog.SetFileTypes(&specs);
+        }
+        let extension = wide(default_extension);
+        let _ = dialog.SetDefaultExtension(PCWSTR(extension.as_ptr()));
+        let name = wide(default_name);
+        let _ = dialog.SetFileName(PCWSTR(name.as_ptr()));
+
+        dialog.Show(Some(owner)).ok()?;
+        shell_item_path(&dialog.GetResult().ok()?)
+    }
 }
 
 /// 取得 WM_COMMAND 的控制項識別碼與通知碼。

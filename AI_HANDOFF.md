@@ -1,5 +1,16 @@
 # AI HANDOFF
 
+## 2026-10-21 Claude：除錯日誌與匯出（完成）
+
+- 使用者目標「加入可以輸出所有日誌來除錯」。
+- 變更：
+  - 新增 `core/src/debug_log.rs`：全域除錯日誌，`init(paths)` 後才寫入 `logs\debug-YYYYMMDD.log`（未初始化即無副作用，測試不寫檔）；初始化時清除 14 天前的除錯日誌；`export(paths, summary, dest)` 合併摘要、settings.json、schedules.json 與 logs 底下所有 .log（依修改時間排序，單檔超過 2 MB 只取尾端），以 UTF-8 BOM 寫出。
+  - 記錄點：`CliUsageReader::read` 每次讀取的結果（`CliUsageSnapshot::describe`）或錯誤；`manager.rs` 載入／儲存／刪除／手動執行、自動模式讀取倒數的原因與每個 CLI 的判斷（倒數中、無法讀取、冷卻中、立即呼叫、下次讀取時間）、倒數模式呼叫、到期執行／略過補做、每個 CLI 開始與結果（結束碼、錯誤、日誌路徑）、完成後下次時間、背景錯誤；`host.rs` 啟動資訊。CLI 子程序的逐行輸出不寫入除錯日誌（已完整存在各次執行日誌）。
+  - UI：清單下方新增「匯出除錯日誌…」按鈕（ID 106）與系統匣選單項目（ID 203）；`ui::save_file`（IFileSaveDialog，預設檔名 `AI倒數喚醒-除錯日誌-時間.txt`）；匯出成功後狀態列顯示並以檔案總管選取該檔。
+  - README 資料路徑段補充除錯日誌與匯出說明。
+- 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked`（暫存 CARGO_TARGET_DIR，因正式 debug exe 被佔用）29 通過（新增 `debug_log_write_and_export`）、3 opt-in 忽略、0 失敗。以 `--verify-ui` 啟動 debug 版：除錯日誌實際寫入啟動、載入排程與 5 個 CLI 額度讀取；按鈕排在第二列且未被截斷；實際點擊匯出→存檔對話框→寫出檔案，內容含 BOM、版本、各 CLI 額度、設定／排程區段與除錯日誌，檔案總管開啟並選取該檔。
+- 未驗證：系統匣選單項目未實際點擊；未在有排程實際執行 CLI 的情境下檢視執行相關紀錄（由程式碼與單元測試推定）；大量日誌匯出效能未測（在 UI 執行緒同步執行）。
+
 ## 2026-10-21 Claude：自動模式改為開始後每 10 分鐘偵測倒數（完成）
 
 - 使用者目標「自動模式改成啟動時間開始後，每 10 分鐘讀取一次所有倒數狀態，沒有倒數則呼叫他」。

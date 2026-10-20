@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use aiwake_core::calculator;
 use aiwake_core::catalog;
 use aiwake_core::command_builder;
+use aiwake_core::debug_log;
 use aiwake_core::locator;
 use aiwake_core::login;
 use aiwake_core::process;
@@ -2362,5 +2363,35 @@ fn real_argon_wake_smoke() {
             break;
         }
         assert!(Instant::now() < deadline, "Argon 喚醒後 60 秒內額度仍未開始倒數：{}", snapshot.message);
+    }
+}
+
+#[test]
+fn debug_log_write_and_export() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let paths = AppDataPaths::new(Some(&directory.join("data").to_string_lossy()));
+    paths.ensure_created().unwrap();
+    std::fs::write(paths.settings_file(), "{\"MinimizeToTray\": true}").unwrap();
+    std::fs::write(paths.logs_directory().join("20260101-080000-Codex.log"), "CLI: Codex\r\nstdout").unwrap();
+    // 過期的除錯日誌在初始化時清除。
+    let stale = paths.logs_directory().join("debug-20000101.log");
+    std::fs::write(&stale, "old").unwrap();
+
+    debug_log::init(&paths);
+    assert!(debug_log::is_enabled());
+    assert!(!stale.exists(), "超過保留天數的除錯日誌應被清除。");
+    debug_log::write("測試", "第一行\n第二行");
+
+    let destination = directory.join("export").join("bundle.txt");
+    let count = debug_log::export(&paths, "版本: 測試", &destination).unwrap();
+    assert_eq!(count, 2, "應收錄 CLI 執行日誌與除錯日誌。");
+    let bytes = std::fs::read(&destination).unwrap();
+    assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF], "匯出檔應帶 UTF-8 BOM。");
+    let text = String::from_utf8(bytes[3..].to_vec()).unwrap();
+    for expected in
+        ["版本: 測試", "MinimizeToTray", "20260101-080000-Codex.log", "[測試] 第一行\r\n    第二行", "（無法讀取"]
+    {
+        assert!(text.contains(expected), "匯出內容應包含「{expected}」：\n{text}");
     }
 }

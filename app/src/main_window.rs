@@ -61,6 +61,7 @@ pub const ID_RUN_NOW: i32 = 102;
 pub const ID_SHOW_RESULT: i32 = 103;
 pub const ID_DELETE: i32 = 104;
 pub const ID_OPEN_LOGS: i32 = 105;
+pub const ID_EXPORT_LOGS: i32 = 106;
 pub const ID_NAME: i32 = 110;
 pub const ID_RECURRENCE: i32 = 111;
 pub const ID_TIME: i32 = 112;
@@ -78,6 +79,7 @@ pub const ID_TERMINAL_OUTPUT: i32 = 142;
 pub const ID_TRAY_OPEN: i32 = 200;
 pub const ID_TRAY_LOGS: i32 = 201;
 pub const ID_TRAY_EXIT: i32 = 202;
+pub const ID_TRAY_EXPORT_LOGS: i32 = 203;
 
 const WM_APP_REFRESH: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 3;
 const TIMER_CLOCK: usize = 1;
@@ -192,7 +194,7 @@ pub struct MainWindow {
     taskbar_created: u32,
 
     list: HWND,
-    list_buttons: [HWND; 5],
+    list_buttons: [HWND; 6],
     name_input: HWND,
     recurrence_input: HWND,
     time_input: HWND,
@@ -297,6 +299,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         theme::create_button(hwnd, ID_SHOW_RESULT, "查看結果", ButtonVariant::Secondary),
         theme::create_button(hwnd, ID_DELETE, "刪除", ButtonVariant::Danger),
         theme::create_button(hwnd, ID_OPEN_LOGS, "開啟日誌資料夾", ButtonVariant::Secondary),
+        theme::create_button(hwnd, ID_EXPORT_LOGS, "匯出除錯日誌…", ButtonVariant::Secondary),
     ];
 
     let editor = w32::create_window(
@@ -1605,6 +1608,41 @@ impl MainWindow {
         }
     }
 
+    /// 將設定、排程、目前額度與所有日誌合併成一個文字檔，方便回報問題時附上。
+    fn export_debug_logs(&self) {
+        let default_name = format!("AI倒數喚醒-除錯日誌-{}.txt", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+        let Some(path) = ui::save_file(self.hwnd, "匯出除錯日誌", &default_name, "txt", &[("文字檔 (*.txt)", "*.txt")])
+        else {
+            return;
+        };
+        match self.host.export_debug_logs(std::path::Path::new(&path)) {
+            Ok(count) => {
+                self.set_status(&format!("已匯出除錯日誌（{count} 個日誌檔）：{path}"), palette().success);
+                let operation = wide("open");
+                let explorer = wide("explorer.exe");
+                let arguments = wide(&format!("/select,\"{path}\""));
+                unsafe {
+                    ShellExecuteW(
+                        None,
+                        PCWSTR(operation.as_ptr()),
+                        PCWSTR(explorer.as_ptr()),
+                        PCWSTR(arguments.as_ptr()),
+                        None,
+                        SW_SHOWNORMAL,
+                    );
+                }
+            }
+            Err(error) => {
+                w32::message_box(
+                    Some(self.hwnd),
+                    &format!("無法匯出除錯日誌：{error}"),
+                    APP_TITLE,
+                    w32::MB_OK | w32::MB_ICONERROR,
+                );
+            }
+        }
+    }
+
     // ── 計時器與系統匣 ────────────────────────────────────────────
 
     fn start_clock(&self) {
@@ -1743,7 +1781,9 @@ impl MainWindow {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
             };
-            for (id, text) in [(ID_TRAY_OPEN, "開啟主視窗"), (ID_TRAY_LOGS, "開啟日誌資料夾")] {
+            for (id, text) in
+                [(ID_TRAY_OPEN, "開啟主視窗"), (ID_TRAY_LOGS, "開啟日誌資料夾"), (ID_TRAY_EXPORT_LOGS, "匯出除錯日誌…")]
+            {
                 let text = wide(text);
                 let _ = AppendMenuW(menu, MF_STRING, id as usize, PCWSTR(text.as_ptr()));
             }
@@ -1782,6 +1822,7 @@ impl MainWindow {
             ID_SHOW_RESULT if code == BN_CLICKED => self.show_selected_result(),
             ID_DELETE if code == BN_CLICKED => self.delete_selected(),
             ID_OPEN_LOGS if code == BN_CLICKED => self.open_logs_folder(),
+            ID_EXPORT_LOGS if code == BN_CLICKED => self.export_debug_logs(),
             ID_RECURRENCE if code == CBN_SELCHANGE => self.layout_editor(),
             ID_BROWSE if code == BN_CLICKED => self.browse_working_directory(),
             ID_REFRESH_USAGE if code == BN_CLICKED => self.refresh_usage(true),
@@ -1790,6 +1831,10 @@ impl MainWindow {
             ID_TERMINAL_CLEAR if code == BN_CLICKED => self.terminal.clear(),
             ID_TRAY_OPEN => self.show_from_tray(),
             ID_TRAY_LOGS => self.open_logs_folder(),
+            ID_TRAY_EXPORT_LOGS => {
+                self.show_from_tray();
+                self.export_debug_logs();
+            }
             ID_TRAY_EXIT => {
                 self.really_exit.set(true);
                 self.on_close();

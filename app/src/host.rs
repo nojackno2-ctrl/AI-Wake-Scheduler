@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use aiwake_core::{
-    AppDataPaths, AppSettings, CliUsageReader, CoreResult, DataStore, JsonFileStore, ProcessCliRunner, ScheduleManager,
-    ScheduledJob, UsageReader,
+    catalog, debug_log, AppDataPaths, AppSettings, CliUsageReader, CoreResult, DataStore, JsonFileStore,
+    ProcessCliRunner, ScheduleManager, ScheduledJob, UsageReader,
 };
 
 use crate::startup;
@@ -24,6 +24,16 @@ impl AppHost {
     pub fn create(root_directory: Option<&str>) -> CoreResult<Self> {
         let paths = AppDataPaths::new(root_directory);
         paths.ensure_created()?;
+        debug_log::init(&paths);
+        debug_log::write(
+            "程式",
+            format!(
+                "啟動 v{}，資料目錄 {}，執行檔 {}",
+                env!("CARGO_PKG_VERSION"),
+                paths.root_directory().display(),
+                std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default()
+            ),
+        );
 
         let settings_store = JsonFileStore::new(paths.settings_file(), AppSettings::create_default);
         let mut settings = settings_store.load()?;
@@ -70,6 +80,25 @@ impl AppHost {
         let normalized = settings.normalized();
         *self.settings.lock().unwrap_or_else(|e| e.into_inner()) = normalized.clone();
         self.settings_store.save(&normalized)
+    }
+
+    /// 將目前額度、設定、排程與所有日誌匯出成單一文字檔，回傳收錄的日誌檔數。
+    pub fn export_debug_logs(&self, destination: &std::path::Path) -> std::io::Result<usize> {
+        let mut summary = format!(
+            "版本: v{}\r\n執行檔: {}\r\n",
+            env!("CARGO_PKG_VERSION"),
+            std::env::current_exe().map(|path| path.display().to_string()).unwrap_or_default()
+        );
+        let snapshots = self.usage_reader.latest_snapshots();
+        for descriptor in catalog::all() {
+            let state = snapshots
+                .get(&descriptor.kind)
+                .map(|snapshot| snapshot.describe())
+                .unwrap_or_else(|| "尚未讀取".to_string());
+            summary.push_str(&format!("額度 {}: {state}\r\n", descriptor.display_name));
+        }
+        debug_log::write("程式", format!("匯出除錯日誌至 {}", destination.display()));
+        debug_log::export(&self.paths, &summary, destination)
     }
 
     pub fn wakeup_workspace(&self) -> String {
