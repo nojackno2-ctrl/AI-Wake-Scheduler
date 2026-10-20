@@ -1840,9 +1840,9 @@ fn schedule_manager_quota_aware_interval() {
         assert!(executed.contains(&CliKind::Claude), "未倒數的 Claude 應被呼叫。");
     }
 
-    // 3. 背景排程迴圈即使被頻繁喚醒，未倒數時也只能依使用者設定的分鐘間隔查一次額度。
+    // 3. 背景排程迴圈即使被頻繁喚醒，也只能每 10 分鐘查一次額度（與看板的自動重新整理設定無關）。
     // 這是 Claude /api/oauth/usage 不再因每 30 秒重查而觸發 HTTP 429 的迴歸測試。
-    settings.lock().unwrap().quota_auto_refresh_minutes = 10;
+    settings.lock().unwrap().quota_auto_refresh_minutes = 0;
     let throttled_now = local_wall_clock(2026, 8, 21, 9, 0, 0);
     let throttled_clock = FakeClock::new(throttled_now);
     let throttled_usage_reader = Arc::new(FakeCliUsageReader::default());
@@ -1894,7 +1894,7 @@ fn schedule_manager_quota_aware_interval() {
         wait_until(Duration::from_secs(3), || throttled_usage_reader.read_count(CliKind::Claude) >= 3);
         assert!(
             throttled_usage_reader.read_count(CliKind::Claude) >= 3,
-            "超過使用者設定的 10 分鐘後，應允許下一次 Claude 額度探測。"
+            "超過 10 分鐘後，應允許下一次 Claude 額度探測。"
         );
     }
 
@@ -1948,6 +1948,74 @@ fn schedule_manager_quota_aware_interval() {
         assert_eq!(countdown_end_runner.call_count(), 1, "倒數結束後，排程器應自動探測並喚醒已重置的 Claude。");
         assert!(countdown_end_reader.read_count(CliKind::Claude) >= 2, "倒數結束與執行前/後應觸發額度讀取。");
     }
+
+    // 5. 開始時間後每 10 分鐘讀取一次「所有」目標的倒數狀態（含倒數中的 CLI），沒有倒數的才呼叫。
+    let probe_now = local_wall_clock(2026, 8, 21, 10, 0, 0);
+    let probe_clock = FakeClock::new(probe_now);
+    let probe_reader = Arc::new(FakeCliUsageReader::default());
+    let probe_runner = Arc::new(CountingCliRunner::default());
+    let counting = |kind: CliKind, observed_at: Moment| {
+        available(kind, vec![window("5 小時", 10, h5, probe_now + Span::hours(2), true)], observed_at)
+    };
+    probe_reader.set(counting(CliKind::Codex, probe_now));
+    probe_reader.set(counting(CliKind::Claude, probe_now));
+    store
+        .save(&vec![ScheduledJob {
+            scheduled_at: probe_now + Span::hours(3),
+            finished_at: Some(probe_now - Span::hours(3)),
+            ..interval_job("每 10 分鐘偵測倒數", &[CliKind::Codex, CliKind::Claude])
+        }])
+        .unwrap();
+
+    {
+        let manager = manager_with(
+            &store,
+            probe_runner.clone(),
+            &settings,
+            Some(probe_reader.clone()),
+            Some(probe_clock.clone()),
+        );
+        manager.initialize().unwrap();
+        let reads = || (probe_reader.read_count(CliKind::Codex), probe_reader.read_count(CliKind::Claude));
+        wait_until(Duration::from_secs(3), || reads() == (1, 1));
+        sleep(150);
+        assert_eq!(reads(), (1, 1), "開始時間後應立即讀取所有目標的倒數狀態各一次。");
+        assert_eq!(probe_runner.call_count(), 0, "全部倒數中不應呼叫。");
+        let stored = manager.get_jobs().unwrap().remove(0);
+        assert_eq!(
+            time::local_naive(&stored.scheduled_at),
+            naive(2026, 8, 21, 10, 10, 0),
+            "全部倒數中時，排程時間應顯示下一次讀取倒數的時點。"
+        );
+
+        // 未滿 10 分鐘：即使排程器被喚醒也不重讀。
+        probe_clock.set(probe_now + Span::minutes(5));
+        manager.upsert(&stored).unwrap();
+        sleep(200);
+        assert_eq!(reads(), (1, 1), "未滿 10 分鐘不應重讀倒數狀態。");
+
+        // 滿 10 分鐘：重讀所有目標；Claude 已無倒數 → 只呼叫 Claude。
+        probe_reader.set(available(
+            CliKind::Claude,
+            vec![window("5 小時", 0, h5, probe_now - Span::hours(1), false)],
+            probe_now + Span::minutes(10),
+        ));
+        probe_clock.set(probe_now + Span::minutes(10));
+        manager.upsert(&stored).unwrap();
+        wait_until(Duration::from_secs(5), || probe_runner.call_count() >= 1);
+        sleep(200);
+        assert_eq!(probe_reader.read_count(CliKind::Codex), 2, "滿 10 分鐘應重讀倒數中的 Codex。");
+        assert_eq!(probe_runner.call_count(), 1, "只應呼叫沒有倒數的 CLI。");
+        assert_eq!(probe_runner.executed(), vec![CliKind::Claude], "倒數中的 Codex 不應被呼叫。");
+    }
+
+    // 6. 跨過 24:00：下一次讀取倒數排到隔天的開始時間。
+    let next_probe =
+        calculator::get_next_auto_probe_occurrence(initial_wakeup, &local_wall_clock(2026, 8, 21, 23, 55, 0)).unwrap();
+    assert_eq!(time::local_naive(&next_probe), naive(2026, 8, 22, 8, 0, 0), "23:55 之後應排到隔天 08:00。");
+    let next_probe =
+        calculator::get_next_auto_probe_occurrence(initial_wakeup, &local_wall_clock(2026, 8, 21, 9, 3, 0)).unwrap();
+    assert_eq!(time::local_naive(&next_probe), naive(2026, 8, 21, 9, 13, 0), "當日應每 10 分鐘讀取一次。");
 }
 
 #[test]

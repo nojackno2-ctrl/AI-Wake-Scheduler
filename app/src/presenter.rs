@@ -31,7 +31,7 @@ pub fn time(job: &ScheduledJob) -> String {
         ScheduleRecurrence::Countdown => {
             format!("每日 {}～24:00", job.initial_time_of_day.map(hours_minutes).unwrap_or_default())
         }
-        ScheduleRecurrence::Interval => format!("5h倒數 ({scheduled})"),
+        ScheduleRecurrence::Interval => format!("10分偵測 ({scheduled})"),
         _ => scheduled.to_string(),
     }
 }
@@ -142,7 +142,7 @@ mod tests {
     #[test]
     fn time_column_reflects_recurrence() {
         assert_eq!(time(&job(ScheduleRecurrence::Daily)), "08:49");
-        assert_eq!(time(&job(ScheduleRecurrence::Interval)), "5h倒數 (08:49)");
+        assert_eq!(time(&job(ScheduleRecurrence::Interval)), "10分偵測 (08:49)");
         assert_eq!(time(&job(ScheduleRecurrence::Countdown)), "每日 08:49～24:00");
     }
 

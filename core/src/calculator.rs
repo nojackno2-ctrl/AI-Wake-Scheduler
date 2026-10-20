@@ -6,9 +6,14 @@ use crate::error::{CoreError, CoreResult};
 use crate::models::ScheduleRecurrence;
 use crate::time::{self, Moment, Span};
 
-/// 自動模式的循環間隔（5 個小時 + 1 分鐘 = 301 分鐘）。
+/// 自動模式在無法讀取額度時的循環間隔（5 個小時 + 1 分鐘 = 301 分鐘）。
 pub fn auto_interval() -> Span {
     Span::minutes(301)
+}
+
+/// 自動模式在開始時間之後讀取所有目標倒數狀態的間隔（10 分鐘）。
+pub fn auto_probe_interval() -> Span {
+    Span::minutes(10)
 }
 
 fn validate(time_of_day: Span, message: &str) -> CoreResult<()> {
@@ -50,10 +55,19 @@ pub fn get_previous_daily_occurrence(time_of_day: Span, now: &Moment) -> CoreRes
 /// 當日完成後若加 5 小時 1 分鐘仍在當日（24:00 前），排在該時間；
 /// 若跨入隔天（超過 24:00），則不排在半夜，直接排定為隔天的首次喚醒時間。
 pub fn get_next_auto_interval_occurrence(initial_time_of_day: Span, finished_at: &Moment) -> CoreResult<Moment> {
+    next_within_day(initial_time_of_day, finished_at, auto_interval())
+}
+
+/// 計算自動模式下一次讀取倒數狀態的時間：當日每 10 分鐘一次，跨過 24:00 則排到隔天的開始時間。
+pub fn get_next_auto_probe_occurrence(initial_time_of_day: Span, probed_at: &Moment) -> CoreResult<Moment> {
+    next_within_day(initial_time_of_day, probed_at, auto_probe_interval())
+}
+
+fn next_within_day(initial_time_of_day: Span, finished_at: &Moment, step: Span) -> CoreResult<Moment> {
     validate(initial_time_of_day, "首次喚醒時間必須介於 00:00 到 23:59。")?;
 
     let local_finished = time::local_naive(finished_at);
-    let candidate_local = local_finished + auto_interval();
+    let candidate_local = local_finished + step;
 
     // 若推算時間仍在完成當日（未跨過 24:00）
     if candidate_local.date() == local_finished.date() {

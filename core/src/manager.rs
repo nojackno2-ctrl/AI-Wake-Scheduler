@@ -428,24 +428,18 @@ impl Inner {
         let mut interval_job_to_probe: Option<ScheduledJob> = None;
         let mut targets_to_probe: Vec<CliKind> = Vec::new();
         let mut settings_snapshot: Option<AppSettings> = None;
-        let mut quota_probe_interval: Option<Span> = None;
         let mut quota_managed_job_id: Option<Guid> = None;
+        let probe_interval = calculator::auto_probe_interval();
         let mut next_delay;
 
         {
             let mut jobs = lock(&self.jobs);
             let now = self.now();
             if self.usage_reader.is_some() {
-                let settings = (self.settings_provider)().normalized();
-                if settings.quota_auto_refresh_minutes > 0 {
-                    quota_probe_interval = Some(Span::minutes(settings.quota_auto_refresh_minutes as i64));
-                }
-                settings_snapshot = Some(settings);
+                settings_snapshot = Some((self.settings_provider)().normalized());
             }
 
             let mut last_quota_probe_at = lock(&self.last_quota_probe_at);
-            let quota_probe_due = quota_probe_interval
-                .is_some_and(|interval| last_quota_probe_at.is_none_or(|last| now - last >= interval));
 
             let mut overdue: Vec<usize> = Vec::new();
             for (index, job) in jobs.iter().enumerate() {
@@ -465,31 +459,35 @@ impl Inner {
                     if local_now >= today_initial {
                         quota_managed_job_id = Some(job.id);
 
-                        // 檢查哪些 target CLI 需要探測：
-                        // 1. 倒數結束時：先前在倒數但 resetsAt <= now
-                        // 2. 沒抓到倒數：未在倒數中且 quotaProbeDue
+                        // 開始時間之後每 10 分鐘讀取一次所有目標 CLI 的倒數狀態；
+                        // 當日第一次進入（含剛到開始時間、開機補做）立即讀取。
+                        let today_initial = time::from_local_naive(today_initial);
+                        let probe_all =
+                            last_quota_probe_at.is_none_or(|last| last < today_initial || now - last >= probe_interval);
+
                         let mut due_targets = Vec::new();
                         for &target in &job.targets {
-                            let snapshot = usage_reader.latest_snapshot(target);
-                            if is_counting_down(snapshot.as_ref(), &now) {
+                            if due_targets.contains(&target) {
                                 continue;
                             }
-
-                            // 5 小時倒數剛結束時立即探測；否則依設定間隔探測。
-                            let countdown_ended = snapshot
-                                .as_ref()
-                                .and_then(|value| value.short_window_or_first())
-                                .and_then(|window| window.resets_at)
-                                .is_some_and(|reset| reset <= now);
-                            if countdown_ended || quota_probe_due {
+                            // 上次讀到的倒數已經結束時，不必等到下一個 10 分鐘。
+                            let countdown_ended = usage_reader.latest_snapshot(target).is_some_and(|snapshot| {
+                                snapshot
+                                    .short_window_or_first()
+                                    .and_then(|window| window.resets_at)
+                                    .is_some_and(|reset| snapshot.observed_at < reset && reset <= now)
+                            });
+                            if probe_all || countdown_ended {
                                 due_targets.push(target);
                             }
                         }
 
+                        if probe_all {
+                            *last_quota_probe_at = Some(now);
+                        }
                         if !due_targets.is_empty() {
                             interval_job_to_probe = Some(job.snapshot());
                             targets_to_probe = due_targets;
-                            *last_quota_probe_at = Some(now);
                         }
                         continue;
                     }
@@ -531,10 +529,8 @@ impl Inner {
             }
 
             next_delay = self.calculate_next_delay(&jobs, &now, quota_managed_job_id);
-            if let (Some(_), Some(interval), None, Some(last)) =
-                (quota_managed_job_id, quota_probe_interval, &interval_job_to_probe, *last_quota_probe_at)
-            {
-                let until_next_quota_probe = (last + interval) - now;
+            if let (Some(_), None, Some(last)) = (quota_managed_job_id, &interval_job_to_probe, *last_quota_probe_at) {
+                let until_next_quota_probe = (last + probe_interval) - now;
                 if until_next_quota_probe < next_delay {
                     next_delay = until_next_quota_probe;
                 }
@@ -550,7 +546,7 @@ impl Inner {
             return Ok(next_delay);
         }
 
-        // 自動模式「流量未倒數立即執行」：在當日首次呼叫時間之後，針對有被啟用的 CLI 中未倒數者立即執行
+        // 自動模式：在當日開始時間之後讀取目標 CLI 的倒數狀態，未倒數者立即呼叫
         let (Some(probe_job), Some(usage_reader), Some(settings)) =
             (interval_job_to_probe, &self.usage_reader, settings_snapshot)
         else {
@@ -604,21 +600,30 @@ impl Inner {
                 self.raise_jobs_changed();
                 self.start_execution(job, non_counting_down, self.stop.clone(), false);
             }
-        } else if probe_job.scheduled_at <= now {
-            {
+        } else {
+            // 全部都在倒數：排程時間改為下一次讀取倒數的時點（跨過 24:00 則為隔天的開始時間）。
+            let probed_at = lock(&self.last_quota_probe_at).unwrap_or(now);
+            let changed = {
                 let mut jobs = lock(&self.jobs);
-                if let Some(stored) = jobs.iter_mut().find(|job| {
-                    job.id == probe_job.id
-                        && job.enabled
-                        && job.status == ScheduleStatus::Pending
-                        && job.scheduled_at <= now
-                }) {
-                    stored.scheduled_at = calculator::get_next_auto_interval_occurrence(initial_time_of(stored), &now)?;
-                    stored.finished_at = Some(now);
-                    self.job_store.save(&jobs)?;
+                match jobs
+                    .iter_mut()
+                    .find(|job| job.id == probe_job.id && job.enabled && job.status == ScheduleStatus::Pending)
+                {
+                    Some(stored) => {
+                        let next = calculator::get_next_auto_probe_occurrence(initial_time_of(stored), &probed_at)?;
+                        let changed = stored.scheduled_at != next;
+                        if changed {
+                            stored.scheduled_at = next;
+                            self.job_store.save(&jobs)?;
+                        }
+                        changed
+                    }
+                    None => false,
                 }
+            };
+            if changed {
+                self.raise_jobs_changed();
             }
-            self.raise_jobs_changed();
         }
 
         Ok(next_delay)
@@ -959,6 +964,11 @@ impl Inner {
             if stored.enabled {
                 match stored.recurrence {
                     ScheduleRecurrence::Countdown => stored.scheduled_at = countdown_occurrence(stored, &now)?,
+                    // 能讀取額度時 10 分鐘後再讀取倒數；否則維持每 5 小時 1 分鐘。
+                    ScheduleRecurrence::Interval if self.usage_reader.is_some() => {
+                        stored.scheduled_at =
+                            calculator::get_next_auto_probe_occurrence(initial_time_of(stored), &now)?;
+                    }
                     ScheduleRecurrence::Interval => {
                         stored.scheduled_at =
                             calculator::get_next_auto_interval_occurrence(initial_time_of(stored), &now)?;

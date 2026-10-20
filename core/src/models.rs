@@ -87,7 +87,7 @@ impl ScheduleRecurrence {
             ScheduleRecurrence::Once => "單次",
             ScheduleRecurrence::Daily => "每天固定時間",
             ScheduleRecurrence::Weekly => "每週",
-            ScheduleRecurrence::Interval => "自動模式（5 小時倒數喚醒）",
+            ScheduleRecurrence::Interval => "自動模式（每 10 分鐘偵測倒數）",
             ScheduleRecurrence::Countdown => "自動倒數模式（每日偵測至 24:00）",
         }
     }

@@ -1,5 +1,16 @@
 # AI HANDOFF
 
+## 2026-10-21 Claude：自動模式改為開始後每 10 分鐘偵測倒數（完成）
+
+- 使用者目標「自動模式改成啟動時間開始後，每 10 分鐘讀取一次所有倒數狀態，沒有倒數則呼叫他」。
+- 變更：
+  - `calculator.rs`：新增 `auto_probe_interval()`（10 分鐘）與 `get_next_auto_probe_occurrence`（當日 +10 分鐘，跨過 24:00 排到隔天開始時間）；與既有 301 分鐘共用 `next_within_day`。
+  - `manager.rs`：自動模式在當日開始時間後，固定每 10 分鐘讀取「所有」目標（含快取顯示倒數中的 CLI，不再略過），當日第一次（開始時間到或開機補做）立即讀取；未倒數者呼叫（仍受 2 分鐘冷卻）。不再使用設定的「額度自動重新整理分鐘」（該設定只影響看板）。倒數剛結束（快照觀測時間早於重置時間且重置已到）仍立即讀取該 CLI。全部倒數中時 `scheduled_at` 改為下一次讀取時點、不再寫入 `finished_at`；執行完成後有額度讀取器時排到 +10 分鐘，無讀取器時維持 301 分鐘。
+  - UI 文字：模式下拉「自動模式（開始後每 10 分鐘偵測倒數）」、清單時間欄「10分偵測 (HH:MM)」、`models.rs` 顯示名稱、README。
+  - 測試：`schedule_manager_quota_aware_interval` 第 3 段改以 `quota_auto_refresh_minutes = 0` 證明 10 分鐘節流與設定無關；新增第 5 段（倒數中也每 10 分鐘重讀、只呼叫未倒數者、scheduled_at=下一次讀取）與第 6 段（跨日計算）。
+- 驗證：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 通過；`cargo test --workspace --locked`（因 `target\debug\ai-wake-scheduler.exe` 正在執行被鎖，改用暫存 CARGO_TARGET_DIR）28 通過、3 opt-in 忽略、0 失敗。
+- 未驗證：未以真實 CLI／真實額度 API 長時間執行；每 10 分鐘讀取所有 CLI 會比以往更常呼叫 Claude 額度 API，是否觸發 HTTP 429 未實測；未手動檢視新的下拉文字寬度。
+
 ## 2026-10-17 Claude：全螢幕比例修正（完成）
 
 - 使用者回報全螢幕（4K、150%，邏輯 2560×1392）比例很差：卡片維持原高度、終端機佔半個畫面、清單過寬且 CLI 欄吃掉全部寬度。
