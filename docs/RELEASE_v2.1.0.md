@@ -24,3 +24,5 @@
 - 執行檔與安裝程式版本資訊皆為 2.1.0。
 
 未實測：自動模式以真實 CLI 長時間運作（每 10 分鐘讀取所有 CLI，Claude 額度 API 是否更容易回 HTTP 429）、系統匣「匯出除錯日誌…」項目、安裝包生命週期 QA（安裝腳本除版本號外未變更）、重開機自動啟動。
+
+已發布：[v2.1.0](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v2.1.0)（2026-10-21，Latest）。標籤與執行檔來源：c0b4020509a126cf4522d3b4b41c00a0659aa067，該提交 CI 五時區通過。GitHub 三項資產的官方 SHA256 digest 與本機一致；重新下載後 `sha256sum -c SHA256SUMS.txt` 兩項 OK。
