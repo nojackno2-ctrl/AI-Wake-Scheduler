@@ -6,10 +6,11 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use aiwake_core::cli_update::{self, CliTool, CliUpdateStatus};
 use aiwake_core::time::{self, Moment, Span};
 use aiwake_core::usage::is_counting_down;
 use aiwake_core::{
-    calculator, catalog, locator, login, usage, CancelToken, CliKind, CliRunner, CliUsageAvailability,
+    calculator, catalog, debug_log, locator, login, usage, CancelToken, CliKind, CliRunner, CliUsageAvailability,
     CliUsageSnapshot, CoreError, CoreResult, Guid, ScheduleRecurrence, ScheduleStatus, ScheduledJob, UsageReader,
 };
 use windows::core::PCWSTR;
@@ -62,6 +63,7 @@ pub const ID_SHOW_RESULT: i32 = 103;
 pub const ID_DELETE: i32 = 104;
 pub const ID_OPEN_LOGS: i32 = 105;
 pub const ID_EXPORT_LOGS: i32 = 106;
+pub const ID_CHECK_UPDATES: i32 = 107;
 pub const ID_NAME: i32 = 110;
 pub const ID_TIME: i32 = 112;
 pub const ID_MESSAGE: i32 = 113;
@@ -79,10 +81,15 @@ pub const ID_TRAY_OPEN: i32 = 200;
 pub const ID_TRAY_LOGS: i32 = 201;
 pub const ID_TRAY_EXIT: i32 = 202;
 pub const ID_TRAY_EXPORT_LOGS: i32 = 203;
+pub const ID_TRAY_CHECK_UPDATES: i32 = 204;
 
 const WM_APP_REFRESH: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 3;
 const TIMER_CLOCK: usize = 1;
 const TIMER_TERMINAL: usize = 2;
+const TIMER_UPDATE_CHECK: usize = 3;
+/// 啟動後稍等再檢查 CLI 更新，避免和第一次額度讀取搶資源；之後每 12 小時檢查一次。
+const UPDATE_CHECK_FIRST_DELAY_MS: u32 = 60_000;
+const UPDATE_CHECK_INTERVAL_MS: u32 = 12 * 60 * 60 * 1000;
 
 const COLUMN_COUNTDOWN: usize = 2;
 const COLUMN_HEADERS: [&str; 5] = ["名稱", "時間 / 週期", "倒數", "CLI", "狀態"];
@@ -191,7 +198,7 @@ pub struct MainWindow {
     taskbar_created: u32,
 
     list: HWND,
-    list_buttons: [HWND; 6],
+    list_buttons: [HWND; 7],
     name_input: HWND,
     time_input: HWND,
     message_input: HWND,
@@ -221,6 +228,13 @@ pub struct MainWindow {
     login_notified: RefCell<HashSet<CliKind>>,
     login_in_progress: RefCell<HashSet<CliKind>>,
     balloon_login_kind: Cell<Option<CliKind>>,
+    /// 目前顯示的系統匣通知是 CLI 更新提示（點擊後開啟更新清單）。
+    balloon_update: Cell<bool>,
+    update_check_running: Cell<bool>,
+    update_in_progress: Cell<bool>,
+    cli_updates: RefCell<Vec<CliUpdateStatus>>,
+    /// 已通知過的新版本；同一個版本只提示一次。
+    update_notified: RefCell<HashMap<CliTool, String>>,
     last_clock_text: RefCell<String>,
     last_usage_refresh_time: Cell<Option<Moment>>,
     usage_refresh_generation: Cell<u64>,
@@ -296,6 +310,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         theme::create_button(hwnd, ID_DELETE, "刪除", ButtonVariant::Danger),
         theme::create_button(hwnd, ID_OPEN_LOGS, "開啟日誌資料夾", ButtonVariant::Secondary),
         theme::create_button(hwnd, ID_EXPORT_LOGS, "匯出除錯日誌…", ButtonVariant::Secondary),
+        theme::create_button(hwnd, ID_CHECK_UPDATES, "檢查 CLI 更新…", ButtonVariant::Secondary),
     ];
 
     let editor = w32::create_window(
@@ -377,6 +392,11 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         login_notified: RefCell::new(HashSet::new()),
         login_in_progress: RefCell::new(HashSet::new()),
         balloon_login_kind: Cell::new(None),
+        balloon_update: Cell::new(false),
+        update_check_running: Cell::new(false),
+        update_in_progress: Cell::new(false),
+        cli_updates: RefCell::new(Vec::new()),
+        update_notified: RefCell::new(HashMap::new()),
         last_clock_text: RefCell::new(String::new()),
         last_usage_refresh_time: Cell::new(None),
         usage_refresh_generation: Cell::new(0),
@@ -473,6 +493,7 @@ impl MainWindow {
         self.tray_added.set(tray::add(self.hwnd, self.icon, APP_TITLE));
         unsafe {
             SetTimer(Some(self.hwnd), TIMER_TERMINAL, 150, None);
+            SetTimer(Some(self.hwnd), TIMER_UPDATE_CHECK, UPDATE_CHECK_FIRST_DELAY_MS, None);
         }
 
         self.layout_frame();
@@ -1310,6 +1331,7 @@ impl MainWindow {
         };
 
         for kind in pending {
+            self.balloon_update.set(false);
             self.balloon_login_kind.set(Some(kind));
             tray::balloon(
                 self.hwnd,
@@ -1612,6 +1634,182 @@ impl MainWindow {
         }
     }
 
+    // ── CLI 更新提示 ──────────────────────────────────────────────
+
+    /// 在背景比對各 CLI 的本機與最新版本。`interactive` 為使用者手動檢查：完成後一律顯示結果；
+    /// 背景定期檢查只在發現尚未提示過的新版本時跳系統匣通知。
+    fn check_cli_updates(&self, interactive: bool) {
+        if self.update_check_running.replace(true) {
+            if interactive {
+                self.set_status("正在檢查 CLI 更新…", palette().control_text);
+            }
+            return;
+        }
+        if interactive {
+            self.set_status("正在檢查 CLI 更新…", palette().control_text);
+        }
+
+        let settings = self.host.settings();
+        let working_directory = self.host.wakeup_workspace();
+        let queue = self.queue.clone();
+        std::thread::spawn(move || {
+            let cancel = CancelToken::new();
+            let results: Vec<CliUpdateStatus> = std::thread::scope(|scope| {
+                let handles: Vec<_> = CliTool::ALL
+                    .iter()
+                    .map(|&tool| {
+                        let profile = settings.profile(tool.kind());
+                        let (working_directory, cancel) = (&working_directory, &cancel);
+                        scope.spawn(move || {
+                            let executable =
+                                locator::resolve(tool.kind(), Some(&profile.executable), working_directory);
+                            cli_update::check(tool, executable, working_directory, cancel)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().filter_map(|handle| handle.join().ok()).collect()
+            });
+            queue.post(move |window: &MainWindow| window.on_cli_updates_checked(results, interactive));
+        });
+    }
+
+    fn on_cli_updates_checked(&self, results: Vec<CliUpdateStatus>, interactive: bool) {
+        self.update_check_running.set(false);
+        for status in &results {
+            debug_log::write("更新", status.describe());
+        }
+        *self.cli_updates.borrow_mut() = results;
+
+        let available: Vec<CliUpdateStatus> =
+            self.cli_updates.borrow().iter().filter(|status| status.update_available()).cloned().collect();
+        if available.is_empty() {
+            if interactive {
+                self.set_status("所有 CLI 都已是最新版本", palette().success);
+            }
+        } else {
+            let summary = available.iter().map(|status| status.describe()).collect::<Vec<_>>().join("；");
+            self.set_status(&format!("CLI 有新版本可更新：{summary}"), palette().danger);
+        }
+
+        if interactive {
+            self.show_cli_updates();
+            return;
+        }
+
+        // 同一個新版本只通知一次。
+        let fresh: Vec<&CliUpdateStatus> = {
+            let mut notified = self.update_notified.borrow_mut();
+            available
+                .iter()
+                .filter(|status| {
+                    let latest = status.latest.clone().unwrap_or_default();
+                    notified.insert(status.tool, latest.clone()).as_deref() != Some(latest.as_str())
+                })
+                .collect()
+        };
+        if !fresh.is_empty() {
+            self.balloon_login_kind.set(None);
+            self.balloon_update.set(true);
+            let lines = fresh
+                .iter()
+                .map(|status| {
+                    format!(
+                        "{} {} → {}",
+                        status.tool.display_name(),
+                        status.installed.as_deref().unwrap_or("?"),
+                        status.latest.as_deref().unwrap_or("?")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            tray::balloon(self.hwnd, "CLI 有新版本", &format!("{lines}\n點這則通知查看並更新。"), false);
+        }
+    }
+
+    /// 顯示最近一次的檢查結果；有新版本時詢問是否開啟主控台執行 CLI 自己的 update。
+    fn show_cli_updates(&self) {
+        let statuses = self.cli_updates.borrow().clone();
+        if statuses.is_empty() {
+            self.check_cli_updates(true);
+            return;
+        }
+        let lines = statuses.iter().map(CliUpdateStatus::describe).collect::<Vec<_>>().join("\r\n");
+        let available: Vec<CliUpdateStatus> = statuses.into_iter().filter(|status| status.update_available()).collect();
+        if available.is_empty() {
+            w32::message_box(
+                Some(self.hwnd),
+                &format!("{lines}\r\n\r\n所有 CLI 都已是最新版本。"),
+                APP_TITLE,
+                w32::MB_OK | w32::MB_ICONINFORMATION,
+            );
+            return;
+        }
+        let commands = available
+            .iter()
+            .map(|status| format!("{} update", status.tool.kind().short_name()))
+            .collect::<Vec<_>>()
+            .join("、");
+        let answer = w32::message_box(
+            Some(self.hwnd),
+            &format!(
+                "{lines}\r\n\r\n要開啟主控台執行各 CLI 自己的更新指令嗎？\r\n（將執行：{commands}；更新期間請勿關閉主控台）"
+            ),
+            APP_TITLE,
+            w32::MB_YESNO | w32::MB_ICONQUESTION,
+        );
+        if answer == w32::IDYES {
+            self.start_cli_updates(available);
+        }
+    }
+
+    fn start_cli_updates(&self, statuses: Vec<CliUpdateStatus>) {
+        if self.update_in_progress.replace(true) {
+            self.set_status("CLI 更新主控台已經開啟。", palette().control_text);
+            return;
+        }
+        let working_directory = self.host.wakeup_workspace();
+        let mut children = Vec::new();
+        for status in &statuses {
+            let Some(executable) = &status.executable else {
+                continue;
+            };
+            match cli_update::create_update_start_info(status.tool, executable, &working_directory)
+                .and_then(|start_info| start_info.spawn())
+            {
+                Ok(child) => {
+                    debug_log::write("更新", format!("開啟 {} 更新主控台", status.tool.display_name()));
+                    children.push(child);
+                }
+                Err(error) => self.set_status(
+                    &format!("無法開啟 {} 更新主控台：{}", status.tool.display_name(), error.message()),
+                    palette().danger,
+                ),
+            }
+        }
+        if children.is_empty() {
+            self.update_in_progress.set(false);
+            return;
+        }
+
+        self.set_status("已開啟 CLI 更新主控台，完成後會重新檢查版本。", palette().control_text);
+        let queue = self.queue.clone();
+        std::thread::spawn(move || {
+            for mut child in children {
+                let _ = child.wait();
+            }
+            queue.post(|window: &MainWindow| window.on_cli_updates_finished());
+        });
+    }
+
+    fn on_cli_updates_finished(&self) {
+        self.update_in_progress.set(false);
+        // 更新後執行檔路徑或 language server 可能改變。
+        locator::clear_cache();
+        usage::clear_antigravity_connection_cache();
+        self.check_cli_updates(true);
+        self.refresh_usage(false);
+    }
+
     // ── 計時器與系統匣 ────────────────────────────────────────────
 
     fn start_clock(&self) {
@@ -1711,6 +1909,7 @@ impl MainWindow {
         if !self.really_exit.get() && self.host.settings().minimize_to_tray {
             self.hide_to_tray();
             self.balloon_login_kind.set(None);
+            self.balloon_update.set(false);
             tray::balloon(self.hwnd, APP_TITLE, "程式仍在系統匣執行，排程會繼續倒數。", false);
             return;
         }
@@ -1750,9 +1949,12 @@ impl MainWindow {
             let Ok(menu) = CreatePopupMenu() else {
                 return;
             };
-            for (id, text) in
-                [(ID_TRAY_OPEN, "開啟主視窗"), (ID_TRAY_LOGS, "開啟日誌資料夾"), (ID_TRAY_EXPORT_LOGS, "匯出除錯日誌…")]
-            {
+            for (id, text) in [
+                (ID_TRAY_OPEN, "開啟主視窗"),
+                (ID_TRAY_LOGS, "開啟日誌資料夾"),
+                (ID_TRAY_EXPORT_LOGS, "匯出除錯日誌…"),
+                (ID_TRAY_CHECK_UPDATES, "檢查 CLI 更新…"),
+            ] {
                 let text = wide(text);
                 let _ = AppendMenuW(menu, MF_STRING, id as usize, PCWSTR(text.as_ptr()));
             }
@@ -1777,9 +1979,15 @@ impl MainWindow {
                 if let Some(kind) = self.balloon_login_kind.take() {
                     self.show_from_tray();
                     self.start_login(kind);
+                } else if self.balloon_update.take() {
+                    self.show_from_tray();
+                    self.show_cli_updates();
                 }
             }
-            tray::NIN_BALLOONTIMEOUT | tray::NIN_BALLOONHIDE => self.balloon_login_kind.set(None),
+            tray::NIN_BALLOONTIMEOUT | tray::NIN_BALLOONHIDE => {
+                self.balloon_login_kind.set(None);
+                self.balloon_update.set(false);
+            }
             _ => {}
         }
     }
@@ -1792,12 +2000,17 @@ impl MainWindow {
             ID_DELETE if code == BN_CLICKED => self.delete_selected(),
             ID_OPEN_LOGS if code == BN_CLICKED => self.open_logs_folder(),
             ID_EXPORT_LOGS if code == BN_CLICKED => self.export_debug_logs(),
+            ID_CHECK_UPDATES if code == BN_CLICKED => self.check_cli_updates(true),
             ID_BROWSE if code == BN_CLICKED => self.browse_working_directory(),
             ID_REFRESH_USAGE if code == BN_CLICKED => self.refresh_usage(true),
             ID_SAVE if code == BN_CLICKED => self.save_schedule(),
             ID_SETTINGS if code == BN_CLICKED => self.open_settings(),
             ID_TERMINAL_CLEAR if code == BN_CLICKED => self.terminal.clear(),
             ID_TRAY_OPEN => self.show_from_tray(),
+            ID_TRAY_CHECK_UPDATES => {
+                self.show_from_tray();
+                self.check_cli_updates(true);
+            }
             ID_TRAY_LOGS => self.open_logs_folder(),
             ID_TRAY_EXPORT_LOGS => {
                 self.show_from_tray();
@@ -1931,6 +2144,12 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
             match wparam.0 {
                 TIMER_CLOCK => window.on_clock_tick(),
                 TIMER_TERMINAL => window.terminal.flush(ui::is_checked(window.terminal_auto_scroll)),
+                TIMER_UPDATE_CHECK => {
+                    unsafe {
+                        SetTimer(Some(hwnd), TIMER_UPDATE_CHECK, UPDATE_CHECK_INTERVAL_MS, None);
+                    }
+                    window.check_cli_updates(false);
+                }
                 _ => {}
             }
             LRESULT(0)
@@ -2029,6 +2248,7 @@ unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, 
         WM_DESTROY => {
             window.stop_clock();
             let _ = KillTimer(Some(hwnd), TIMER_TERMINAL);
+            let _ = KillTimer(Some(hwnd), TIMER_UPDATE_CHECK);
             if let Some(cancel) = window.usage_refresh_cancel.borrow_mut().take() {
                 cancel.cancel();
             }

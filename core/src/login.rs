@@ -66,11 +66,20 @@ impl LoginStartInfo {
 /// 讓 CLI 能顯示授權網址、開瀏覽器並接收使用者輸入。
 /// 登入失敗（結束碼非 0）時暫停，錯誤訊息才不會隨視窗一閃而逝。
 pub fn create_start_info(kind: CliKind, executable: &str, working_directory: &str) -> CoreResult<LoginStartInfo> {
+    create_console_start_info(executable, get_arguments(kind), working_directory)
+}
+
+/// 以看得見的主控台執行 CLI 子命令（登入、更新），結束碼非 0 時暫停。
+pub fn create_console_start_info(
+    executable: &str,
+    arguments: &[&str],
+    working_directory: &str,
+) -> CoreResult<LoginStartInfo> {
     if executable.trim().is_empty() {
         return Err(CoreError::InvalidArgument("可執行檔不可為空白。".to_string()));
     }
 
-    let shell_arguments = process::build_command_shell_arguments(executable, get_arguments(kind));
+    let shell_arguments = process::build_command_shell_arguments(executable, arguments);
     // build_command_shell_arguments 以一對外層引號收尾，把 || pause 放進引號內。
     let arguments = format!("{} || pause\"", &shell_arguments[..shell_arguments.len() - 1]);
     let working_directory = (!working_directory.trim().is_empty() && Path::new(working_directory).is_dir())

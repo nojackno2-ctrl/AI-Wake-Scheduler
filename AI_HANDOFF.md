@@ -1,5 +1,15 @@
 # AI HANDOFF
 
+## 2026-10-22 Claude：預設改為最便宜模型、新增 CLI 更新提示（完成）
+
+- 使用者要求「預設呼叫為最便宜的」與「還要加入各 cli 更新提示」。
+- 最便宜預設（commit 9a5a476）：依官方價格頁核對（Claude pricing、OpenAI API pricing、Gemini API pricing）。Claude 預設 Haiku 4.5（1/5 美元）→ Haiku 5.5（0.10/0.50）；Codex gpt-6-luna（0.10/0.50）已是 model/list 最低；AGY Gemini 只有 3.8 Flash；Argon 只有一款；AGY Claude/GPT 維持 Sonnet 5.5 Low（Opus 較貴，GPT-OSS 無官方價且 11-02 下架）。節省模式一律用 low 推理。新增 `AppSettings.default_models_revision`（JSON `DefaultModelsRevision`）：舊設定的 Haiku 4.5 只遷移一次，之後手動改回不再被覆寫。`docs/MODEL_PRICING.md` 已更新。
+- CLI 更新提示：
+  - 新增 `core/src/cli_update.rs`：`CliTool`（agy、Codex、Claude；三個 AGY 目標共用 agy）；本機版本由 `<cli> --version` 取第一個 x.y.z；最新版本來源 agy＝`https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json`（取自 agy.exe 內建字串，實測回 1.4.4）、Codex＝npm `@openai/codex/latest`、Claude＝npm `@anthropic-ai/claude-code/latest`；數字逐段比較；`create_update_start_info` 開看得見的主控台跑 `<cli> update || pause`。`login::create_console_start_info` 抽出共用。
+  - UI：清單下方「檢查 CLI 更新…」按鈕（ID 107）與系統匣選單項目（ID 204）；啟動 60 秒後檢查、之後每 12 小時（TIMER_UPDATE_CHECK）；有新版本時狀態列顯示、同一版本只跳一次系統匣通知，點通知或按鈕顯示版本清單並以是／否詢問是否開啟更新主控台；主控台全部關閉後清除執行檔與 AGY 連線快取並重新檢查、重讀額度。檢查結果寫入除錯日誌（分類「更新」）。
+- 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked` app 10、UI 1、core 19 通過、4 opt-in 忽略、0 失敗；新增 opt-in `cli_update_check_real` 實際執行：agy 1.4.4 已最新、Codex 0.163.0 已最新、Claude Code 2.1.289 → 2.1.306 有新版本。UI 測試擷圖確認按鈕顯示於第二列且未截斷。
+- 未驗證：未實際點擊按鈕／系統匣通知與是否對話框，也未實際執行任何 CLI 的 `update`；Haiku 5.5 預設在 Claude Code 2.1.289 下會多印一行未收錄模型警告（呼叫成功）。
+
 ## 2026-10-22 Claude：實測所有模型可否呼叫並更新模型清單（完成）
 
 - 使用者要求「檢查所有模型都是可以呼叫嗎？更新到最新」。

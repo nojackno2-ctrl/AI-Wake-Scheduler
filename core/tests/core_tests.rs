@@ -2377,3 +2377,59 @@ fn debug_log_write_and_export() {
         assert!(text.contains(expected), "匯出內容應包含「{expected}」：\n{text}");
     }
 }
+
+#[test]
+fn cli_update_version_compare() {
+    use aiwake_core::cli_update::{compare_versions, parse_latest_version, parse_version, CliTool, CliUpdateStatus};
+    use std::cmp::Ordering;
+
+    assert_eq!(parse_version("codex-cli 0.160.0").as_deref(), Some("0.160.0"));
+    assert_eq!(parse_version("2.1.289 (Claude Code)").as_deref(), Some("2.1.289"));
+    assert_eq!(parse_version("1.4.4\r\n").as_deref(), Some("1.4.4"));
+    assert_eq!(parse_version("unknown"), None);
+
+    assert_eq!(compare_versions("0.163.0", "0.160.0"), Ordering::Greater);
+    assert_eq!(compare_versions("2.1.306", "2.1.289"), Ordering::Greater, "必須以數字比較，不能以字串比較。");
+    assert_eq!(compare_versions("1.10.0", "1.9.9"), Ordering::Greater);
+    assert_eq!(compare_versions("1.4.4", "1.4.4"), Ordering::Equal);
+    assert_eq!(compare_versions("1.4", "1.4.0"), Ordering::Equal);
+
+    assert_eq!(parse_latest_version(r#"{"name":"@openai/codex","version":"0.163.0"}"#).as_deref(), Some("0.163.0"));
+    assert_eq!(parse_latest_version(r#"{"version":"1.4.4","url":"https://x/cli.exe"}"#).as_deref(), Some("1.4.4"));
+    assert_eq!(parse_latest_version("<html>"), None);
+
+    let status = |installed: Option<&str>, latest: Option<&str>| CliUpdateStatus {
+        tool: CliTool::Codex,
+        executable: Some("codex".to_string()),
+        installed: installed.map(str::to_string),
+        latest: latest.map(str::to_string),
+        error: None,
+    };
+    assert!(status(Some("0.160.0"), Some("0.163.0")).update_available());
+    assert!(!status(Some("0.163.0"), Some("0.163.0")).update_available());
+    assert!(!status(Some("0.164.0"), Some("0.163.0")).update_available(), "本機較新（預覽版）不應提示。");
+    assert!(!status(None, Some("0.163.0")).update_available(), "讀不到本機版本時不應提示。");
+    assert_eq!(status(Some("0.160.0"), Some("0.163.0")).describe(), "Codex CLI：0.160.0 → 0.163.0（有新版本）");
+
+    let update = aiwake_core::cli_update::create_update_start_info(CliTool::Claude, "claude", "").unwrap();
+    assert!(update.arguments.contains("update") && update.arguments.contains("|| pause"), "更新失敗時應暫停主控台。");
+    assert!(!update.create_no_window, "更新必須在看得見的主控台執行。");
+}
+
+#[test]
+#[ignore = "需要本機已安裝的 CLI 與網路（唯讀，不耗 Token）"]
+fn cli_update_check_real() {
+    use aiwake_core::cli_update::{self, CliTool};
+    let settings = AppSettings::create_default();
+    for tool in CliTool::ALL {
+        let profile = settings.profile(tool.kind());
+        let executable = locator::resolve(tool.kind(), Some(&profile.executable), ".");
+        let status = cli_update::check(tool, executable, ".", &CancelToken::new());
+        println!("{}", status.describe());
+        assert!(
+            status.installed.is_some() && status.latest.is_some(),
+            "{} 應可讀取本機與最新版本。",
+            tool.display_name()
+        );
+    }
+}
