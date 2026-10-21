@@ -27,11 +27,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
 const BM_GETCHECK: u32 = 0x00F0;
 const BM_SETCHECK: u32 = 0x00F1;
 const CB_GETCOUNT: u32 = 0x0146;
-const CB_GETCURSEL: u32 = 0x0147;
 const CB_SETCURSEL: u32 = 0x014E;
 const LVM_GETITEMCOUNT: u32 = 0x1004;
 const BN_CLICKED: usize = 0;
-const CBN_SELCHANGE: usize = 1;
 const CBN_EDITCHANGE: usize = 5;
 
 /// 測試結束（包含失敗）時確保受測程式不會殘留在系統匣。
@@ -134,11 +132,6 @@ fn notify(parent: HWND, id: i32, code: usize) {
     assert!(w32::post(parent, WM_COMMAND, (code << 16) | id as usize, target.0 as isize), "無法送出通知");
 }
 
-fn select_combo(parent: HWND, id: i32, index: usize) {
-    w32::send(control(parent, id), CB_SETCURSEL, index, 0);
-    notify(parent, id, CBN_SELCHANGE);
-}
-
 /// 受測程式目前顯示中的訊息方塊。
 fn message_box(process_id: u32) -> Option<HWND> {
     top_window(process_id, "#32770").filter(|hwnd| is_visible(*hwnd))
@@ -237,8 +230,6 @@ fn main_window_editor_settings_and_tray() {
     assert_eq!(text_of(control(editor, main::ID_NAME)), "AI 倒數喚醒");
     assert_eq!(text_of(control(editor, main::ID_MESSAGE)), "早安");
     assert_eq!(text_of(save_button), "建立排程");
-    assert_eq!(w32::send(control(editor, main::ID_RECURRENCE), CB_GETCOUNT, 0, 0), 3, "應提供三種排程模式。");
-    assert_eq!(w32::send(control(editor, main::ID_RECURRENCE), CB_GETCURSEL, 0, 0), 0);
     for index in 0..CliKind::ALL.len() as i32 {
         assert!(is_checked(control(editor, main::ID_TARGET_BASE + index)), "新排程預設應勾選全部 CLI。");
     }
@@ -262,7 +253,6 @@ fn main_window_editor_settings_and_tray() {
     // ── 建立排程（先取消啟用，避免真的送出訊息）──
     set_checked(control(editor, main::ID_ENABLED), false);
     set_text(control(editor, main::ID_NAME), "測試排程");
-    select_combo(editor, main::ID_RECURRENCE, 2);
     notify(editor, main::ID_SAVE, BN_CLICKED);
     wait_until("排程出現在清單", short, || w32::send(list, LVM_GETITEMCOUNT, 0, 0) == 1);
     wait_until("儲存按鈕改為儲存修改", short, || text_of(save_button) == "儲存修改");
@@ -270,19 +260,18 @@ fn main_window_editor_settings_and_tray() {
     let created = load_jobs(&data_directory);
     assert_eq!(created.len(), 1, "資料檔應有一筆排程。");
     assert_eq!(created[0].name, "測試排程");
-    assert_eq!(created[0].recurrence, ScheduleRecurrence::Countdown);
-    assert!(created[0].initial_time_of_day.is_some(), "自動倒數模式應保存開始偵測時間。");
+    assert_eq!(created[0].recurrence, ScheduleRecurrence::Interval, "只有自動模式。");
+    assert!(created[0].initial_time_of_day.is_some(), "自動模式應保存開始時間。");
     assert!(!created[0].enabled && created[0].status == ScheduleStatus::Disabled, "取消啟用的排程應為已停用。");
     assert_eq!(created[0].targets, catalog::kinds(), "新排程預設應依畫面順序包含全部 CLI。");
     assert_eq!(created[0].message, "早安");
 
     // ── 修改同一筆排程 ──
-    select_combo(editor, main::ID_RECURRENCE, 1);
     set_checked(control(editor, main::ID_TARGET_BASE), false);
     notify(editor, main::ID_SAVE, BN_CLICKED);
     wait_until("修改寫入資料檔", short, || {
         let jobs = load_jobs(&data_directory);
-        jobs.len() == 1 && jobs[0].recurrence == ScheduleRecurrence::Interval
+        jobs.len() == 1 && jobs[0].targets.len() == catalog::kinds().len() - 1
     });
     let modified = load_jobs(&data_directory);
     assert_eq!(modified[0].id, created[0].id, "儲存修改不應建立新排程。");

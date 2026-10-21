@@ -60,7 +60,8 @@ named_enum! {
 named_enum! {
     /// 排程週期模式。
     ///
-    /// Once 與 Weekly 只為了讓舊版本寫出的設定仍可讀取，載入後由排程管理器遷移為 Daily。
+    /// 目前只有自動模式（Interval）；其餘值只為了讓舊版本寫出的設定仍可讀取，
+    /// 載入後由排程管理器遷移為 Interval。
     ScheduleRecurrence { Once, Daily, Weekly, Interval, Countdown }
 }
 
@@ -87,7 +88,7 @@ impl ScheduleRecurrence {
             ScheduleRecurrence::Once => "單次",
             ScheduleRecurrence::Daily => "每天固定時間",
             ScheduleRecurrence::Weekly => "每週",
-            ScheduleRecurrence::Interval => "自動模式（每 10 分鐘偵測倒數）",
+            ScheduleRecurrence::Interval => "自動模式（開始後每 10 分鐘偵測倒數）",
             ScheduleRecurrence::Countdown => "自動倒數模式（每日偵測至 24:00）",
         }
     }
@@ -477,7 +478,7 @@ impl Default for ScheduledJob {
             message: DEFAULT_JOB_MESSAGE.to_string(),
             working_directory: user_profile_directory(),
             targets: catalog::kinds(),
-            recurrence: ScheduleRecurrence::Daily,
+            recurrence: ScheduleRecurrence::Interval,
             initial_time_of_day: None,
             enabled: true,
             status: ScheduleStatus::Pending,

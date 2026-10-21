@@ -1,12 +1,27 @@
 # AI HANDOFF
 
+## 2026-10-22 Claude：依除錯日誌修正 AGY 額度用盡仍反覆呼叫，並只保留自動模式（完成）
+
+- 使用者要求「讀取日誌修復問題，並把所有模式改成只有自動模式，其他模式刪掉」。
+- 證據（`%LOCALAPPDATA%\AI倒數喚醒\logs\debug-20261021.log`）：排程為「自動倒數模式」。AGY(Gemini) 每週額度已用 100%（重置 10-24 08:30），5 小時視窗沒有重置時間而判為「未倒數」，因此每 2 分鐘（冷卻）呼叫一次，每次 stderr 都是 `RESOURCE_EXHAUSTED (code 429)`、結束碼 3，logs 目錄已累積 479 個 Antigravity 執行日誌。另外倒數模式對倒數中的 CLI 每 30 秒重讀額度，Claude 額度 API 因此頻繁 HTTP 429。10-22 04:08 的日誌也顯示 Claude 登入憑證已過期（需使用者自行重新登入，非程式問題）。
+- 變更：
+  - `usage.rs` 新增 `exhausted_until`：任一視窗已用 ≥100% 且重置時間在未來，傳回最晚的重置時間。
+  - `manager.rs`：自動模式讀取後若額度用盡則記錄「額度已用盡，至 … 重置前不呼叫」並略過；移除自動倒數模式（`scan_countdown_jobs`、`countdown_probes`、當日偵測視窗檢查）與每日模式的分支；`initialize`／`upsert` 一律把排程轉為 `Interval`，開始時間沿用 `initial_time_of_day`（每日等舊模式取原排程時分）；完成後有額度讀取器排 +10 分鐘，否則 +301 分鐘。
+  - `models.rs`：`ScheduledJob` 預設改為 `Interval`；列舉其他值保留僅供讀取舊資料。
+  - UI：移除「排程模式」下拉（`ID_RECURRENCE` 刪除），時間欄標籤改為「開始時間」；標題與說明文字改為自動模式；清單倒數欄對額度用盡的 CLI 顯示「額度用盡 剩餘時間」。
+  - 測試：`schedule_manager_countdown` 改為 `schedule_manager_migrates_to_auto_and_skips_exhausted`（倒數／每日模式遷移、保留開始時間、重現日誌情境：AGY 每週 100% 不呼叫、Codex 未倒數才呼叫、10 分鐘後重讀仍不呼叫 AGY）；`schedule_manager_due_job` 斷言改為自動模式；presenter 與 UI 端對端測試移除模式下拉。
+  - README 模式說明更新。
+- 驗證：`cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 通過；`cargo test --workspace --locked`（暫存 CARGO_TARGET_DIR）app 10、UI 1、core 18 通過，3 opt-in 忽略，0 失敗。
+- 未驗證：未以真實 CLI 長時間執行新版本、未重建 release／安裝包、未發版；使用者電腦上正在執行的舊版需重新建置並重啟才會套用。同一時間只有第一個自動模式排程走額度偵測，其餘自動模式排程仍走 301 分鐘的盲呼叫（既有行為，未變更）。
+
 ## 2026-10-21 Claude：修正 Codex 5 小時倒數偵測不到（完成）
 
 - 使用者回報「codex 的倒數 5 小時抓不到」。
 - 證據（除錯日誌 debug-20261021.log）：喚醒後 Codex primary 視窗 `已用 0% 重置 15:00:20` 且重置時間固定不變，但被判為「未倒數」，自動模式因此每 2 分鐘（冷卻）重複呼叫 Codex。原因：`usage.rs::add_window` 要求 `usedPercent > 0` 才算倒數，而喚醒訊息用量四捨五入為 0%。同日 10:00:15（重置剛到、尚未喚醒）讀到重置時間 = 現在 + 5 小時，證實未開始的視窗重置時間會隨讀取時間滑動。
 - 變更：`add_window` 另以「重置時間 + 1 分鐘容許 < 觀測時間 + 視窗長度」判定視窗已開始，即使 0% 也視為倒數中；`cli_usage_reader` 測試新增 0% 已開始／未開始兩種案例。
 - 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked`（暫存 CARGO_TARGET_DIR）全數通過、3 opt-in 忽略。
-- 實機驗證：重新建置 release 並從 `targeteleasei-wake-scheduler.exe` 啟動（安裝版 Program Files 未更新），12:12 啟動後 Codex 讀取顯示 `已用 0% 重置 15:00:21 倒數中`，未再呼叫 Codex。
+- 實機驗證：重新建置 release 並從 `target
+eleasei-wake-scheduler.exe` 啟動（安裝版 Program Files 未更新），12:12 啟動後 Codex 讀取顯示 `已用 0% 重置 15:00:21 倒數中`，未再呼叫 Codex。
 - 另發現（未處理）：AGY(Gemini) 每週額度已用 100%、5 小時視窗無重置時間，自動模式每 2 分鐘仍會呼叫 AGY。
 - 未驗證：喚醒後 1 分鐘內的讀取仍可能判為未倒數，由 2 分鐘冷卻與 10 分鐘偵測涵蓋。
 

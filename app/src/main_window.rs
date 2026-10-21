@@ -44,7 +44,7 @@ use crate::terminal::Terminal;
 use crate::theme::{self, palette, ButtonVariant, Fonts};
 use crate::tray;
 use crate::ui::{
-    self, UiQueue, VScroll, BN_CLICKED, CBN_SELCHANGE, WM_APP_DISPATCH, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE,
+    self, UiQueue, VScroll, BN_CLICKED, WM_APP_DISPATCH, WS_CHILD, WS_CLIPCHILDREN, WS_EX_CLIENTEDGE,
     WS_EX_CONTROLPARENT, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 use crate::w32::{
@@ -63,7 +63,6 @@ pub const ID_DELETE: i32 = 104;
 pub const ID_OPEN_LOGS: i32 = 105;
 pub const ID_EXPORT_LOGS: i32 = 106;
 pub const ID_NAME: i32 = 110;
-pub const ID_RECURRENCE: i32 = 111;
 pub const ID_TIME: i32 = 112;
 pub const ID_MESSAGE: i32 = 113;
 pub const ID_WORKING_DIRECTORY: i32 = 114;
@@ -107,11 +106,9 @@ const CDRF_NEWFONT: isize = 0x2;
 const CDRF_NOTIFYITEMDRAW: isize = 0x20;
 
 const EMPTY_STATE_TEXT: &str = "目前沒有排程\r\n選擇下方的「新增」，建立每天自動喚醒。";
-const HEADER_SUBTITLE: &str = "依每日排程、自動週期或實際倒數，向勾選的 CLI 傳送簡短訊息喚醒配額（預設：早安）";
-const EDITOR_NOTE: &str = "自動倒數模式從指定時間偵測至 24:00，未倒數即呼叫，倒數中則等待結束。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。";
-const RECURRENCE_ITEMS: [&str; 3] =
-    ["每天固定時間", "自動模式（開始後每 10 分鐘偵測倒數）", "自動倒數模式（每日偵測至 24:00）"];
-const TIME_LABELS: [&str; 3] = ["每天時間", "首次喚醒時間", "開始偵測時間"];
+const HEADER_SUBTITLE: &str =
+    "自動模式：開始時間後每 10 分鐘偵測倒數，沒有倒數就向勾選的 CLI 傳送簡短訊息喚醒配額（預設：早安）";
+const EDITOR_NOTE: &str = "自動模式從開始時間起每 10 分鐘讀取所有 CLI 的倒數，未倒數即呼叫，倒數中或額度已用盡則等待。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。";
 /// 內容區至少這麼寬時改用三欄（清單｜排程內容｜額度看板）。
 const WIDE_LAYOUT_WIDTH: i32 = 940;
 /// 編輯面板至少這麼寬時「排程內容」與「額度看板」左右並排。
@@ -196,7 +193,6 @@ pub struct MainWindow {
     list: HWND,
     list_buttons: [HWND; 6],
     name_input: HWND,
-    recurrence_input: HWND,
     time_input: HWND,
     message_input: HWND,
     working_directory_input: HWND,
@@ -313,10 +309,6 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         std::ptr::null(),
     );
     let name_input = ui::create_edit(editor, ID_NAME, 0);
-    let recurrence_input = ui::create_combo(editor, ID_RECURRENCE, false);
-    for item in RECURRENCE_ITEMS {
-        ui::combo_add(recurrence_input, item);
-    }
     let time_input = ui::create_time_picker(editor, ID_TIME);
     let message_input = ui::create_edit(editor, ID_MESSAGE, 50);
     let working_directory_input = ui::create_edit(editor, ID_WORKING_DIRECTORY, 0);
@@ -358,7 +350,6 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         list,
         list_buttons,
         name_input,
-        recurrence_input,
         time_input,
         message_input,
         working_directory_input,
@@ -503,7 +494,6 @@ impl MainWindow {
         let mut controls = vec![
             self.list,
             self.name_input,
-            self.recurrence_input,
             self.time_input,
             self.message_input,
             self.working_directory_input,
@@ -799,9 +789,8 @@ impl MainWindow {
         });
         y += section_height + s(12);
 
-        let label_width = ["名稱", "排程模式", "訊息", "工作目錄", "傳送至"]
+        let label_width = ["名稱", "開始時間", "訊息", "工作目錄", "傳送至"]
             .iter()
-            .chain(TIME_LABELS.iter())
             .map(|text| fonts.table_header.measure(text).0)
             .max()
             .unwrap_or(0)
@@ -818,16 +807,10 @@ impl MainWindow {
             });
         };
 
-        let time_label = TIME_LABELS[ui::combo_selected(self.recurrence_input).clamp(0, 2) as usize];
-        for (label, control, extra_height) in [
-            ("名稱", self.name_input, 0),
-            // 下拉選單的高度同時決定展開清單的高度。
-            ("排程模式", self.recurrence_input, s(200)),
-            (time_label, self.time_input, 0),
-            ("訊息", self.message_input, 0),
-        ] {
+        for (label, control) in [("名稱", self.name_input), ("開始時間", self.time_input), ("訊息", self.message_input)]
+        {
             row_label(&mut labels, label, y, input_height);
-            place(control, w32::rect(control_left, y, control_width, input_height + extra_height));
+            place(control, w32::rect(control_left, y, control_width, input_height));
             y += input_height + s(8);
         }
 
@@ -1400,11 +1383,6 @@ impl MainWindow {
     }
 
     fn save_schedule(&self) {
-        let recurrence = match ui::combo_selected(self.recurrence_input) {
-            1 => ScheduleRecurrence::Interval,
-            2 => ScheduleRecurrence::Countdown,
-            _ => ScheduleRecurrence::Daily,
-        };
         let (hour, minute) = ui::time_picker_get(self.time_input);
         let time_of_day = Span::hours(hour as i64) + Span::minutes(minute as i64);
 
@@ -1413,11 +1391,11 @@ impl MainWindow {
                 id: self.editing_id.get().unwrap_or_else(Guid::new),
                 name: w32::get_text(self.name_input).trim().to_string(),
                 scheduled_at,
-                initial_time_of_day: (recurrence != ScheduleRecurrence::Daily).then_some(time_of_day),
+                initial_time_of_day: Some(time_of_day),
                 message: w32::get_text(self.message_input).trim().to_string(),
                 working_directory: w32::get_text(self.working_directory_input).trim().to_string(),
                 targets: self.selected_targets(),
-                recurrence,
+                recurrence: ScheduleRecurrence::Interval,
                 enabled: ui::is_checked(self.enabled_check),
                 ..ScheduledJob::default()
             };
@@ -1511,14 +1489,6 @@ impl MainWindow {
         w32::set_text(self.save_button, "儲存修改");
         w32::invalidate(self.save_button);
         w32::set_text(self.name_input, &job.name);
-        ui::combo_select(
-            self.recurrence_input,
-            match job.recurrence {
-                ScheduleRecurrence::Interval => 1,
-                ScheduleRecurrence::Countdown => 2,
-                _ => 0,
-            },
-        );
         let initial_time = job.initial_time_of_day.unwrap_or_else(|| time::local_time_of_day(&job.scheduled_at));
         ui::time_picker_set(
             self.time_input,
@@ -1546,7 +1516,6 @@ impl MainWindow {
 
         let proposed = chrono::Local::now().naive_local() + Span::minutes(5);
         w32::set_text(self.name_input, aiwake_core::models::DEFAULT_JOB_NAME);
-        ui::combo_select(self.recurrence_input, 0);
         ui::time_picker_set(self.time_input, proposed.hour(), proposed.minute());
         w32::set_text(self.message_input, aiwake_core::models::DEFAULT_JOB_MESSAGE);
         w32::set_text(self.working_directory_input, &self.host.wakeup_workspace());
@@ -1823,7 +1792,6 @@ impl MainWindow {
             ID_DELETE if code == BN_CLICKED => self.delete_selected(),
             ID_OPEN_LOGS if code == BN_CLICKED => self.open_logs_folder(),
             ID_EXPORT_LOGS if code == BN_CLICKED => self.export_debug_logs(),
-            ID_RECURRENCE if code == CBN_SELCHANGE => self.layout_editor(),
             ID_BROWSE if code == BN_CLICKED => self.browse_working_directory(),
             ID_REFRESH_USAGE if code == BN_CLICKED => self.refresh_usage(true),
             ID_SAVE if code == BN_CLICKED => self.save_schedule(),

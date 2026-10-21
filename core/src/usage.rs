@@ -152,6 +152,22 @@ pub fn is_counting_down(snapshot: Option<&CliUsageSnapshot>, now: &Moment) -> bo
     }
 }
 
+/// 任一額度視窗（例如每週額度）已用盡且尚未重置時，傳回最晚的重置時間。
+/// 此時呼叫 CLI 只會失敗（HTTP 429），不應喚醒。
+pub fn exhausted_until(snapshot: Option<&CliUsageSnapshot>, now: &Moment) -> Option<Moment> {
+    let snapshot = snapshot?;
+    if snapshot.availability != CliUsageAvailability::Available {
+        return None;
+    }
+    snapshot
+        .windows
+        .iter()
+        .filter(|window| window.used_percent >= 100)
+        .filter_map(|window| window.resets_at)
+        .filter(|reset| reset > now)
+        .max()
+}
+
 const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 const CLAUDE_USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";

@@ -4,12 +4,8 @@
 use std::collections::HashMap;
 
 use aiwake_core::time::{self, Moment, Span};
-use aiwake_core::{CliKind, CliUsageAvailability, CliUsageSnapshot, ScheduleRecurrence, ScheduleStatus, ScheduledJob};
-
-/// `hh:mm` 形式的時分。
-fn hours_minutes(span: Span) -> String {
-    format!("{:02}:{:02}", span.num_hours() % 24, span.num_minutes() % 60)
-}
+use aiwake_core::usage::exhausted_until;
+use aiwake_core::{CliKind, CliUsageAvailability, CliUsageSnapshot, ScheduleStatus, ScheduledJob};
 
 /// `hh:mm:ss` 形式的時分秒（不含天數）。
 fn hours_minutes_seconds(span: Span) -> String {
@@ -26,14 +22,8 @@ fn remaining_text(remaining: Span) -> String {
 }
 
 pub fn time(job: &ScheduledJob) -> String {
-    let scheduled = time::local_naive(&job.scheduled_at).format("%H:%M");
-    match job.recurrence {
-        ScheduleRecurrence::Countdown => {
-            format!("每日 {}～24:00", job.initial_time_of_day.map(hours_minutes).unwrap_or_default())
-        }
-        ScheduleRecurrence::Interval => format!("10分偵測 ({scheduled})"),
-        _ => scheduled.to_string(),
-    }
+    // 只有自動模式：顯示下一次讀取倒數的時點。
+    format!("10分偵測 ({})", time::local_naive(&job.scheduled_at).format("%H:%M"))
 }
 
 pub fn countdown(
@@ -50,24 +40,19 @@ pub fn countdown(
         return "已停用".to_string();
     }
 
-    if job.recurrence == ScheduleRecurrence::Countdown
-        && job.initial_time_of_day.is_some_and(|start| time::local_time_of_day(now) < start)
-    {
-        return "等待開始偵測".to_string();
-    }
-
-    let quota_driven = matches!(job.recurrence, ScheduleRecurrence::Interval | ScheduleRecurrence::Countdown);
-    if let (true, Some(snapshots), false) = (quota_driven, usage_snapshots, job.targets.is_empty()) {
+    if let (Some(snapshots), false) = (usage_snapshots, job.targets.is_empty()) {
         let parts: Vec<String> = job
             .targets
             .iter()
             .map(|target| {
-                let state = match snapshots
-                    .get(target)
-                    .filter(|snapshot| snapshot.availability == CliUsageAvailability::Available)
-                    .and_then(|snapshot| snapshot.short_window_or_first())
-                {
+                let snapshot =
+                    snapshots.get(target).filter(|snapshot| snapshot.availability == CliUsageAvailability::Available);
+                let state = match snapshot.and_then(|snapshot| snapshot.short_window_or_first()) {
                     None => "尚未讀取".to_string(),
+                    // 例如每週額度已用完：自動模式在重置前不會呼叫。
+                    Some(_) if exhausted_until(snapshot, now).is_some() => {
+                        format!("額度用盡 {}", remaining_text(exhausted_until(snapshot, now).unwrap_or(*now) - *now))
+                    }
                     Some(window) => match window.resets_at.filter(|_| window.is_active_countdown) {
                         None => "未倒數".to_string(),
                         Some(resets_at) if resets_at <= *now => "即將重置".to_string(),
@@ -129,9 +114,8 @@ mod tests {
     use aiwake_core::time::local_wall_clock;
     use aiwake_core::{CliRunResult, CliUsageWindow};
 
-    fn job(recurrence: ScheduleRecurrence) -> ScheduledJob {
+    fn job() -> ScheduledJob {
         ScheduledJob {
-            recurrence,
             scheduled_at: local_wall_clock(2026, 10, 7, 8, 49, 0),
             initial_time_of_day: Some(Span::hours(8) + Span::minutes(49)),
             targets: vec![CliKind::Codex, CliKind::Claude],
@@ -141,9 +125,7 @@ mod tests {
 
     #[test]
     fn time_column_reflects_recurrence() {
-        assert_eq!(time(&job(ScheduleRecurrence::Daily)), "08:49");
-        assert_eq!(time(&job(ScheduleRecurrence::Interval)), "10分偵測 (08:49)");
-        assert_eq!(time(&job(ScheduleRecurrence::Countdown)), "每日 08:49～24:00");
+        assert_eq!(time(&job()), "10分偵測 (08:49)");
     }
 
     #[test]
@@ -161,7 +143,7 @@ mod tests {
             ),
         );
 
-        let interval = job(ScheduleRecurrence::Interval);
+        let interval = job();
         assert_eq!(countdown(&interval, &now, Some(&snapshots)), "Codex 01:30:00；Claude 尚未讀取");
 
         snapshots.insert(
@@ -183,18 +165,27 @@ mod tests {
             "應優先採用 5 小時視窗而不是第一個視窗。"
         );
 
-        let early = local_wall_clock(2026, 10, 7, 8, 0, 0);
-        assert_eq!(countdown(&job(ScheduleRecurrence::Countdown), &early, Some(&snapshots)), "等待開始偵測");
-        assert_eq!(
-            countdown(&job(ScheduleRecurrence::Countdown), &now, Some(&snapshots)),
-            "Codex 01:30:00；Claude 未倒數"
+        // 每週額度用盡時，即使 5 小時視窗未倒數也顯示用盡與剩餘時間。
+        snapshots.insert(
+            CliKind::Claude,
+            CliUsageSnapshot::new(
+                CliKind::Claude,
+                CliUsageAvailability::Available,
+                vec![
+                    CliUsageWindow::new("5h", 0, Some(Span::hours(5)), None, false),
+                    CliUsageWindow::new("7d", 100, Some(Span::days(7)), Some(now + Span::days(2)), true),
+                ],
+                "讀取成功",
+                now,
+            ),
         );
+        assert_eq!(countdown(&interval, &now, Some(&snapshots)), "Codex 01:30:00；Claude 額度用盡 2天 00:00:00");
     }
 
     #[test]
-    fn countdown_for_daily_jobs_and_states() {
+    fn countdown_without_quota_and_states() {
         let now = local_wall_clock(2026, 10, 7, 8, 0, 0);
-        let mut daily = job(ScheduleRecurrence::Daily);
+        let mut daily = job();
         assert_eq!(countdown(&daily, &now, None), "00:49:00");
         daily.scheduled_at = now + Span::days(1) + Span::hours(2);
         assert_eq!(countdown(&daily, &now, None), "1天 02:00:00");
@@ -215,7 +206,7 @@ mod tests {
         assert_eq!(targets(&[]), "");
         assert_eq!(targets_long(&[CliKind::Codex, CliKind::Claude]), "Codex CLI、Claude CLI");
 
-        let mut finished = job(ScheduleRecurrence::Daily);
+        let mut finished = job();
         let mut ok = CliRunResult::new(CliKind::Codex);
         ok.succeeded = true;
         ok.exit_code = Some(0);
