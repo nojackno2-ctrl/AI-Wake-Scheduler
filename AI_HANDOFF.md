@@ -1,5 +1,18 @@
 # AI HANDOFF
 
+## 2026-10-22 Claude：實測所有模型可否呼叫並更新模型清單（完成）
+
+- 使用者要求「檢查所有模型都是可以呼叫嗎？更新到最新」。
+- 來源：`agy models`（agy 1.4.4）、Codex App Server `model/list`（codex-cli 0.160.0）、Claude Code 2.1.289。
+- 實測（使用者明確要求，以本工具相同的節省 Token 參數、每個模型送一次「只回 OK」）：
+  - Codex：gpt-6.1-sol、gpt-6-astra、gpt-6-sol、gpt-6-luna、gpt-5.6-sol、gpt-5.6-terra、gpt-5.6-luna 全部 exit 0 回 OK；gpt-5.5 回 HTTP 400「not supported when using Codex with a ChatGPT account」，且已不在 model/list。
+  - AGY Argon：gemini-4-argon（含 low/medium/high）全部 OK。
+  - AGY Gemini Flash（3.8 base/low/medium/high）與 AGY Claude/GPT 池（sonnet/opus 5.5 low/medium/high、gpt-oss-120b-medium）全部 exit 3 `RESOURCE_EXHAUSTED (429)`：兩個池的每週額度已用 100%（Gemini 10-24、Claude/GPT 10-25 重置），屬額度問題而非模型 ID 問題；模型 ID 皆在 `agy models` 清單中。重置後需重測。
+  - Claude CLI：haiku-4-5-20251001、haiku、sonnet、opus、claude-sonnet-5-5、claude-opus-5-5 OK（第一輪 haiku/sonnet 遇到暫時性 token refresh 錯誤，重試成功）；claude-haiku-5-5 可呼叫且接受 --effort，但 2.1.289 模型目錄未收錄、會印警告；fable、claude-fable-5-1 回使用額度／credits 限制（Pro 方案需額外用量額度）。
+- 變更：Codex 清單移除 gpt-5.5（並移除不再使用的 CODEX_XHIGH）；舊設定的 gpt-5.5 由 `ensure_defaults` 轉為 gpt-6.1-sol；AGY Gemini 與 Argon 推薦清單補上 medium；Claude 推薦清單加入 claude-haiku-5-5，預設維持 Haiku 4.5（CLI 已收錄、最便宜）。測試同步更新。
+- 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked`（暫存 CARGO_TARGET_DIR）29 通過、3 opt-in 忽略、0 失敗。
+- 未驗證：AGY Gemini Flash 與 Claude/GPT 池模型在額度重置後是否可正常回覆；未更新 Claude Code 本身。
+
 ## 2026-10-22 Claude：依除錯日誌修正 AGY 額度用盡仍反覆呼叫，並只保留自動模式（完成）
 
 - 使用者要求「讀取日誌修復問題，並把所有模式改成只有自動模式，其他模式刪掉」。

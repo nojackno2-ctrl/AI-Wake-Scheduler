@@ -359,8 +359,8 @@ fn cli_command_builder() {
 
     let codex_luna_ultra = build_profile(CliKind::Codex, "早安", "gpt-5.6-luna", E::Ultra, "", false);
     assert!(has(&codex_luna_ultra, "model_reasoning_effort=\"max\""), "GPT-5.6 Luna 的 Ultra 應降為支援的 Max。");
-    let codex55_max = build_profile(CliKind::Codex, "早安", "gpt-5.5", E::Max, "", false);
-    assert!(has(&codex55_max, "model_reasoning_effort=\"xhigh\""), "GPT-5.5 的 Max 應降為支援的 XHigh。");
+    let codex_6_luna_ultra = build_profile(CliKind::Codex, "早安", "gpt-6-luna", E::Ultra, "", false);
+    assert!(has(&codex_6_luna_ultra, "model_reasoning_effort=\"max\""), "GPT-6 Luna 的 Ultra 應降為支援的 Max。");
 
     assert_eq!(
         strings(&["--print", "--model", "opus", "--effort", "medium", "早安"]),
@@ -396,15 +396,16 @@ fn cli_command_builder() {
         codex_effort_override.iter().filter(|a| a.to_lowercase().contains("model_reasoning_effort")).count();
     assert_eq!(occurrences, 1, "使用者在額外參數自訂 model_reasoning_effort 時不應重複附加。");
 
-    let codex_model_override = build_profile(CliKind::Codex, "早安", "gpt-5.6-sol", E::Ultra, "--model gpt-5.5", false);
+    let codex_model_override =
+        build_profile(CliKind::Codex, "早安", "gpt-5.6-sol", E::Ultra, "--model gpt-6-luna", false);
     assert_eq!(
         codex_model_override.iter().filter(|a| *a == "--model").count(),
         1,
         "額外參數覆寫模型時不應重複附加 --model。"
     );
     assert!(
-        has(&codex_model_override, "model_reasoning_effort=\"xhigh\""),
-        "Effort 應依額外參數實際指定的 GPT-5.5 正規化為 XHigh。"
+        has(&codex_model_override, "model_reasoning_effort=\"max\""),
+        "Effort 應依額外參數實際指定的 GPT-6 Luna 正規化為 Max。"
     );
 
     let saver_agy = build_args(CliKind::Antigravity, None, true, Some(Duration::from_secs(180)));
@@ -485,17 +486,7 @@ fn cli_catalog() {
     let codex = catalog::get(CliKind::Codex);
     assert_eq!(
         codex.preset_models,
-        [
-            "",
-            "gpt-6.1-sol",
-            "gpt-6-astra",
-            "gpt-6-sol",
-            "gpt-6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5"
-        ]
+        ["", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
     );
     assert!(
         !codex.preset_models.iter().any(|model| model.contains("gpt-5.2") || model.contains("gpt-5.1")),
@@ -503,7 +494,7 @@ fn cli_catalog() {
     );
     assert!(codex.get_supported_efforts(Some("gpt-5.6-sol")).contains(&E::Ultra), "GPT-5.6 Sol 應支援 Ultra。");
     assert!(!codex.get_supported_efforts(Some("gpt-5.6-luna")).contains(&E::Ultra), "GPT-5.6 Luna 不支援 Ultra。");
-    assert_eq!(codex.normalize_effort(Some("gpt-5.5"), E::Max), E::XHigh, "GPT-5.5 Max 應正規化為 XHigh。");
+    assert_eq!(codex.normalize_effort(Some("gpt-6-luna"), E::Ultra), E::Max, "GPT-6 Luna Ultra 應正規化為 Max。");
     for model in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"] {
         let built = build_profile(CliKind::Codex, "OK", model, E::Ultra, "", false);
         assert!(has(&built, model) && has(&built, "model_reasoning_effort=\"ultra\""), "新 Sol/Astra 應可使用 Ultra。");
@@ -525,6 +516,10 @@ fn cli_catalog() {
         "已移除 Opus 設定應轉換到新完整 ID。"
     );
     assert_eq!(legacy_settings.cli_profiles[&CliKind::Codex].model, "gpt-6-luna", "已移除 mini 設定應轉換到 Luna。");
+    let mut removed_codex = AppSettings::create_default();
+    removed_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-5.5".to_string();
+    removed_codex.ensure_defaults();
+    assert_eq!(removed_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-sol", "已下架的 gpt-5.5 應轉換到 6.1 Sol。");
     assert_eq!(legacy_settings.cli_profiles[&CliKind::Claude].model, "custom-model", "自訂模型不可被轉換。");
     for model in agy_claude.preset_models {
         let built = build_profile(CliKind::AntigravityClaude, "OK", model, E::High, "", true);

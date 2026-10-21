@@ -308,6 +308,8 @@ impl AppSettings {
                 (CliKind::AntigravityClaude, "claude-opus-4-6-thinking") => Some("claude-opus-5-5-high"),
                 (CliKind::Codex, "gpt-5.4") => Some("gpt-6.1-sol"),
                 (CliKind::Codex, "gpt-5.4-mini") => Some("gpt-6-luna"),
+                // 2026-10-22 實測：ChatGPT 帳號的 Codex 已不支援 gpt-5.5（HTTP 400）。
+                (CliKind::Codex, "gpt-5.5") => Some("gpt-6.1-sol"),
                 _ => None,
             };
             if let Some(model) = replacement {

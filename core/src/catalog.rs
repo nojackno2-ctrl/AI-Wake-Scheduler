@@ -165,7 +165,6 @@ const AGY_FLASH: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High];
 const AGY_PRO: &[ThinkingEffort] = &[E::Default, E::Low, E::High];
 const CODEX_ULTRA: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max, E::Ultra];
 const CODEX_MAX: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max];
-const CODEX_XHIGH: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh];
 
 static DESCRIPTORS: [CliDescriptor; 5] = [
     CliDescriptor {
@@ -182,7 +181,13 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
         // Gemini 4 Argon 另有獨立的每週額度，由 AntigravityArgon 負責喚醒與倒數。
         default_model: Some("gemini-3.8-flash"),
-        preset_models: &["", "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-high"],
+        preset_models: &[
+            "",
+            "gemini-3.8-flash",
+            "gemini-3.8-flash-low",
+            "gemini-3.8-flash-medium",
+            "gemini-3.8-flash-high",
+        ],
         supported_efforts: AGY_FLASH,
         model_supported_efforts: &[
             ("gemini-3.8-flash", AGY_FLASH),
@@ -215,7 +220,7 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         // Gemini 4 Argon 的額度與 Gemini Models 分開計算（只有每週視窗），
         // 獨立成一個目標才能各自喚醒、各自倒數。基底 ID 搭配獨立 --effort。
         default_model: Some("gemini-4-argon"),
-        preset_models: &["", "gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-high"],
+        preset_models: &["", "gemini-4-argon", "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high"],
         supported_efforts: AGY_FLASH,
         model_supported_efforts: &[
             ("gemini-4-argon", AGY_FLASH),
@@ -269,7 +274,7 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             "-c",
             "model_verbosity=\"low\"",
         ],
-        // 2026-10-04 由本機 Codex App Server `model/list` 取得的可見清單。
+        // 2026-10-22 由本機 Codex App Server `model/list` 取得的可見清單（gpt-5.5 已下架）。
         // 空白設定使用本工具的低價喚醒預設；使用者可明確指定其他模型。
         default_model: Some("gpt-6-luna"),
         preset_models: &[
@@ -281,7 +286,6 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             "gpt-5.6-sol",
             "gpt-5.6-terra",
             "gpt-5.6-luna",
-            "gpt-5.5",
         ],
         supported_efforts: CODEX_ULTRA,
         model_supported_efforts: &[
@@ -292,7 +296,6 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             ("gpt-5.6-sol", CODEX_ULTRA),
             ("gpt-5.6-terra", CODEX_ULTRA),
             ("gpt-5.6-luna", CODEX_MAX),
-            ("gpt-5.5", CODEX_XHIGH),
         ],
         timeout_arguments: None,
         executable_candidates: codex_candidates,
@@ -319,10 +322,13 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         ],
         // 2026-10-04 官方 model-config 文件；保留最新版別名並提供固定版本。
         // CLI 版本需求：Sonnet 5.5 >= 2.1.284、Opus 5.5 >= 2.1.280、Fable 5.1 >= 2.1.257。
+        // 2026-10-22 實測：claude-haiku-5-5 可呼叫，但 2.1.289 的模型目錄尚未收錄（會印出警告），
+        // 因此預設仍維持已收錄且最便宜的 Haiku 4.5。
         default_model: Some("claude-haiku-4-5-20251001"),
         preset_models: &[
             "",
             "claude-haiku-4-5-20251001",
+            "claude-haiku-5-5",
             "haiku",
             "sonnet",
             "opus",
