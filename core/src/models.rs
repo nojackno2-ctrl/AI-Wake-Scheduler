@@ -264,7 +264,12 @@ pub struct AppSettings {
     /// 是否允許背景無視窗執行 agy 內建 /usage；關閉時僅查詢已開啟的 IDE。
     pub auto_start_antigravity: bool,
     pub cli_profiles: BTreeMap<CliKind, CliProfile>,
+    /// 已套用的預設模型更新版本；只在升級時遷移一次，之後使用者改回舊模型不會再被覆寫。
+    pub default_models_revision: i32,
 }
+
+/// 目前的預設模型版本。1：Claude 預設由 Haiku 4.5 改為更便宜的 Haiku 5.5。
+pub const DEFAULT_MODELS_REVISION: i32 = 1;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -276,6 +281,7 @@ impl Default for AppSettings {
             quota_auto_refresh_minutes: 10,
             auto_start_antigravity: true,
             cli_profiles: default_profiles(),
+            default_models_revision: DEFAULT_MODELS_REVISION,
         }
     }
 }
@@ -315,7 +321,17 @@ impl AppSettings {
             if let Some(model) = replacement {
                 profile.model = model.to_string();
             }
+
+            // 舊版的預設模型改為目前最便宜的預設（只遷移一次）。
+            let cheaper = match (descriptor.kind, profile.model.trim()) {
+                (CliKind::Claude, "claude-haiku-4-5-20251001" | "claude-haiku-4-5") => Some("claude-haiku-5-5"),
+                _ => None,
+            };
+            if let (true, Some(model)) = (self.default_models_revision < 1, cheaper) {
+                profile.model = model.to_string();
+            }
         }
+        self.default_models_revision = self.default_models_revision.max(DEFAULT_MODELS_REVISION);
 
         self.execution_timeout_minutes = self.execution_timeout_minutes.clamp(1, 120);
         self.quota_auto_refresh_minutes = self.quota_auto_refresh_minutes.clamp(0, 1440);
@@ -347,12 +363,15 @@ impl JsonModel for AppSettings {
             "QuotaAutoRefreshMinutes": self.quota_auto_refresh_minutes,
             "AutoStartAntigravity": self.auto_start_antigravity,
             "CliProfiles": Value::Object(profiles),
+            "DefaultModelsRevision": self.default_models_revision,
         })
     }
 
     fn from_json(value: &Value) -> Result<Self, String> {
         let object = expect_object(value, "設定檔")?;
-        let mut settings = AppSettings::default();
+        // 沒有此欄位的舊設定檔視為尚未套用任何預設模型更新。
+        let mut settings = AppSettings { default_models_revision: 0, ..AppSettings::default() };
+        read_i32(object, "DefaultModelsRevision", &mut settings.default_models_revision)?;
         read_bool(object, "StartWithWindows", &mut settings.start_with_windows)?;
         read_bool(object, "MinimizeToTray", &mut settings.minimize_to_tray)?;
         read_bool(object, "TokenSaverMode", &mut settings.token_saver_mode)?;

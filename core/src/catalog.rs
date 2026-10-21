@@ -322,13 +322,13 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         ],
         // 2026-10-04 官方 model-config 文件；保留最新版別名並提供固定版本。
         // CLI 版本需求：Sonnet 5.5 >= 2.1.284、Opus 5.5 >= 2.1.280、Fable 5.1 >= 2.1.257。
-        // 2026-10-22 實測：claude-haiku-5-5 可呼叫，但 2.1.289 的模型目錄尚未收錄（會印出警告），
-        // 因此預設仍維持已收錄且最便宜的 Haiku 4.5。
-        default_model: Some("claude-haiku-4-5-20251001"),
+        // 預設採官方單價最便宜的模型：Haiku 5.5（0.10／0.50 美元每百萬 token，Haiku 4.5 為 1／5）。
+        // 2026-10-22 實測可呼叫並接受 --effort；2.1.289 的模型目錄尚未收錄，只會多印一行警告。
+        default_model: Some("claude-haiku-5-5"),
         preset_models: &[
             "",
-            "claude-haiku-4-5-20251001",
             "claude-haiku-5-5",
+            "claude-haiku-4-5-20251001",
             "haiku",
             "sonnet",
             "opus",

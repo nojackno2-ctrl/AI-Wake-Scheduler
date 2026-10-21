@@ -439,8 +439,8 @@ fn cli_command_builder() {
 
     let saver_claude = build_args(CliKind::Claude, None, true, None);
     assert!(
-        has(&saver_claude, "claude-haiku-4-5-20251001") && !has(&saver_claude, "--effort"),
-        "Claude 預設應使用低價 Haiku 並省略不支援的 effort。"
+        has(&saver_claude, "claude-haiku-5-5") && has(&saver_claude, "--effort") && has(&saver_claude, "low"),
+        "Claude 預設應使用最便宜的 Haiku 5.5 並以低推理執行。"
     );
     assert!(has(&saver_claude, "--tools") && has(&saver_claude, ""), "節省模式應停用 Claude 內建工具。");
     assert!(has(&saver_claude, "--safe-mode"), "節省模式應停用 CLAUDE.md、技能、外掛與 MCP 伺服器。");
@@ -520,6 +520,22 @@ fn cli_catalog() {
     removed_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-5.5".to_string();
     removed_codex.ensure_defaults();
     assert_eq!(removed_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-sol", "已下架的 gpt-5.5 應轉換到 6.1 Sol。");
+
+    // 舊設定檔（沒有 DefaultModelsRevision）的 Haiku 4.5 只遷移一次到更便宜的 Haiku 5.5。
+    let mut legacy_haiku = AppSettings::from_json(&serde_json::json!({
+        "CliProfiles": { "Claude": { "Executable": "claude", "Model": "claude-haiku-4-5-20251001" } }
+    }))
+    .unwrap();
+    legacy_haiku.ensure_defaults();
+    assert_eq!(legacy_haiku.cli_profiles[&CliKind::Claude].model, "claude-haiku-5-5", "舊預設應遷移到 Haiku 5.5。");
+    legacy_haiku.cli_profiles.get_mut(&CliKind::Claude).unwrap().model = "claude-haiku-4-5-20251001".to_string();
+    let mut reloaded = AppSettings::from_json(&legacy_haiku.to_json()).unwrap();
+    reloaded.ensure_defaults();
+    assert_eq!(
+        reloaded.cli_profiles[&CliKind::Claude].model,
+        "claude-haiku-4-5-20251001",
+        "遷移後使用者再選 Haiku 4.5 不應被覆寫。"
+    );
     assert_eq!(legacy_settings.cli_profiles[&CliKind::Claude].model, "custom-model", "自訂模型不可被轉換。");
     for model in agy_claude.preset_models {
         let built = build_profile(CliKind::AntigravityClaude, "OK", model, E::High, "", true);
@@ -2237,7 +2253,7 @@ fn real_cli_wake_smoke() {
         (CliKind::AntigravityArgon, "gemini-4-argon"),
         (CliKind::AntigravityClaude, "claude-sonnet-5-5-low"),
         (CliKind::Codex, "gpt-6-luna"),
-        (CliKind::Claude, "claude-haiku-4-5-20251001"),
+        (CliKind::Claude, "claude-haiku-5-5"),
     ];
     let handles: Vec<_> = cases
         .into_iter()

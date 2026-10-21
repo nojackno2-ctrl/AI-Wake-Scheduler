@@ -1,12 +1,12 @@
 # 預設喚醒模型與官方價格
 
-2026-10-05 Codex 核對。價格單位為美元／百萬 token，使用標準同步 API、一般短上下文、未快取文字輸入；不套用 Batch、Flex、Fast 或其他折扣。API 單價是選型依據，訂閱 CLI 的額度扣除不一定等同 API 帳單。
+2026-10-05 Codex 核對；2026-10-22 Claude 依官方價格頁重新核對並改用最便宜預設。價格單位為美元／百萬 token，使用標準同步 API、一般短上下文、未快取文字輸入；不套用 Batch、Flex、Fast 或其他折扣。API 單價是選型依據，訂閱 CLI 的額度扣除不一定等同 API 帳單。
 
 | 目標 | 本工具預設模型 | 輸入 | 輸出 | 選擇依據 |
 | --- | --- | ---: | ---: | --- |
 | AGY Gemini | gemini-3.8-flash，Low | 0.75 | 3.75 | AGY 模型清單內 3.6／3.7／3.8 Flash 目前同價，選已驗證的 3.8；Flash-Lite 雖更便宜，但本機 AGY 未提供 |
-| Codex | gpt-6-luna，Low | 0.10 | 0.50 | 本機支援的低價 Luna 模型，明確指定以免跟隨高價 CLI 預設 |
-| Claude | claude-haiku-4-5-20251001 | 1.00 | 5.00 | 官方現役 Claude 中最低的標準輸入與輸出單價；不傳不支援的 effort |
+| Codex | gpt-6-luna，Low | 0.10 | 0.50 | model/list 中最便宜（gpt-5.6-luna 0.20／1.20、Sol 2.00 起）；明確指定以免跟隨高價 CLI 預設 |
+| Claude | claude-haiku-5-5，Low | 0.10 | 0.50 | 官方現役 Claude 中最低單價（Haiku 4.5 為 1.00／5.00，提示 >100k token 時 Haiku 5.5 為 0.50／2.50）；舊設定的 Haiku 4.5 會一次性遷移 |
 | AGY Claude／GPT | claude-sonnet-5-5-low | 2.00 | 10.00 | Sonnet 較 Opus 便宜；此為 Anthropic API 參考價，非 AGY 官方扣額報價 |
 
 Google Flash 的表列促銷價格到 2026-12-31；2027-01-01 起官方目前列為輸入 1.50／輸出 7.50。請日後再次查價。
