@@ -16,6 +16,14 @@
 
 CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，於 UTC、台北、印度、太平洋、澳洲東部五個時區矩陣執行 fmt、clippy、build、test。
 
+## 2026-10-21 v2.1.0 發布檢查（Claude）
+
+- 版本 2.1.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）。
+- fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked` 29 通過、3 opt-in 略過（因 `target\debug` 執行檔被佔用，以暫存 CARGO_TARGET_DIR 執行）。
+- `build-installer.ps1 -SkipTests`（測試已先行執行）：安裝程式 2,438,078 bytes，ProductVersion 2.1.0.0；執行檔 1,830,400 bytes，FileVersion／ProductVersion 2.1.0，SHA256 C216D5FD…1576。免安裝 ZIP 內僅 `AI倒數喚醒.exe`（1,830,400 bytes）與 LICENSE。
+- Release 執行檔以 `--verify-ui` 啟動，除錯日誌記錄「啟動 v2.1.0」。
+- 未驗證：安裝包生命週期 QA（`tests/Verify-Installer.ps1`）本版未重跑；自動模式真實長時間運作；系統匣匯出項目。
+
 ## 2026-10-17 v2.0.0 發布檢查（Claude）
 
 - 版本 2.0.0（`Cargo.toml`、`.iss`；HTTP User-Agent 與 Codex app-server clientInfo 改取 `CARGO_PKG_VERSION`）。

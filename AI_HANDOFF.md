@@ -1,5 +1,12 @@
 # AI HANDOFF
 
+## 2026-10-21 Claude：發布 v2.1.0（進行中）
+
+- 使用者要求「發布到 GitHub」（明確授權發布）；版本選 v2.1.0（新增功能、資料格式相容）。
+- 變更：版本 2.0.0→2.1.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）；新增 `docs/RELEASE_v2.1.0.md`；`docs/FEATURE_VERIFICATION.md` 新增 v2.1.0 發布檢查。
+- 資產（`dist\v2.1.0\release\`，dist 不納入版控）：Setup（sha256 35814071…3d5b）、Portable ZIP（3174d447…e346）、SHA256SUMS.txt。
+- 驗證：見 `docs/FEATURE_VERIFICATION.md`「v2.1.0 發布檢查」。
+
 ## 2026-10-21 Claude：除錯日誌與匯出（完成）
 
 - 使用者目標「加入可以輸出所有日誌來除錯」。
