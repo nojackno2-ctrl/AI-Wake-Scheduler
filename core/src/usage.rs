@@ -1285,8 +1285,21 @@ fn add_window(
     let resets_at = window.get("resetsAt").and_then(Value::as_i64).and_then(time::from_unix_seconds);
 
     let clamped_used = used_percent.clamp(0, 100);
-    let is_active_countdown = clamped_used > 0 && resets_at.is_some_and(|reset| reset > *observed_at);
+    // 喚醒訊息用量極小，usedPercent 常四捨五入為 0，但視窗其實已開始倒數。
+    // 未開始的視窗其重置時間會隨讀取時間滑動（約為 現在 + 視窗長度），已開始者固定；
+    // 因此重置時間明顯早於「現在 + 視窗長度」即視為倒數中。
+    let window_started = match (resets_at, duration) {
+        (Some(reset), Some(duration)) => reset + duration_slack() < *observed_at + duration,
+        _ => false,
+    };
+    let is_active_countdown =
+        (clamped_used > 0 || window_started) && resets_at.is_some_and(|reset| reset > *observed_at);
     destination.push(CliUsageWindow::new(name, clamped_used, duration, resets_at, is_active_countdown));
+}
+
+/// 判斷 Codex 視窗是否已開始的容許誤差：涵蓋伺服器時鐘與讀取延遲。
+fn duration_slack() -> Span {
+    Span::minutes(1)
 }
 
 fn unavailable(kind: CliKind, message: impl Into<String>, observed_at: Moment) -> CliUsageSnapshot {

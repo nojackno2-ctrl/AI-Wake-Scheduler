@@ -605,6 +605,21 @@ fn cli_usage_reader() {
     assert_eq!(snapshot.windows[0].resets_at.unwrap().timestamp(), primary_reset, "應解析 Unix 重置時間。");
     assert_eq!(snapshot.windows[1].duration, Some(Span::days(7)), "應解析額度視窗長度。");
 
+    // 喚醒後 usedPercent 為 0，但重置時間固定（早於 現在 + 5 小時）仍屬倒數中；
+    // 未開始的視窗重置時間約為 現在 + 5 小時，不可誤判。
+    let started_reset = (observed_at + Span::minutes(285)).timestamp();
+    let idle_reset = (observed_at + Span::minutes(300)).timestamp();
+    let codex_zero = |reset: i64| {
+        format!(
+            r#"{{"id":1,"result":{{"rateLimitsByLimitId":{{"codex":{{"limitId":"codex","primary":{{"usedPercent":0,"windowDurationMins":300,"resetsAt":{reset}}}}}}}}}}}"#
+        )
+    };
+    let started = usage::parse_codex_rate_limits(&codex_zero(started_reset), &observed_at).unwrap();
+    assert!(started.windows[0].is_active_countdown, "已用 0% 但重置時間固定，應判定為倒數中。");
+    assert!(usage::is_counting_down(Some(&started), &observed_at));
+    let idle = usage::parse_codex_rate_limits(&codex_zero(idle_reset), &observed_at).unwrap();
+    assert!(!idle.windows[0].is_active_countdown, "重置時間等於 現在 + 視窗長度，應判定為未倒數。");
+
     let error =
         usage::parse_codex_rate_limits("{\"id\":1,\"error\":{\"message\":\"not authenticated\"}}", &observed_at)
             .unwrap();
