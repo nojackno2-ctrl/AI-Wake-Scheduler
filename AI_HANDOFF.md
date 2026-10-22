@@ -1,5 +1,16 @@
 # AI HANDOFF
 
+## 2026-10-23 Antigravity：主視窗三欄版面重作、固定字體大小與全欄位自動調整不裁切（完成）
+
+- 使用者要求：「UI重作，終端輸出改到最右邊，然後視窗大小的調整不要改變字體的大小，所有的欄位要自動調整，不要被切到」。開始時 `main` 工作樹乾淨。
+- 變更：
+  - `app/src/main_window.rs`：移除依視窗尺寸縮放字型的 `update_zoom`、`DESIGN_CLIENT_SIZE` 與 `MAX_ZOOM`，字型僅在啟動與跨螢幕 `WM_DPICHANGED` 時依螢幕 DPI 建立，調整視窗大小時字體大小完全固定。將「即時終端輸出」面板移至主視窗最右欄（全高卡片），與左中主區以垂直可拖曳分隔線（`Drag::Vertical`、`IDC_SIZEWE`）隔開；左中主區維持「已儲存排程」與「排程內容＋剩餘流量與重置倒數」並排（極窄時自動堆疊）。「排程內容」在寬度足夠時將「開始時間／結束／間隔(分)」排在同一列並自動調整控制項與勾選框欄數。排程清單 `resize_columns` 依標題與列內容動態計算五欄寬度與列高（`LVM_SETIMAGELIST`），並於 `on_list_custom_draw` 以 `DT_WORDBREAK | DT_EDITCONTROL` 自繪儲存格自動換行，確保所有欄位完整顯示不出現刪節號或水平裁切。
+  - `app/src/board.rs`：額度看板分欄門檻調為 `260px`（預設視窗下 5 個 CLI 自動排成雙欄 3 列，免捲動即可完整顯示），長條圖寬度依欄寬動態縮放，重置時間戳記僅在剩餘寬度足夠時繪製，避免任何文字被切邊。
+  - `app/src/settings_window.rs`、[`app/src/w32.rs`](file:///d:/Github/AI-Wake-Scheduler/app/src/w32.rs)：設定視窗長標籤改為自動換行（`DT_WORDBREAK`），表格欄寬安全夾限；`Font::measure_wrapped` 加入 `DT_EDITCONTROL`。
+  - `app/tests/ui_smoke.rs`、`README.md`：新增預設／放大／縮小視窗下之版面順序、控制項邊界不裁切與 `WM_GETFONT` 字型控制代碼不變斷言；更新 README 介面位置說明。
+- 驗證：依序執行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（app 10、隔離 UI `ui_smoke` 1、core 29，共 40 項通過，4 項 opt-in 忽略）、`cargo build --workspace --locked` 與 `git diff --check` 全部通過；以 `AIWAKE_UI_SHOTS` 擷取預設、放大、縮小、執行後及設定對話框畫面並人工檢視確認無任何欄位被裁切（暫存擷圖已於提交前清除）。
+- 限制：未重新打包正式安裝版或發布新版本。
+
 ## 2026-10-22 Codex：CLI 強制更新與整點間隔設定（完成）
 
 - 使用者要求舊版 CLI 不得呼叫，並確認間隔依每小時刻度對齊（5 分鐘＝00、05、10…；15 分鐘＝00、15、30、45）。開始時 main／593d15c 工作樹乾淨。

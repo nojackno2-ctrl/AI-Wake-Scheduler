@@ -33,6 +33,7 @@ pub const DT_WORDBREAK: u32 = 0x0010;
 pub const DT_SINGLELINE: u32 = 0x0020;
 pub const DT_CALCRECT: u32 = 0x0400;
 pub const DT_NOPREFIX: u32 = 0x0800;
+pub const DT_EDITCONTROL: u32 = 0x2000;
 pub const DT_END_ELLIPSIS: u32 = 0x8000;
 
 /// 單行、垂直置中、過長時以刪節號結尾。
@@ -329,7 +330,12 @@ impl Font {
             let previous = SelectObject(dc, HGDIOBJ(self.0 .0));
             let mut buffer: Vec<u16> = text.encode_utf16().collect();
             let mut bounds = rect(0, 0, width.max(1), 0);
-            DrawTextW(dc, &mut buffer, &mut bounds, DRAW_TEXT_FORMAT(DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX));
+            DrawTextW(
+                dc,
+                &mut buffer,
+                &mut bounds,
+                DRAW_TEXT_FORMAT(DT_CALCRECT | DT_WORDBREAK | DT_EDITCONTROL | DT_NOPREFIX),
+            );
             SelectObject(dc, previous);
             ReleaseDC(None, dc);
             height_of(&bounds)

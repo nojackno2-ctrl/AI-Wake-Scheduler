@@ -21,7 +21,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetClassNameW, GetDlgItem, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
-    WM_CLOSE, WM_COMMAND, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT, WM_VSCROLL,
+    SetWindowPos, SWP_NOMOVE, SWP_NOZORDER, WM_CLOSE, WM_COMMAND, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
+    WM_VSCROLL,
 };
 
 const BM_GETCHECK: u32 = 0x00F0;
@@ -256,6 +257,110 @@ fn main_window_editor_settings_and_tray() {
     // 啟動時的額度讀取結束後，按鈕會恢復可用。
     wait_until("啟動時的額度讀取完成", long, || text_of(refresh_button) == "重新讀取倒數");
     screenshot(window, "01-main");
+
+    // ── 版面與視窗縮放驗證：終端機在最右欄、縮放不改字型大小、控制項不裁切 ──
+    let rect_of = |hwnd: HWND| {
+        let mut rect = RECT::default();
+        unsafe {
+            let _ = GetWindowRect(hwnd, &mut rect);
+        }
+        rect
+    };
+    let terminal_box = control(window, main::ID_TERMINAL_OUTPUT);
+    let check_layout = |label: &str| {
+        let win_rc = rect_of(window);
+        let list_rc = rect_of(list);
+        let editor_rc = rect_of(editor);
+        let term_rc = rect_of(terminal_box);
+        assert!(
+            list_rc.right <= editor_rc.left && editor_rc.right <= term_rc.left,
+            "{label}：版面應維持左清單、中編輯器、最右終端輸出（list={list_rc:?}, editor={editor_rc:?}, terminal={term_rc:?}）"
+        );
+        assert!(
+            term_rc.right <= win_rc.right && term_rc.bottom <= win_rc.bottom,
+            "{label}：終端輸出不得超出視窗邊界（terminal={term_rc:?}, window={win_rc:?}）"
+        );
+        for id in [
+            main::ID_NAME,
+            main::ID_MESSAGE,
+            main::ID_TIME,
+            main::ID_END_TIME,
+            main::ID_PROBE_INTERVAL,
+            main::ID_WORKING_DIRECTORY,
+            main::ID_BROWSE,
+            main::ID_SAVE,
+            main::ID_REFRESH_USAGE,
+            main::ID_SETTINGS,
+        ] {
+            let ctrl_rc = rect_of(control(editor, id));
+            assert!(
+                ctrl_rc.left >= editor_rc.left && ctrl_rc.right <= editor_rc.right,
+                "{label}：控制項 {id} 水平方向不應被裁切（ctrl={ctrl_rc:?}, editor={editor_rc:?}）"
+            );
+            assert!(
+                w32::width_of(&ctrl_rc) >= 40 && w32::height_of(&ctrl_rc) >= 20,
+                "{label}：控制項 {id} 尺寸過小（ctrl={ctrl_rc:?}）"
+            );
+        }
+    };
+    let initial_win_rc = rect_of(window);
+    let font_before = w32::send(control(editor, main::ID_NAME), WM_GETFONT, 0, 0);
+    let term_font_before = w32::send(terminal_box, WM_GETFONT, 0, 0);
+    check_layout("預設視窗大小");
+
+    unsafe {
+        let _ = SetWindowPos(
+            window,
+            None,
+            0,
+            0,
+            w32::width_of(&initial_win_rc) + 320,
+            w32::height_of(&initial_win_rc) + 120,
+            SWP_NOMOVE | SWP_NOZORDER,
+        );
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        w32::send(control(editor, main::ID_NAME), WM_GETFONT, 0, 0),
+        font_before,
+        "放大視窗時不得改變控制項字體大小"
+    );
+    assert_eq!(w32::send(terminal_box, WM_GETFONT, 0, 0), term_font_before, "放大視窗時不得改變終端字體大小");
+    check_layout("放大視窗 (1860x1040)");
+    screenshot(window, "01b-main-wide");
+
+    unsafe {
+        let _ = SetWindowPos(
+            window,
+            None,
+            0,
+            0,
+            w32::width_of(&initial_win_rc) * 72 / 100,
+            w32::height_of(&initial_win_rc) * 75 / 100,
+            SWP_NOMOVE | SWP_NOZORDER,
+        );
+    }
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        w32::send(control(editor, main::ID_NAME), WM_GETFONT, 0, 0),
+        font_before,
+        "縮小視窗時不得改變控制項字體大小"
+    );
+    check_layout("縮小視窗 (1120x680)");
+    screenshot(window, "01c-main-compact");
+
+    unsafe {
+        let _ = SetWindowPos(
+            window,
+            None,
+            0,
+            0,
+            w32::width_of(&initial_win_rc),
+            w32::height_of(&initial_win_rc),
+            SWP_NOMOVE | SWP_NOZORDER,
+        );
+    }
+    std::thread::sleep(Duration::from_millis(150));
 
     // ── 建立排程（先取消啟用，避免真的送出訊息）──
     set_checked(control(editor, main::ID_ENABLED), false);

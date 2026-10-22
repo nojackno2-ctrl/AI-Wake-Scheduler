@@ -546,10 +546,11 @@ impl SettingsWindow {
                 + s(34),
         ) + s(8);
         let browse_width = theme::button_width(&fonts, "瀏覽…");
-        let flexible = (table_width - name_width - effort_width - browse_width).max(s(240));
-        let model_width = flexible * 32 / 100;
-        let path_width = flexible * 38 / 100;
-        let arguments_width = flexible - model_width - path_width;
+        let fixed = name_width + effort_width + browse_width;
+        let flexible = (table_width - fixed).max(s(90));
+        let model_width = (flexible * 32 / 100).max(s(30));
+        let path_width = (flexible * 38 / 100).max(s(30));
+        let arguments_width = (flexible - model_width - path_width).max(s(30));
 
         let model_x = table_left + name_width;
         let effort_x = model_x + model_width;
@@ -621,16 +622,39 @@ impl SettingsWindow {
         }
         for (label, input) in [(TIMEOUT_LABEL, self.timeout_input), (QUOTA_LABEL, self.quota_refresh_input)] {
             y += s(4);
-            let label_width = (fonts.body.measure(label).0 + s(5)).min(table_width - s(76));
-            push(
-                w32::rect(table_left, y, label_width, input_height),
-                label,
-                FontKind::Body,
-                colors.primary_text,
-                false,
-            );
-            ui::number_move(input.0, input.1, &w32::rect(table_left + label_width, y, s(70), input_height));
-            y += input_height;
+            let measured = fonts.body.measure(label).0 + s(6);
+            if measured + s(70) <= table_width {
+                push(
+                    w32::rect(table_left, y, measured, input_height),
+                    label,
+                    FontKind::Body,
+                    colors.primary_text,
+                    false,
+                );
+                ui::number_move(input.0, input.1, &w32::rect(table_left + measured, y, s(70), input_height));
+                y += input_height;
+            } else {
+                let label_width = (table_width - s(80)).max(s(120));
+                let label_height = fonts.body.measure_wrapped(label, label_width).max(input_height);
+                push(
+                    w32::rect(table_left, y, label_width, label_height),
+                    label,
+                    FontKind::Body,
+                    colors.primary_text,
+                    true,
+                );
+                ui::number_move(
+                    input.0,
+                    input.1,
+                    &w32::rect(
+                        table_left + label_width + s(10),
+                        y + (label_height - input_height) / 2,
+                        s(70),
+                        input_height,
+                    ),
+                );
+                y += label_height;
+            }
         }
         y += pad;
         panels.push(RECT { left, top: panel_top, right: left + inner_width, bottom: y });

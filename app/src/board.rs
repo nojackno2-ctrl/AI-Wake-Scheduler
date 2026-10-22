@@ -161,11 +161,11 @@ impl UsageBoard {
     ) -> i32 {
         let colors = palette();
         let scale = |value: i32| fonts.scale(value);
-        let gap = scale(10);
+        let gap = scale(8);
         let bar_width = scale(88);
         let bar_height = scale(7);
-        let row_height = (fonts.body.height() + scale(9)).max(scale(24));
-        let header_height = (fonts.table_header.height() + scale(7)).max(scale(23));
+        let row_height = (fonts.body.height() + scale(7)).max(scale(22));
+        let header_height = (fonts.table_header.height() + scale(5)).max(scale(21));
 
         let mut label_width = scale(44);
         for group in self.groups.values() {
@@ -173,22 +173,25 @@ impl UsageBoard {
                 label_width = label_width.max(measure_text(measure_dc, &fonts.body, &row.label).0);
             }
         }
-        let label_width = label_width.min(scale(104));
+        let label_width = label_width.min(scale(96));
         let percent_width = measure_text(measure_dc, &fonts.table_header, "100%").0;
-
-        let bar_x = label_width + gap;
-        let percent_x = bar_x + bar_width + gap;
-        let countdown_x = percent_x + percent_width + gap;
 
         // 寬度足夠時各 CLI 分欄排列（依目錄順序由左而右、由上而下），每一橫列取最高者。
         let columns = columns_for(fonts, width);
-        let column_gap = scale(20);
-        let column_width = (width - column_gap * (columns as i32 - 1)) / columns as i32;
+        let column_gap = scale(16);
+        let column_width = ((width - column_gap * (columns as i32 - 1)) / columns as i32).max(scale(120));
+        let sample_countdown_w = measure_text(measure_dc, &fonts.mono, "0天 00:00").0 + scale(6);
+        let max_bar =
+            ((column_width - label_width - percent_width - sample_countdown_w - gap * 3).max(scale(24))).min(scale(88));
+        let bar_width = max_bar.min(bar_width);
+        let bar_x = label_width + gap;
+        let percent_x = bar_x + bar_width + gap;
+        let countdown_x = percent_x + percent_width + gap;
         let (mut row_top, mut row_bottom) = (0, 0);
         for (index, descriptor) in catalog::all().iter().enumerate() {
             let column = index % columns;
             if column == 0 && index > 0 {
-                row_top = row_bottom + scale(9);
+                row_top = row_bottom + scale(6);
             }
             let origin_x = origin_x + column as i32 * (column_width + column_gap);
             let width = column_width;
@@ -348,11 +351,12 @@ impl UsageBoard {
 
         let stamp_x = countdown_width + gap;
         let stamp_width = available - stamp_x;
-        if stamp_width >= fonts.scale(56) {
+        let stamp = format_reset_stamp(&self.now, &resets_at);
+        if stamp_width >= measure_text(dc, &fonts.caption, &stamp).0 {
             draw_text(
                 dc,
                 &fonts.caption,
-                &format_reset_stamp(&self.now, &resets_at),
+                &stamp,
                 &w32::rect(x + stamp_x, y, stamp_width, row_height),
                 colors.secondary_text,
                 DT_LINE | DT_LEFT,
@@ -401,10 +405,10 @@ impl UsageBoard {
     }
 }
 
-/// 看板依寬度自動決定的欄數：每欄至少約 320px，最多 3 欄。
+/// 看板依寬度自動決定的欄數：每欄至少約 340px，最多 3 欄。
 pub fn columns_for(fonts: &Fonts, width: i32) -> usize {
-    let minimum = fonts.scale(320);
-    let gap = fonts.scale(20);
+    let minimum = fonts.scale(260);
+    let gap = fonts.scale(16);
     (((width + gap) / (minimum + gap)).max(1) as usize).min(3)
 }
 
