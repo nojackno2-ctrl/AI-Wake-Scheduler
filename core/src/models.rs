@@ -59,10 +59,8 @@ named_enum! {
 }
 
 named_enum! {
-    /// 排程週期模式。
-    ///
-    /// 目前只有自動模式（Interval）；其餘值只為了讓舊版本寫出的設定仍可讀取，
-    /// 載入後由排程管理器遷移為 Interval。
+    /// 舊資料相容標記；排程一律依每日偵測時段運作。
+    /// 舊值仍可讀取，儲存時統一使用 Interval 標記。
     ScheduleRecurrence { Once, Daily, Weekly, Interval, Countdown }
 }
 
@@ -80,18 +78,6 @@ impl CliKind {
     /// 清單欄位使用的短名稱。
     pub fn short_name(self) -> &'static str {
         catalog::get(self).short_name
-    }
-}
-
-impl ScheduleRecurrence {
-    pub fn display_name(self) -> &'static str {
-        match self {
-            ScheduleRecurrence::Once => "單次",
-            ScheduleRecurrence::Daily => "每天固定時間",
-            ScheduleRecurrence::Weekly => "每週",
-            ScheduleRecurrence::Interval => "自動模式（開始後每 10 分鐘偵測倒數）",
-            ScheduleRecurrence::Countdown => "自動倒數模式（每日偵測至 24:00）",
-        }
     }
 }
 
@@ -486,7 +472,7 @@ pub const DEFAULT_JOB_NAME: &str = "AI 倒數喚醒";
 pub const DEFAULT_JOB_MESSAGE: &str = "早安";
 
 /// 排程資料遷移版本；未標記的舊資料視為版本 0。
-pub const SCHEDULE_REVISION: i32 = 1;
+pub const SCHEDULE_REVISION: i32 = 2;
 
 pub fn user_profile_directory() -> String {
     std::env::var("USERPROFILE").unwrap_or_default()
@@ -504,6 +490,7 @@ pub struct ScheduledJob {
     pub targets: Vec<CliKind>,
     pub recurrence: ScheduleRecurrence,
     pub initial_time_of_day: Option<Span>,
+    pub end_time_of_day: Span,
     pub enabled: bool,
     pub status: ScheduleStatus,
     pub started_at: Option<Moment>,
@@ -523,6 +510,7 @@ impl Default for ScheduledJob {
             targets: catalog::kinds(),
             recurrence: ScheduleRecurrence::Interval,
             initial_time_of_day: None,
+            end_time_of_day: Span::days(1),
             enabled: true,
             status: ScheduleStatus::Pending,
             started_at: None,
@@ -555,6 +543,7 @@ impl JsonModel for ScheduledJob {
             "Targets": self.targets.iter().map(|kind| kind.name()).collect::<Vec<_>>(),
             "Recurrence": self.recurrence.name(),
             "InitialTimeOfDay": self.initial_time_of_day.map(time::format_span),
+            "EndTimeOfDay": time::format_span(self.end_time_of_day),
             "Enabled": self.enabled,
             "Status": self.status.name(),
             "StartedAt": self.started_at.as_ref().map(time::format_json_moment),
@@ -602,6 +591,16 @@ impl JsonModel for ScheduledJob {
         if job.initial_time_of_day.is_some_and(|start| !time::is_valid_time_of_day(start)) {
             return Err("InitialTimeOfDay 必須介於 00:00 到 23:59。".to_string());
         }
+        if let Some(value) = field(object, "EndTimeOfDay") {
+            job.end_time_of_day = value.as_str().and_then(time::parse_span).ok_or("EndTimeOfDay 不是有效的時間。")?;
+        }
+        crate::calculator::validate_window(
+            time::truncate_to_minutes(
+                job.initial_time_of_day.unwrap_or_else(|| time::local_time_of_day(&job.scheduled_at)),
+            ),
+            job.end_time_of_day,
+        )
+        .map_err(|error| error.to_string())?;
         read_bool(object, "Enabled", &mut job.enabled)?;
         read_enum!(object, "Status", ScheduleStatus, job.status);
         if let Some(value) = read_optional_moment(object, "StartedAt")? {

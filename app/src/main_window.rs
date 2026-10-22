@@ -66,6 +66,7 @@ pub const ID_EXPORT_LOGS: i32 = 106;
 pub const ID_CHECK_UPDATES: i32 = 107;
 pub const ID_NAME: i32 = 110;
 pub const ID_TIME: i32 = 112;
+pub const ID_END_TIME: i32 = 111;
 pub const ID_MESSAGE: i32 = 113;
 pub const ID_WORKING_DIRECTORY: i32 = 114;
 pub const ID_BROWSE: i32 = 115;
@@ -92,7 +93,7 @@ const UPDATE_CHECK_FIRST_DELAY_MS: u32 = 60_000;
 const UPDATE_CHECK_INTERVAL_MS: u32 = 12 * 60 * 60 * 1000;
 
 const COLUMN_COUNTDOWN: usize = 2;
-const COLUMN_HEADERS: [&str; 5] = ["名稱", "時間 / 週期", "倒數", "CLI", "狀態"];
+const COLUMN_HEADERS: [&str; 5] = ["名稱", "偵測時段", "倒數", "CLI", "狀態"];
 
 const LVM_SETIMAGELIST: u32 = 0x1003;
 const LVM_GETITEMCOUNT: u32 = 0x1004;
@@ -113,9 +114,8 @@ const CDRF_NEWFONT: isize = 0x2;
 const CDRF_NOTIFYITEMDRAW: isize = 0x20;
 
 const EMPTY_STATE_TEXT: &str = "目前沒有排程\r\n選擇下方的「新增」，建立每天自動喚醒。";
-const HEADER_SUBTITLE: &str =
-    "自動模式：開始時間後每 10 分鐘偵測倒數，沒有倒數就向勾選的 CLI 傳送簡短訊息喚醒配額（預設：早安）";
-const EDITOR_NOTE: &str = "自動模式從開始時間起每 10 分鐘讀取所有 CLI 的倒數，未倒數即呼叫，倒數中或額度已用盡則等待。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。";
+const HEADER_SUBTITLE: &str = "每天從開始時間偵測至結束時間，沒有倒數就呼叫勾選的 CLI（預設訊息：早安）";
+const EDITOR_NOTE: &str = "每天在開始至結束時段內每 10 分鐘讀取倒數，已知倒數結束時立即重讀；未倒數即呼叫，倒數中、額度用盡或讀取失敗則等待。結束可填 24:00，早於開始則跨午夜。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。";
 /// 內容區至少這麼寬時改用三欄（清單｜排程內容｜額度看板）。
 const WIDE_LAYOUT_WIDTH: i32 = 940;
 /// 編輯面板至少這麼寬時「排程內容」與「額度看板」左右並排。
@@ -201,6 +201,7 @@ pub struct MainWindow {
     list_buttons: [HWND; 7],
     name_input: HWND,
     time_input: HWND,
+    end_time_input: HWND,
     message_input: HWND,
     working_directory_input: HWND,
     browse_button: HWND,
@@ -325,6 +326,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
     );
     let name_input = ui::create_edit(editor, ID_NAME, 0);
     let time_input = ui::create_time_picker(editor, ID_TIME);
+    let end_time_input = ui::create_edit(editor, ID_END_TIME, 5);
     let message_input = ui::create_edit(editor, ID_MESSAGE, 50);
     let working_directory_input = ui::create_edit(editor, ID_WORKING_DIRECTORY, 0);
     let browse_button = theme::create_button(editor, ID_BROWSE, "瀏覽…", ButtonVariant::Secondary);
@@ -366,6 +368,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         list_buttons,
         name_input,
         time_input,
+        end_time_input,
         message_input,
         working_directory_input,
         browse_button,
@@ -516,6 +519,7 @@ impl MainWindow {
             self.list,
             self.name_input,
             self.time_input,
+            self.end_time_input,
             self.message_input,
             self.working_directory_input,
             self.browse_button,
@@ -810,7 +814,7 @@ impl MainWindow {
         });
         y += section_height + s(12);
 
-        let label_width = ["名稱", "開始時間", "訊息", "工作目錄", "傳送至"]
+        let label_width = ["名稱", "開始時間", "結束時間", "訊息", "工作目錄", "傳送至"]
             .iter()
             .map(|text| fonts.table_header.measure(text).0)
             .max()
@@ -828,8 +832,12 @@ impl MainWindow {
             });
         };
 
-        for (label, control) in [("名稱", self.name_input), ("開始時間", self.time_input), ("訊息", self.message_input)]
-        {
+        for (label, control) in [
+            ("名稱", self.name_input),
+            ("開始時間", self.time_input),
+            ("結束時間", self.end_time_input),
+            ("訊息", self.message_input),
+        ] {
             row_label(&mut labels, label, y, input_height);
             place(control, w32::rect(control_left, y, control_width, input_height));
             y += input_height + s(8);
@@ -1408,21 +1416,34 @@ impl MainWindow {
         let (hour, minute) = ui::time_picker_get(self.time_input);
         let time_of_day = Span::hours(hour as i64) + Span::minutes(minute as i64);
 
-        let saved = calculator::get_next_daily_occurrence(time_of_day, &time::now()).and_then(|scheduled_at| {
-            let job = ScheduledJob {
-                id: self.editing_id.get().unwrap_or_else(Guid::new),
-                name: w32::get_text(self.name_input).trim().to_string(),
-                scheduled_at,
-                initial_time_of_day: Some(time_of_day),
-                message: w32::get_text(self.message_input).trim().to_string(),
-                working_directory: w32::get_text(self.working_directory_input).trim().to_string(),
-                targets: self.selected_targets(),
-                recurrence: ScheduleRecurrence::Interval,
-                enabled: ui::is_checked(self.enabled_check),
-                ..ScheduledJob::default()
-            };
-            self.manager().upsert(&job).map(|_| job.id)
-        });
+        let end_text = w32::get_text(self.end_time_input);
+        let end_time = if end_text.trim() == "24:00" {
+            Some(Span::days(1))
+        } else {
+            time::parse_span(&end_text).filter(|end| *end >= Span::zero() && *end < Span::days(1))
+        };
+        let saved = end_time
+            .ok_or_else(|| CoreError::InvalidArgument("結束時間請輸入 HH:mm，範圍 00:00 至 24:00。".to_string()))
+            .and_then(|end| {
+                calculator::validate_window(time_of_day, end)?;
+                calculator::next_detection(time_of_day, end, &time::now(), Span::zero()).map(|next| (next, end))
+            })
+            .and_then(|(scheduled_at, end_time_of_day)| {
+                let job = ScheduledJob {
+                    id: self.editing_id.get().unwrap_or_else(Guid::new),
+                    name: w32::get_text(self.name_input).trim().to_string(),
+                    scheduled_at,
+                    initial_time_of_day: Some(time_of_day),
+                    end_time_of_day,
+                    message: w32::get_text(self.message_input).trim().to_string(),
+                    working_directory: w32::get_text(self.working_directory_input).trim().to_string(),
+                    targets: self.selected_targets(),
+                    recurrence: ScheduleRecurrence::Interval,
+                    enabled: ui::is_checked(self.enabled_check),
+                    ..ScheduledJob::default()
+                };
+                self.manager().upsert(&job).map(|_| job.id)
+            });
 
         match saved {
             Ok(id) => {
@@ -1517,6 +1538,7 @@ impl MainWindow {
             (initial_time.num_hours() % 24) as u32,
             (initial_time.num_minutes() % 60) as u32,
         );
+        w32::set_text(self.end_time_input, &presenter::time_of_day(job.end_time_of_day));
         w32::set_text(self.message_input, &job.message);
         w32::set_text(self.working_directory_input, &job.working_directory);
         for (kind, check) in &self.target_checks {
@@ -1539,6 +1561,7 @@ impl MainWindow {
         let proposed = chrono::Local::now().naive_local() + Span::minutes(5);
         w32::set_text(self.name_input, aiwake_core::models::DEFAULT_JOB_NAME);
         ui::time_picker_set(self.time_input, proposed.hour(), proposed.minute());
+        w32::set_text(self.end_time_input, "24:00");
         w32::set_text(self.message_input, aiwake_core::models::DEFAULT_JOB_MESSAGE);
         w32::set_text(self.working_directory_input, &self.host.wakeup_workspace());
         for (_, check) in &self.target_checks {

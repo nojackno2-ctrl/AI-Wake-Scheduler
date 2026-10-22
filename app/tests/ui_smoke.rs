@@ -234,6 +234,7 @@ fn main_window_editor_settings_and_tray() {
     // ── 編輯器預設值 ──
     assert_eq!(text_of(control(editor, main::ID_NAME)), "AI 倒數喚醒");
     assert_eq!(text_of(control(editor, main::ID_MESSAGE)), "早安");
+    assert_eq!(text_of(control(editor, main::ID_END_TIME)), "24:00");
     assert_eq!(text_of(save_button), "建立排程");
     for index in 0..CliKind::ALL.len() as i32 {
         assert!(is_checked(control(editor, main::ID_TARGET_BASE + index)), "新排程預設應勾選全部 CLI。");
@@ -257,6 +258,7 @@ fn main_window_editor_settings_and_tray() {
 
     // ── 建立排程（先取消啟用，避免真的送出訊息）──
     set_checked(control(editor, main::ID_ENABLED), false);
+    set_text(control(editor, main::ID_END_TIME), "23:30");
     set_text(control(editor, main::ID_NAME), "測試排程");
     notify(editor, main::ID_SAVE, BN_CLICKED);
     wait_until("排程出現在清單", short, || w32::send(list, LVM_GETITEMCOUNT, 0, 0) == 1);
@@ -265,8 +267,9 @@ fn main_window_editor_settings_and_tray() {
     let created = load_jobs(&data_directory);
     assert_eq!(created.len(), 1, "資料檔應有一筆排程。");
     assert_eq!(created[0].name, "測試排程");
-    assert_eq!(created[0].recurrence, ScheduleRecurrence::Interval, "只有自動模式。");
-    assert!(created[0].initial_time_of_day.is_some(), "自動模式應保存開始時間。");
+    assert_eq!(created[0].recurrence, ScheduleRecurrence::Interval, "舊資料週期僅作相容用途。");
+    assert_eq!(created[0].end_time_of_day, aiwake_core::Span::hours(23) + aiwake_core::Span::minutes(30));
+    assert!(created[0].initial_time_of_day.is_some(), "排程應保存開始時間。");
     assert!(!created[0].enabled && created[0].status == ScheduleStatus::Disabled, "取消啟用的排程應為已停用。");
     assert_eq!(created[0].targets, catalog::kinds(), "新排程預設應依畫面順序包含全部 CLI。");
     assert_eq!(created[0].message, "早安");
@@ -282,6 +285,12 @@ fn main_window_editor_settings_and_tray() {
     assert_eq!(modified[0].id, created[0].id, "儲存修改不應建立新排程。");
     assert_eq!(modified[0].targets, &catalog::kinds()[1..], "取消勾選的 CLI 不應保留在目標中。");
     assert!(!modified[0].enabled, "修改後仍應維持停用。");
+    assert_eq!(modified[0].end_time_of_day, created[0].end_time_of_day, "修改其他欄位應保留結束時間。");
+    // 新增清空後，再用清單原生鍵盤選取既有排程，確認結束時間還原。
+    notify(window, main::ID_NEW, BN_CLICKED);
+    wait_until("新增還原結束時間", short, || text_of(control(editor, main::ID_END_TIME)) == "24:00");
+    w32::send(list, 0x0100, 0x24, 0);
+    wait_until("重新選取還原結束時間", short, || text_of(control(editor, main::ID_END_TIME)) == "23:30");
     w32::send(editor, WM_VSCROLL, 7, 0);
     screenshot(window, "02-editor-bottom");
     w32::send(editor, WM_VSCROLL, 6, 0);
@@ -430,6 +439,7 @@ echo FAKE-CLI-OK
     notify(window, main::ID_NEW, BN_CLICKED);
     wait_until("編輯器重設", short, || text_of(save_button) == "建立排程");
     assert_eq!(text_of(control(editor, main::ID_NAME)), "AI 倒數喚醒");
+    assert_eq!(text_of(control(editor, main::ID_END_TIME)), "24:00", "新增應還原結束時間預設值。");
     assert!(is_checked(control(editor, main::ID_TARGET_BASE)) && is_checked(control(editor, main::ID_ENABLED)));
 
     // 沒有選取排程時，刪除不做任何事。

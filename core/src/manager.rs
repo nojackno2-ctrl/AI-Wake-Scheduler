@@ -3,14 +3,12 @@
 //! 只依賴 `DataStore`、`CliRunner`、`UsageReader` 與 `Clock`，
 //! 不知道資料存在哪裡、CLI 怎麼啟動，也不知道現在幾點。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
-
-use chrono::NaiveTime;
 
 use crate::calculator;
 use crate::debug_log;
@@ -22,7 +20,7 @@ use crate::models::{
 use crate::runner::CliRunner;
 use crate::store::DataStore;
 use crate::time::{self, CancelToken, Clock, Moment, Span, SystemClock};
-use crate::usage::{exhausted_until, is_counting_down, CliUsageAvailability, UsageReader};
+use crate::usage::{exhausted_until, is_counting_down, CliUsageAvailability, CliUsageSnapshot, UsageReader};
 
 /// 閒置時最長的等待間隔。
 /// 排程器不每秒輪詢，而是直接睡到下一個到期時間；這個上限只是為了
@@ -33,6 +31,13 @@ const MAX_IDLE_WAIT_SECONDS: i64 = 30;
 const MIN_WAIT_MILLISECONDS: i64 = 200;
 
 const QUOTA_WAKEUP_COOLDOWN_MINUTES: i64 = 2;
+
+#[derive(Clone, Copy)]
+struct RunOptions {
+    timeout: Duration,
+    token_saver_mode: bool,
+    automatic: bool,
+}
 
 type Listener<T> = Arc<dyn Fn(&T) + Send + Sync>;
 
@@ -46,10 +51,6 @@ fn max_idle_wait() -> Span {
 
 fn quota_wakeup_cooldown() -> Span {
     Span::minutes(QUOTA_WAKEUP_COOLDOWN_MINUTES)
-}
-
-fn local_date(moment: &Moment) -> chrono::NaiveDate {
-    time::local_naive(moment).date()
 }
 
 fn initial_time_of(job: &ScheduledJob) -> Span {
@@ -71,9 +72,10 @@ fn describe_job(job: &ScheduledJob) -> String {
         .map(|start| format!("{:02}:{:02}", start.num_hours(), start.num_minutes() % 60))
         .unwrap_or_else(|| "無".to_string());
     format!(
-        "「{}」{} 開始 {start} 目標 [{}] 狀態 {}{} 下次 {}",
+        "「{}」每日 {start}–{:02}:{:02} 目標 [{}] 狀態 {}{} 下次 {}",
         job.name,
-        job.recurrence.display_name(),
+        job.end_time_of_day.num_hours(),
+        job.end_time_of_day.num_minutes() % 60,
         kinds_text(&job.targets),
         job.status,
         if job.enabled { "" } else { "（停用）" },
@@ -91,7 +93,9 @@ struct Inner {
     /// 排程清單；鎖同時保護資料檔寫入的先後順序。
     jobs: Mutex<Vec<ScheduledJob>>,
     last_quota_wakeup_by_cli: Mutex<HashMap<CliKind, Moment>>,
-    last_quota_probe_at: Mutex<Option<Moment>>,
+    last_quota_probe_at: Mutex<HashMap<(Guid, CliKind), Moment>>,
+    active_targets: Mutex<HashSet<CliKind>>,
+    known_reset_at: Mutex<HashMap<(Guid, CliKind), Moment>>,
 
     /// 排程異動時用來立刻喚醒背景迴圈，不必等到下一個間隔。
     wake_pending: Mutex<bool>,
@@ -126,7 +130,9 @@ impl ScheduleManager {
                 clock: clock.unwrap_or_else(|| Arc::new(SystemClock)),
                 jobs: Mutex::new(Vec::new()),
                 last_quota_wakeup_by_cli: Mutex::new(HashMap::new()),
-                last_quota_probe_at: Mutex::new(None),
+                last_quota_probe_at: Mutex::new(HashMap::new()),
+                active_targets: Mutex::new(HashSet::new()),
+                known_reset_at: Mutex::new(HashMap::new()),
                 wake_pending: Mutex::new(false),
                 wake_signal: Condvar::new(),
                 stop: CancelToken::new(),
@@ -167,8 +173,7 @@ impl ScheduleManager {
             if !(0..=SCHEDULE_REVISION).contains(&job.schedule_revision) {
                 return Err(CoreError::InvalidData("不支援此排程資料版本。".to_string()));
             }
-            // 只保留自動模式。舊版本的單次、每日、每週與自動倒數模式一律遷移為自動模式，
-            // 開始時間沿用原本的開始時間（每日等模式則取原排程的時分）。
+            // 舊週期只供資料相容；一律沿用開始時間並採每日時段偵測。
             let initial_time = initial_time_of(job);
             job.recurrence = ScheduleRecurrence::Interval;
             job.initial_time_of_day = Some(initial_time);
@@ -177,27 +182,15 @@ impl ScheduleManager {
             }
             job.schedule_revision = SCHEDULE_REVISION;
 
-            // 停用與終止狀態保留歷史時間；未到期的排程也不因重啟而提前。
+            calculator::validate_window(time::truncate_to_minutes(initial_time), job.end_time_of_day)?;
+            job.initial_time_of_day = Some(time::truncate_to_minutes(initial_time));
+            // 保留尚未到期與歷史資料；到期只準備偵測，不會直接呼叫 CLI。
             if job.enabled
                 && matches!(job.status, ScheduleStatus::Pending | ScheduleStatus::Running)
                 && job.scheduled_at <= now
             {
-                job.scheduled_at = match job.finished_at {
-                    Some(finished) if local_date(&finished) < local_date(&now) => {
-                        // 上次執行在今日以前（昨天或更早）
-                        // 今日的首次喚醒基準時間
-                        let today_initial = calculator::get_previous_daily_occurrence(initial_time, &now)?;
-                        if finished >= today_initial {
-                            calculator::get_next_daily_occurrence(initial_time, &now)?
-                        } else {
-                            today_initial
-                        }
-                    }
-                    // 上次執行在今天之內
-                    Some(finished) => calculator::get_next_auto_interval_occurrence(initial_time, &finished)?,
-                    // 從未執行過：設定為今日首次喚醒
-                    None => calculator::get_previous_daily_occurrence(initial_time, &now)?,
-                };
+                job.scheduled_at =
+                    calculator::next_detection(initial_time_of(job), job.end_time_of_day, &now, Span::zero())?;
             }
 
             if job.status == ScheduleStatus::Running {
@@ -207,6 +200,9 @@ impl ScheduleManager {
             }
         }
 
+        if inner.usage_reader.is_none() {
+            debug_log::write("偵測", "未提供額度讀取器，停止自動呼叫；仍可手動立即執行。");
+        }
         debug_log::write("排程", format!("載入 {} 個排程（現在 {}）", loaded.len(), local_text(&now)));
         for job in &loaded {
             debug_log::write("排程", format!("載入 {}", describe_job(job)));
@@ -243,14 +239,16 @@ impl ScheduleManager {
             let mut jobs = lock(&inner.jobs);
             let now = inner.now();
             let mut saved = job.snapshot();
-            // 核心層只接受自動模式。
+            // 舊週期欄位只保留相容標記。
             let initial_time = initial_time_of(&saved);
             saved.recurrence = ScheduleRecurrence::Interval;
             saved.schedule_revision = SCHEDULE_REVISION;
             saved.initial_time_of_day = Some(initial_time);
-            if saved.scheduled_at <= now {
-                saved.scheduled_at = calculator::get_next_daily_occurrence(initial_time, &now)?;
-            }
+            saved.initial_time_of_day = Some(time::truncate_to_minutes(initial_time));
+            saved.scheduled_at =
+                calculator::next_detection(initial_time_of(&saved), saved.end_time_of_day, &now, Span::zero())?;
+            lock(&inner.last_quota_probe_at).retain(|(id, _), _| *id != saved.id);
+            lock(&inner.known_reset_at).retain(|(id, _), _| *id != saved.id);
             saved.status = if saved.enabled { ScheduleStatus::Pending } else { ScheduleStatus::Disabled };
             saved.started_at = None;
             saved.finished_at = None;
@@ -310,6 +308,10 @@ impl ScheduleManager {
                 return Err(CoreError::InvalidOperation("排程已經在執行中。".to_string()));
             }
 
+            let mut active = lock(&inner.active_targets);
+            if job.targets.iter().any(|target| active.contains(target)) {
+                return Err(CoreError::InvalidOperation("選取的 CLI 已有其他排程正在執行。".to_string()));
+            }
             job.enabled = true;
             job.status = ScheduleStatus::Running;
             job.started_at = Some(inner.now());
@@ -317,6 +319,7 @@ impl ScheduleManager {
             job.last_results = Vec::new();
             let execution = job.snapshot();
             inner.job_store.save(&jobs)?;
+            active.extend(execution.targets.iter().copied());
             execution
         };
 
@@ -334,7 +337,7 @@ impl ScheduleManager {
         );
         inner.raise_jobs_changed();
         let targets = execution.targets.clone();
-        inner.start_execution(execution, targets, CancelToken::none());
+        inner.start_execution(execution, targets, CancelToken::none(), false);
         Ok(())
     }
 
@@ -427,307 +430,238 @@ impl Inner {
         lock(&self.last_quota_wakeup_by_cli).get(&kind).copied().filter(|last| *now - *last < quota_wakeup_cooldown())
     }
 
-    /// 掃描並啟動到期排程，回傳距離下一個到期時間還有多久。
-    fn scan_and_start_due_jobs(self: &Arc<Self>) -> CoreResult<Span> {
-        let mut due_jobs: Vec<(ScheduledJob, Vec<CliKind>)> = Vec::new();
-        let mut interval_job_to_probe: Option<ScheduledJob> = None;
-        let mut targets_to_probe: Vec<CliKind> = Vec::new();
-        let mut settings_snapshot: Option<AppSettings> = None;
-        let mut quota_managed_job_id: Option<Guid> = None;
-        let probe_interval = calculator::auto_probe_interval();
-        let mut next_delay;
-
-        {
-            let mut jobs = lock(&self.jobs);
-            let now = self.now();
-            if self.usage_reader.is_some() {
-                settings_snapshot = Some((self.settings_provider)().normalized());
-            }
-
-            let mut last_quota_probe_at = lock(&self.last_quota_probe_at);
-
-            let mut overdue: Vec<usize> = Vec::new();
-            for (index, job) in jobs.iter().enumerate() {
-                if !job.enabled || job.status != ScheduleStatus::Pending {
-                    continue;
-                }
-                if let (Some(usage_reader), None) = (&self.usage_reader, quota_managed_job_id) {
-                    let local_now = time::local_naive(&now);
-                    let today_initial =
-                        local_now.date().and_time(NaiveTime::MIN) + time::truncate_to_minutes(initial_time_of(job));
-                    if local_now >= today_initial {
-                        quota_managed_job_id = Some(job.id);
-
-                        // 開始時間之後每 10 分鐘讀取一次所有目標 CLI 的倒數狀態；
-                        // 當日第一次進入（含剛到開始時間、開機補做）立即讀取。
-                        let today_initial = time::from_local_naive(today_initial);
-                        let probe_all =
-                            last_quota_probe_at.is_none_or(|last| last < today_initial || now - last >= probe_interval);
-
-                        let mut due_targets = Vec::new();
-                        for &target in &job.targets {
-                            if due_targets.contains(&target) {
-                                continue;
-                            }
-                            // 上次讀到的倒數已經結束時，不必等到下一個 10 分鐘。
-                            let countdown_ended = usage_reader.latest_snapshot(target).is_some_and(|snapshot| {
-                                snapshot
-                                    .short_window_or_first()
-                                    .and_then(|window| window.resets_at)
-                                    .is_some_and(|reset| snapshot.observed_at < reset && reset <= now)
-                            });
-                            if probe_all || countdown_ended {
-                                due_targets.push(target);
-                            }
-                        }
-
-                        if probe_all {
-                            *last_quota_probe_at = Some(now);
-                        }
-                        if !due_targets.is_empty() {
-                            debug_log::write(
-                                "自動模式",
-                                format!(
-                                    "「{}」讀取倒數 [{}]（{}）",
-                                    job.name,
-                                    kinds_text(&due_targets),
-                                    if probe_all { "每 10 分鐘例行讀取" } else { "上次倒數已結束" }
-                                ),
-                            );
-                            interval_job_to_probe = Some(job.snapshot());
-                            targets_to_probe = due_targets;
-                        }
-                        continue;
-                    }
-                }
-
-                if job.scheduled_at <= now {
-                    overdue.push(index);
-                }
-            }
-
-            if !overdue.is_empty() {
-                // 電腦睡眠或程式關閉一段時間後，可能同時有多個排程逾時。
-                // 只補做時間離現在最近的那一個，其餘直接推到下一次每日時點，
-                // 避免同一輪一次觸發多個 CLI 呼叫。
-                let mut primary = overdue[0];
-                for &index in &overdue[1..] {
-                    if jobs[index].scheduled_at > jobs[primary].scheduled_at {
-                        primary = index;
-                    }
-                }
-
-                for &index in &overdue {
-                    let job = &mut jobs[index];
-                    if index == primary {
-                        debug_log::write("執行", format!("到期執行 {}", describe_job(job)));
-                        due_jobs.push((job.snapshot(), job.targets.clone()));
-                        job.status = ScheduleStatus::Running;
-                        job.started_at = Some(now);
-                    } else {
-                        job.finished_at = Some(now);
-                        job.scheduled_at = calculator::get_next_auto_interval_occurrence(initial_time_of(job), &now)?;
-                        debug_log::write("執行", format!("同時逾時，略過補做並改排 {}", describe_job(job)));
-                    }
-                }
-
-                self.job_store.save(&jobs)?;
-            }
-
-            next_delay = self.calculate_next_delay(&jobs, &now, quota_managed_job_id);
-            if let (Some(_), None, Some(last)) = (quota_managed_job_id, &interval_job_to_probe, *last_quota_probe_at) {
-                let until_next_quota_probe = (last + probe_interval) - now;
-                if until_next_quota_probe < next_delay {
-                    next_delay = until_next_quota_probe;
-                }
-            }
+    /// 排程自己的重置時間不受 UI 重新整理共用快照影響。
+    fn remember_reset(&self, id: Guid, kind: CliKind, value: &CliUsageSnapshot) {
+        if value.availability != CliUsageAvailability::Available {
+            return;
         }
-
-        if !due_jobs.is_empty() {
-            self.raise_jobs_changed();
-            for (job, targets) in due_jobs {
-                self.mark_wakeup(&targets, self.now());
-                self.start_execution(job, targets, self.stop.clone());
-            }
-            return Ok(next_delay);
-        }
-
-        // 自動模式：在當日開始時間之後讀取目標 CLI 的倒數狀態，未倒數者立即呼叫
-        let (Some(probe_job), Some(usage_reader), Some(settings)) =
-            (interval_job_to_probe, &self.usage_reader, settings_snapshot)
-        else {
-            return Ok(next_delay);
-        };
-        if targets_to_probe.is_empty() {
-            return Ok(next_delay);
-        }
-
-        let now = self.now();
-        let mut non_counting_down = Vec::new();
-        for kind in targets_to_probe {
-            if let Some(last) = self.in_wakeup_cooldown(kind, &now) {
-                debug_log::write(
-                    "自動模式",
-                    format!("{} 於 {} 剛呼叫過，冷卻中不重讀", kind.short_name(), local_text(&last)),
-                );
-                continue;
-            }
-
-            match usage_reader.read(kind, &settings.profile(kind), &probe_job.working_directory, &self.stop) {
-                Ok(snapshot) => {
-                    if snapshot.availability != CliUsageAvailability::Available {
-                        debug_log::write("自動模式", format!("{} 額度無法讀取，不呼叫", kind.short_name()));
-                    } else if let Some(reset) = exhausted_until(Some(&snapshot), &now) {
-                        // 例如每週額度已用完：呼叫只會回 HTTP 429，等到重置後再說。
-                        debug_log::write(
-                            "自動模式",
-                            format!("{} 額度已用盡，至 {} 重置前不呼叫", kind.short_name(), local_text(&reset)),
-                        );
-                    } else if is_counting_down(Some(&snapshot), &now) {
-                        debug_log::write("自動模式", format!("{} 倒數中，不呼叫", kind.short_name()));
-                    } else {
-                        non_counting_down.push(kind);
-                    }
-                }
-                Err(CoreError::Canceled) if self.stop.is_canceled() => return Err(CoreError::Canceled),
-                // 忽略個別 CLI 額度探測異常
-                Err(_) => {}
-            }
-        }
-
-        if !non_counting_down.is_empty() {
-            let job_to_start = {
-                let mut jobs = lock(&self.jobs);
-                match jobs
-                    .iter_mut()
-                    .find(|job| job.id == probe_job.id && job.enabled && job.status == ScheduleStatus::Pending)
-                {
-                    Some(stored) => {
-                        stored.status = ScheduleStatus::Running;
-                        stored.started_at = Some(now);
-                        let snapshot = stored.snapshot();
-                        self.job_store.save(&jobs)?;
-                        Some(snapshot)
-                    }
-                    None => None,
-                }
-            };
-
-            if let Some(job) = job_to_start {
-                debug_log::write(
-                    "自動模式",
-                    format!("「{}」沒有倒數 [{}]，立即呼叫", job.name, kinds_text(&non_counting_down)),
-                );
-                self.mark_wakeup(&non_counting_down, now);
-                self.raise_jobs_changed();
-                self.start_execution(job, non_counting_down, self.stop.clone());
-            }
+        let reset = value
+            .short_window_or_first()
+            .filter(|window| window.is_active_countdown)
+            .and_then(|window| window.resets_at)
+            .filter(|reset| *reset > self.now());
+        let mut known = lock(&self.known_reset_at);
+        if let Some(reset) = reset {
+            known.insert((id, kind), reset);
         } else {
-            // 全部都在倒數：排程時間改為下一次讀取倒數的時點（跨過 24:00 則為隔天的開始時間）。
-            let probed_at = lock(&self.last_quota_probe_at).unwrap_or(now);
-            let changed = {
-                let mut jobs = lock(&self.jobs);
-                match jobs
-                    .iter_mut()
-                    .find(|job| job.id == probe_job.id && job.enabled && job.status == ScheduleStatus::Pending)
-                {
-                    Some(stored) => {
-                        let next = calculator::get_next_auto_probe_occurrence(initial_time_of(stored), &probed_at)?;
-                        let changed = stored.scheduled_at != next;
-                        debug_log::write(
-                            "自動模式",
-                            format!("「{}」沒有需要呼叫的 CLI，下次讀取 {}", stored.name, local_text(&next)),
-                        );
-                        if changed {
-                            stored.scheduled_at = next;
-                            self.job_store.save(&jobs)?;
-                        }
-                        changed
-                    }
-                    None => false,
-                }
-            };
-            if changed {
-                self.raise_jobs_changed();
-            }
+            known.remove(&(id, kind));
         }
-
-        Ok(next_delay)
     }
 
-    /// 計算距離最近一個待執行排程的等待時間。呼叫端必須已持有排程清單的鎖。
-    fn calculate_next_delay(&self, jobs: &[ScheduledJob], now: &Moment, ignored_job_id: Option<Guid>) -> Span {
-        let mut shortest = max_idle_wait();
-        for job in jobs {
+    /// 所有啟用排程都先讀取真實倒數，絕不因排程逾時而盲目呼叫。
+    fn scan_and_start_due_jobs(self: &Arc<Self>) -> CoreResult<Span> {
+        let Some(reader) = &self.usage_reader else {
+            return Ok(max_idle_wait());
+        };
+        let settings = (self.settings_provider)().normalized();
+        let snapshot = lock(&self.jobs).clone();
+        for job in snapshot {
             if !job.enabled || job.status != ScheduleStatus::Pending {
                 continue;
             }
-            if ignored_job_id == Some(job.id) {
+            let now = self.now();
+            if !calculator::in_detection_window(initial_time_of(&job), job.end_time_of_day, &now) {
                 continue;
             }
-
-            shortest = shortest.min(job.scheduled_at - *now);
-
-            // 自動模式：若目標 CLI 正在倒數，將倒數結束時刻納入喚醒時間
-            if let Some(usage_reader) = &self.usage_reader {
-                for &target in &job.targets {
-                    let snapshot = usage_reader.latest_snapshot(target);
-                    if !is_counting_down(snapshot.as_ref(), now) {
-                        continue;
-                    }
-                    let resets_at = snapshot
-                        .as_ref()
-                        .and_then(|value| value.short_window_or_first())
-                        .and_then(|window| window.resets_at);
-                    if let Some(resets_at) = resets_at {
-                        let until_reset = resets_at - *now;
-                        if until_reset > Span::zero() && until_reset < shortest {
-                            shortest = until_reset;
+            let (begin, _) = calculator::detection_window(initial_time_of(&job), job.end_time_of_day, &now)?;
+            let mut targets = Vec::new();
+            for &kind in &job.targets {
+                let now = self.now();
+                if self.stop.is_canceled() {
+                    return Err(CoreError::Canceled);
+                }
+                if !calculator::in_detection_window(initial_time_of(&job), job.end_time_of_day, &now) {
+                    break;
+                }
+                if lock(&self.active_targets).contains(&kind) {
+                    continue;
+                }
+                if let Some(last) = self.in_wakeup_cooldown(kind, &now) {
+                    debug_log::write(
+                        "偵測",
+                        format!("{} 於 {} 呼叫過，冷卻中略過", kind.short_name(), local_text(&last)),
+                    );
+                    continue;
+                }
+                let last = lock(&self.last_quota_probe_at).get(&(job.id, kind)).copied();
+                let countdown_ended = lock(&self.known_reset_at)
+                    .get(&(job.id, kind))
+                    .is_some_and(|reset| *reset <= now && last.is_none_or(|last| last < *reset));
+                if !countdown_ended
+                    && last.is_some_and(|last| last >= begin && now - last < calculator::auto_probe_interval())
+                {
+                    continue;
+                }
+                let result = reader.read(kind, &settings.profile(kind), &job.working_directory, &self.stop);
+                let observed = self.now();
+                lock(&self.last_quota_probe_at).insert((job.id, kind), observed);
+                if !calculator::in_detection_window(initial_time_of(&job), job.end_time_of_day, &observed) {
+                    break;
+                }
+                match result {
+                    Ok(value) => {
+                        self.remember_reset(job.id, kind, &value);
+                        let reason =
+                            if value.availability != CliUsageAvailability::Available || value.windows.is_empty() {
+                                Some("額度無法確認，不呼叫".to_string())
+                            } else if let Some(reset) = exhausted_until(Some(&value), &observed) {
+                                Some(format!("額度已用盡，至 {} 重置前不呼叫", local_text(&reset)))
+                            } else if is_counting_down(Some(&value), &observed) {
+                                Some("倒數中，不呼叫".to_string())
+                            } else {
+                                None
+                            };
+                        if let Some(reason) = reason {
+                            debug_log::write("偵測", format!("{} {reason}", kind.short_name()));
+                        } else if !targets.contains(&kind) {
+                            targets.push(kind);
                         }
+                    }
+                    Err(CoreError::Canceled) if self.stop.is_canceled() => return Err(CoreError::Canceled),
+                    Err(error) => {
+                        debug_log::write("偵測", format!("{} 讀取失敗，不呼叫：{}", kind.short_name(), error))
                     }
                 }
             }
+            let execution = {
+                let mut jobs = lock(&self.jobs);
+                let mut active = lock(&self.active_targets);
+                let now = self.now();
+                let stored = jobs.iter_mut().find(|stored| stored.id == job.id && **stored == job);
+                if let Some(stored) = stored {
+                    targets
+                        .retain(|target| !active.contains(target) && self.in_wakeup_cooldown(*target, &now).is_none());
+                    if !targets.is_empty()
+                        && calculator::in_detection_window(initial_time_of(stored), stored.end_time_of_day, &now)
+                    {
+                        stored.status = ScheduleStatus::Running;
+                        stored.started_at = Some(now);
+                        let execution = stored.clone();
+                        self.job_store.save(&jobs)?;
+                        active.extend(targets.iter().copied());
+                        Some(execution)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(execution) = execution {
+                debug_log::write("偵測", format!("「{}」未倒數 [{}]，立即呼叫", execution.name, kinds_text(&targets)));
+                self.mark_wakeup(&targets, self.now());
+                self.raise_jobs_changed();
+                self.start_execution(execution, targets, self.stop.clone(), true);
+            }
         }
-        shortest
+        let now = self.now();
+        let mut delay = max_idle_wait();
+        let mut changed = false;
+        {
+            let mut jobs = lock(&self.jobs);
+            for job in jobs.iter_mut().filter(|job| job.enabled && job.status == ScheduleStatus::Pending) {
+                let (begin, finish) = calculator::detection_window(initial_time_of(job), job.end_time_of_day, &now)?;
+                let mut next = if now < begin { begin } else { finish };
+                if begin <= now {
+                    for &kind in &job.targets {
+                        let last = lock(&self.last_quota_probe_at).get(&(job.id, kind)).copied();
+                        let mut target_next = last.map_or(now, |last| last + calculator::auto_probe_interval());
+                        if let Some(reset) =
+                            lock(&self.known_reset_at).get(&(job.id, kind)).copied().filter(|reset| *reset > now)
+                        {
+                            target_next = target_next.min(reset);
+                        }
+                        if let Some(last) = self.in_wakeup_cooldown(kind, &now) {
+                            target_next = target_next.max(last + quota_wakeup_cooldown());
+                        }
+                        if lock(&self.active_targets).contains(&kind) {
+                            target_next = target_next.max(now + max_idle_wait());
+                        }
+                        next = next.min(target_next);
+                    }
+                    if next >= finish {
+                        next = calculator::detection_window(initial_time_of(job), job.end_time_of_day, &finish)?.0;
+                    }
+                }
+                if job.scheduled_at != next {
+                    job.scheduled_at = next;
+                    changed = true;
+                }
+                delay = delay.min(next - now);
+            }
+            if changed {
+                self.job_store.save(&jobs)?;
+            }
+        }
+        if changed {
+            self.raise_jobs_changed();
+        }
+        Ok(delay)
     }
 
-    fn start_execution(self: &Arc<Self>, job: ScheduledJob, targets: Vec<CliKind>, cancel: CancelToken) {
+    fn start_execution(
+        self: &Arc<Self>,
+        job: ScheduledJob,
+        targets: Vec<CliKind>,
+        cancel: CancelToken,
+        automatic: bool,
+    ) {
         let inner = Arc::clone(self);
-        let handle = std::thread::spawn(move || inner.execute_job(job, targets, cancel));
+        let handle = std::thread::spawn(move || inner.execute_job(job, targets, cancel, automatic));
         let mut threads = lock(&self.threads);
         threads.retain(|existing| !existing.is_finished());
         threads.push(handle);
     }
 
-    fn execute_job(&self, job: ScheduledJob, targets: Vec<CliKind>, cancel: CancelToken) {
+    fn execute_job(&self, job: ScheduledJob, targets: Vec<CliKind>, cancel: CancelToken, automatic: bool) {
         let settings = (self.settings_provider)().normalized();
         let timeout = Duration::from_secs(settings.execution_timeout_minutes.max(1) as u64 * 60);
 
-        // 執行前：若支援用量讀取，且最新快照非近期取得，先讀取目標 CLI 的最新流量與倒數狀態
-        if let Some(usage_reader) = &self.usage_reader {
-            for &target in &targets {
-                let stale = usage_reader
-                    .latest_snapshot(target)
-                    .is_none_or(|snapshot| self.now() - snapshot.observed_at > Span::seconds(10));
-                if stale {
-                    let _ = usage_reader.read(target, &settings.profile(target), &job.working_directory, &cancel);
+        // 保留執行中目標至收尾（含執行後重讀），避免重疊排程再次呼叫。
+        struct Reservation<'a>(&'a Inner, &'a [CliKind]);
+        impl Drop for Reservation<'_> {
+            fn drop(&mut self) {
+                {
+                    let mut active = lock(&self.0.active_targets);
+                    for kind in self.1 {
+                        active.remove(kind);
+                    }
                 }
+                // 執行後重讀可能取得更早的重置時間，釋放目標後立即重新計算等待。
+                self.0.signal_scheduler();
             }
         }
-
+        let _reservation = Reservation(self, &targets);
         // 每個選定的 CLI 都在自己的執行緒獨立啟動，不會變成循序執行。
         let results: Option<Vec<CliRunResult>> = std::thread::scope(|scope| {
             let handles: Vec<_> = targets
                 .iter()
                 .map(|&target| {
                     let profile = settings.profile(target);
-                    let token_saver_mode = settings.token_saver_mode;
+                    let options = RunOptions { timeout, token_saver_mode: settings.token_saver_mode, automatic };
                     let (job, cancel) = (&job, &cancel);
-                    scope.spawn(move || self.run_target(job, target, &profile, timeout, token_saver_mode, cancel))
+                    scope.spawn(move || {
+                        if automatic
+                            && (cancel.is_canceled()
+                                || !calculator::in_detection_window(
+                                    initial_time_of(job),
+                                    job.end_time_of_day,
+                                    &self.now(),
+                                ))
+                        {
+                            None
+                        } else {
+                            self.run_target(job, target, &profile, options, cancel)
+                        }
+                    })
                 })
                 .collect();
 
-            handles.into_iter().map(|handle| handle.join().ok()).collect()
+            handles
+                .into_iter()
+                .map(|handle| handle.join().ok())
+                .collect::<Option<Vec<_>>>()
+                .map(|items| items.into_iter().flatten().collect())
         });
 
         let completed = match results {
@@ -748,8 +682,14 @@ impl Inner {
                 return;
             }
             for &target in &targets {
-                if usage_reader.read(target, &settings.profile(target), &job.working_directory, &cancel).is_err() {
+                if automatic
+                    && !calculator::in_detection_window(initial_time_of(&job), job.end_time_of_day, &self.now())
+                {
                     return;
+                }
+                match usage_reader.read(target, &settings.profile(target), &job.working_directory, &cancel) {
+                    Ok(value) => self.remember_reset(job.id, target, &value),
+                    Err(_) => return,
                 }
             }
             self.raise_jobs_changed();
@@ -763,10 +703,9 @@ impl Inner {
         job: &ScheduledJob,
         target: CliKind,
         profile: &CliProfile,
-        timeout: Duration,
-        token_saver_mode: bool,
+        options: RunOptions,
         cancel: &CancelToken,
-    ) -> CliRunResult {
+    ) -> Option<CliRunResult> {
         let activity = |kind: CliActivityKind, text: String| {
             self.raise_activity(&CliActivityEvent {
                 cli: target,
@@ -782,13 +721,21 @@ impl Inner {
         let on_output = |is_error: bool, text: &str| {
             activity(if is_error { CliActivityKind::ErrorOutput } else { CliActivityKind::Output }, text.to_string());
         };
+        // 活動事件可能由 UI 或其他監聽者處理一段時間，真正呼叫前再次確認。
+        if options.automatic
+            && (cancel.is_canceled()
+                || !calculator::in_detection_window(initial_time_of(job), job.end_time_of_day, &self.now()))
+        {
+            debug_log::write("偵測", format!("{} 已離開偵測時段，不啟動 CLI", target.short_name()));
+            return None;
+        }
         let result = self.cli_runner.run(
             target,
             profile,
             &job.message,
             &job.working_directory,
-            timeout,
-            token_saver_mode,
+            options.timeout,
+            options.token_saver_mode,
             cancel,
             Some(&on_output),
         );
@@ -813,7 +760,7 @@ impl Inner {
         } else {
             activity(CliActivityKind::Failed, format!("執行失敗：{}", result.error));
         }
-        result
+        Some(result)
     }
 
     /// 收尾一次執行：寫回結果並排到下一次讀取倒數（或下一次自動喚醒）的時點。
@@ -839,12 +786,12 @@ impl Inner {
             }
 
             if stored.enabled {
-                // 能讀取額度時 10 分鐘後再讀取倒數；否則維持每 5 小時 1 分鐘。
-                stored.scheduled_at = if self.usage_reader.is_some() {
-                    calculator::get_next_auto_probe_occurrence(initial_time_of(stored), &now)?
-                } else {
-                    calculator::get_next_auto_interval_occurrence(initial_time_of(stored), &now)?
-                };
+                stored.scheduled_at = calculator::next_detection(
+                    initial_time_of(stored),
+                    stored.end_time_of_day,
+                    &now,
+                    calculator::auto_probe_interval(),
+                )?;
                 stored.status = ScheduleStatus::Pending;
             } else {
                 stored.status = if results.is_some_and(|items| items.iter().all(|result| result.succeeded)) {
@@ -887,6 +834,7 @@ impl Inner {
 }
 
 fn validate_job(job: &ScheduledJob) -> CoreResult<()> {
+    calculator::validate_window(time::truncate_to_minutes(initial_time_of(job)), job.end_time_of_day)?;
     if job.initial_time_of_day.is_some_and(|start| !time::is_valid_time_of_day(start)) {
         return Err(CoreError::OutOfRange("開始時間必須介於 00:00 到 23:59。".to_string()));
     }

@@ -18,7 +18,7 @@ use aiwake_core::time::{self, local_wall_clock};
 use aiwake_core::tokenizer;
 use aiwake_core::usage::{self, is_counting_down};
 use aiwake_core::*;
-use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
+use chrono::Timelike;
 
 /// 多個測試依賴真實經過時間與行程層級的狀態，逐一執行才不會互相干擾。
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -64,10 +64,6 @@ fn fake_profile(output_path: &Path, delay_milliseconds: u64, exit_code: i32) -> 
         ),
         ..CliProfile::default()
     }
-}
-
-fn naive(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> NaiveDateTime {
-    NaiveDate::from_ymd_opt(year, month, day).unwrap().and_hms_opt(hour, minute, second).unwrap()
 }
 
 fn hm(hours: i64, minutes: i64) -> Span {
@@ -936,94 +932,30 @@ fn antigravity_usage_source_cache() {
 
 #[test]
 fn schedule_calculator() {
-    let now = local_wall_clock(2026, 8, 10, 12, 0, 0);
-    let local = |moment: &Moment| time::local_naive(moment);
-
-    let morning = calculator::get_next_daily_occurrence(hm(8, 30) + Span::seconds(45), &now).unwrap();
-    assert_eq!(local(&morning), naive(2026, 8, 11, 8, 30, 0), "已過的每日時分應排到明天並移除秒數。");
-    let evening = calculator::get_next_daily_occurrence(hm(18, 5), &now).unwrap();
-    assert_eq!(local(&evening), naive(2026, 8, 10, 18, 5, 0), "尚未到的每日時分應排在今天。");
-
-    // 跨日邊界測試：午夜 23:59:59 評估 00:00:00 排程
-    let midnight_now = local_wall_clock(2026, 12, 31, 23, 59, 59);
-    let next_day_midnight = calculator::get_next_daily_occurrence(Span::zero(), &midnight_now).unwrap();
-    assert_eq!(local(&next_day_midnight), naive(2027, 1, 1, 0, 0, 0), "跨日午夜排程應排到下一年的 1 月 1 日 00:00。");
-
-    // 時分剛好等於目前時刻邊界 (應排到明天)
-    let exact_now = local_wall_clock(2026, 8, 10, 8, 30, 0);
-    let exact_next = calculator::get_next_daily_occurrence(hm(8, 30), &exact_now).unwrap();
-    assert_eq!(local(&exact_next), naive(2026, 8, 11, 8, 30, 0), "當前時刻與排程時間相同時應排到明天。");
-
-    // 追溯過期多日 (系統休眠/時鐘回撥/錯過執行)
-    let old = local_wall_clock(2026, 8, 1, 8, 30, 0);
-    let daily = calculator::get_next_occurrence(&old, ScheduleRecurrence::Daily, &now).unwrap();
-    assert_eq!(local(&daily), naive(2026, 8, 11, 8, 30, 0), "過期多日的每日排程應跳到目前時間之後的下一個時點。");
-
-    let old_weekly = local_wall_clock(2026, 7, 1, 8, 30, 0);
-    let weekly = calculator::get_next_occurrence(&old_weekly, ScheduleRecurrence::Weekly, &now).unwrap();
-    assert!(
-        local(&weekly) > local(&now) && local(&weekly).weekday() == local(&old_weekly).weekday(),
-        "過期多週的每週排程應保持相同星期數並跳至未來。"
-    );
-
-    // 夏令時間 (DST) 與時區時分保留測試
-    let dst_offset_now = chrono::DateTime::parse_from_rfc3339("2026-03-29T23:30:00-05:00").unwrap();
-    let dst_next = calculator::get_next_daily_occurrence(hm(8, 30), &dst_offset_now).unwrap();
-    assert!(
-        local(&dst_next).hour() == 8 && local(&dst_next).minute() == 30,
-        "跨時區/DST 時應保持本地牆上時間 (Wall-clock time) 的時與分。"
-    );
-
-    // 參數邊界與例外測試
-    assert!(matches!(calculator::get_next_daily_occurrence(Span::hours(-1), &now), Err(CoreError::OutOfRange(_))));
-    assert!(matches!(calculator::get_next_daily_occurrence(Span::hours(24), &now), Err(CoreError::OutOfRange(_))));
-    assert!(calculator::get_next_occurrence(&old, ScheduleRecurrence::Once, &now).is_err_and(|e| e.is_argument()));
-
-    // 邊界合法值 (00:00:00 與 23:59:59)
-    let min_time = calculator::get_next_daily_occurrence(Span::zero(), &now).unwrap();
-    assert_eq!(time::local_time_of_day(&min_time), Span::zero(), "00:00 應為合法每日時間。");
-    let max_time = calculator::get_next_daily_occurrence(hm(23, 59) + Span::seconds(59), &now).unwrap();
-    assert_eq!(time::local_time_of_day(&max_time), hm(23, 59), "23:59 應為合法每日時間。");
-
-    // 自動模式（每 5 小時 1 分鐘 = 301 分鐘）測試
-    assert_eq!(calculator::auto_interval(), Span::minutes(301), "AutoInterval 應精確為 301 分鐘（5 小時 1 分鐘）。");
-    let initial_wakeup = hm(5, 30);
-    let next_auto =
-        |finished: &Moment| calculator::get_next_auto_interval_occurrence(initial_wakeup, finished).unwrap();
-
-    // 1. 同日日間正常推進（08:00 完成 -> 13:01）
-    let finished_morning = local_wall_clock(2026, 8, 10, 8, 0, 0);
-    let next_morning = next_auto(&finished_morning);
-    assert_eq!(next_morning, finished_morning + calculator::auto_interval(), "當日日間 08:00 執行完成應推進至 13:01。");
-    assert_eq!(local(&next_morning), naive(2026, 8, 10, 13, 1, 0), "13:01 時間應正確。");
-
-    // 2. 同日傍晚正常推進（18:02 完成 -> 23:03）
-    let finished_evening = local_wall_clock(2026, 8, 10, 18, 2, 0);
-    let next_evening = next_auto(&finished_evening);
-    assert_eq!(next_evening, finished_evening + calculator::auto_interval(), "當日 18:02 執行完成應推進至 23:03。");
-    assert_eq!(local(&next_evening), naive(2026, 8, 10, 23, 3, 0), "23:03 時間應正確。");
-
-    // 3. 跨日不排半夜：23:03 完成後加 5h1m 為隔日 04:04（超過 24:00），應自動重置為隔日 05:30
-    let next_cross_day = next_auto(&local_wall_clock(2026, 8, 10, 23, 3, 0));
+    let start = hm(8, 30);
+    let end = hm(18, 0);
+    for (hour, minute, active) in [(8, 29, false), (8, 30, true), (17, 59, true), (18, 0, false), (23, 59, false)] {
+        let now = local_wall_clock(2026, 10, 22, hour, minute, 0);
+        assert_eq!(calculator::in_detection_window(start, end, &now), active);
+    }
+    for (hour, active) in [(0, true), (5, true), (6, false), (12, false), (21, false), (22, true), (23, true)] {
+        assert_eq!(
+            calculator::in_detection_window(hm(22, 0), hm(6, 0), &local_wall_clock(2026, 10, 22, hour, 0, 0)),
+            active
+        );
+    }
+    let evening = local_wall_clock(2026, 10, 22, 17, 55, 0);
     assert_eq!(
-        local(&next_cross_day),
-        naive(2026, 8, 11, 5, 30, 0),
-        "23:03 跨日後不應排在半夜 04:04，應排在隔天 05:30。"
+        calculator::next_detection(start, end, &evening, Span::minutes(10)).unwrap(),
+        local_wall_clock(2026, 10, 23, 8, 30, 0)
     );
-
-    // 4. 20:00 執行跨日（加 5h1m 為 01:01），重置為隔日 05:30
-    let next_after_8pm = next_auto(&local_wall_clock(2026, 8, 10, 20, 0, 0));
-    assert_eq!(local(&next_after_8pm), naive(2026, 8, 11, 5, 30, 0), "20:00 跨日後應排在隔天 05:30。");
-
-    // 5. 跨日計算異常邊界
-    assert!(matches!(
-        calculator::get_next_auto_interval_occurrence(Span::hours(-1), &finished_morning),
-        Err(CoreError::OutOfRange(_))
-    ));
-    assert!(matches!(
-        calculator::get_next_auto_interval_occurrence(Span::hours(24), &finished_morning),
-        Err(CoreError::OutOfRange(_))
-    ));
+    let midnight = local_wall_clock(2026, 10, 23, 0, 0, 0);
+    assert!(!calculator::in_detection_window(start, Span::days(1), &midnight));
+    assert!(calculator::in_detection_window(Span::zero(), Span::days(1), &midnight));
+    assert!(calculator::validate_window(start, start).is_err());
+    assert!(calculator::validate_window(start, Span::hours(25)).is_err());
+    assert!(calculator::validate_window(Span::hours(-1), end).is_err());
+    assert!(calculator::validate_window(start, end + Span::seconds(1)).is_err());
 }
 
 #[test]
@@ -1327,241 +1259,245 @@ fn cli_runner_safe_arguments() {
     );
 }
 
+/// 喚醒背景掃描而不重設受測排程的探測時間。
+fn wake_scheduler(manager: &ScheduleManager, directory: &TempDir) {
+    manager.upsert(&ScheduledJob { enabled: false, ..job("喚醒掃描", directory, &[CliKind::Codex]) }).unwrap();
+}
+
+fn ready_usage(reader: &FakeCliUsageReader, kind: CliKind, now: Moment) {
+    reader.set(available(kind, vec![CliUsageWindow::new("5h", 0, Some(Span::hours(5)), None, false)], now));
+}
+
+fn timed_job(directory: &TempDir, kind: CliKind, start: Span, end: Span, now: Moment) -> ScheduledJob {
+    ScheduledJob {
+        initial_time_of_day: Some(start),
+        end_time_of_day: end,
+        scheduled_at: now,
+        ..job("每日時段", directory, &[kind])
+    }
+}
+
 #[test]
-fn schedule_manager_due_job() {
+fn schedule_manager_manual_parallel_run() {
     let _serial = serial();
     let directory = TempDir::new();
-    let output_paths: HashMap<CliKind, PathBuf> =
-        CliKind::ALL.iter().map(|&kind| (kind, directory.join(&format!("scheduled-{kind}-arguments.json")))).collect();
     let paths = AppDataPaths::new(Some(&directory.join("data").to_string_lossy()));
-    let jobs = job_store(paths.jobs_file());
+    let store = job_store(paths.jobs_file());
     let settings = shared_settings();
     for &kind in CliKind::ALL {
-        settings.lock().unwrap().cli_profiles.insert(kind, fake_profile(&output_paths[&kind], 1000, 0));
+        settings
+            .lock()
+            .unwrap()
+            .cli_profiles
+            .insert(kind, fake_profile(&directory.join(&format!("{kind}.json")), 1000, 0));
     }
-    let runner = Arc::new(ProcessCliRunner::new(paths));
-    jobs.save(&vec![ScheduledJob {
-        scheduled_at: time::now() - Span::seconds(1),
-        ..job("到期測試", &directory, CliKind::ALL)
-    }])
-    .unwrap();
-
-    let manager = manager_with(&jobs, runner, &settings, None, None);
-    let activities: Arc<Mutex<Vec<CliActivityEvent>>> = Arc::default();
-    let sink = activities.clone();
+    let manager = manager_with(&store, Arc::new(ProcessCliRunner::new(paths)), &settings, None, None);
+    manager.initialize().unwrap();
+    let item = ScheduledJob { enabled: false, ..job("手動平行", &directory, CliKind::ALL) };
+    manager.upsert(&item).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
     manager.on_activity_logged(move |event| sink.lock().unwrap().push(event.clone()));
-
-    let concurrent_stopwatch = Instant::now();
-    manager.initialize().unwrap();
-    let done = wait_until(Duration::from_secs(20), || {
-        let finished = &manager.get_jobs().unwrap()[0];
-        finished.status == ScheduleStatus::Pending && finished.last_results.len() == CliKind::ALL.len()
-    });
-    let elapsed = concurrent_stopwatch.elapsed();
-    let finished = manager.get_jobs().unwrap().remove(0);
-    assert!(done && finished.enabled, "舊排程應轉為自動模式並繼續等待。");
-    assert_eq!(finished.recurrence, ScheduleRecurrence::Interval, "舊排程載入後應轉為自動模式。");
-    assert!(finished.scheduled_at > time::now(), "自動模式執行後應排到下一個未來時點。");
-    assert_eq!(finished.last_results.len(), CliKind::ALL.len(), "排程器應記錄每個 CLI 的結果。");
-    assert!(finished.last_results.iter().all(|result| result.succeeded), "每個假 CLI 都應成功。");
-    for output_path in output_paths.values() {
-        assert!(output_path.is_file(), "排程器應真的啟動每個假 CLI。");
-    }
-    println!("  concurrent CLI elapsed: {} ms", elapsed.as_millis());
-    assert!(
-        elapsed < Duration::from_millis(4500),
-        "各延遲 1 秒的 CLI 應平行完成，不應循序等待；實際 {} ms。",
-        elapsed.as_millis()
-    );
-    {
-        let activities = activities.lock().unwrap();
-        for &kind in CliKind::ALL {
-            let kinds: Vec<CliActivityKind> =
-                activities.iter().filter(|event| event.cli == kind).map(|event| event.kind).collect();
-            assert_eq!(kinds.first(), Some(&CliActivityKind::Started), "{kind} 應先廣播開始事件。");
-            assert_eq!(kinds.last(), Some(&CliActivityKind::Completed), "{kind} 應以完成事件結束。");
-        }
-    }
-
-    let recurring_id = Guid::new();
-    let selected_time = time::now() - Span::hours(2);
-    manager
-        .upsert(&ScheduledJob {
-            id: recurring_id,
-            scheduled_at: selected_time,
-            recurrence: ScheduleRecurrence::Once,
-            ..job("每日測試", &directory, &[CliKind::Antigravity])
-        })
-        .unwrap();
-    let find = |id: Guid| manager.get_jobs().unwrap().into_iter().find(|job| job.id == id).unwrap();
-    let recurring = find(recurring_id);
-    assert!(recurring.status == ScheduleStatus::Pending && recurring.enabled, "儲存後應成為等待中的自動模式排程。");
-    assert_eq!(recurring.recurrence, ScheduleRecurrence::Interval, "核心層應強制使用自動模式。");
-    assert!(recurring.scheduled_at > time::now(), "已過的時分應自動排到明天，而不是立即執行。");
-    let scheduled_local = time::local_naive(&recurring.scheduled_at);
-    let selected_local = time::local_naive(&selected_time);
-    assert!(
-        scheduled_local.hour() == selected_local.hour() && scheduled_local.minute() == selected_local.minute(),
-        "自動模式應保留使用者選擇的開始時與分。"
-    );
-    assert_eq!(scheduled_local.second(), 0, "開始時間不應保存秒數。");
-
-    manager.run_now(recurring_id).unwrap();
-    wait_until(Duration::from_secs(20), || {
-        let manual_run = find(recurring_id);
-        !manual_run.last_results.is_empty() && manual_run.status == ScheduleStatus::Pending
-    });
-    let manual_run = find(recurring_id);
-    assert!(manual_run.status == ScheduleStatus::Pending && manual_run.enabled, "立即執行後，排程應回到等待狀態。");
-    let expected_next = calculator::get_next_auto_interval_occurrence(
-        manual_run.initial_time_of_day.unwrap(),
-        &manual_run.finished_at.unwrap(),
-    )
-    .unwrap();
-    assert_eq!(manual_run.scheduled_at, expected_next, "無額度讀取器時，立即執行後應排到 5 小時 1 分鐘後。");
-
-    // 刪除與關閉後的狀態
-    manager.delete(recurring_id).unwrap();
-    assert!(manager.get_jobs().unwrap().iter().all(|job| job.id != recurring_id), "刪除後不應再列出排程。");
-    manager.shutdown();
-    assert!(manager.get_jobs().is_err(), "關閉後不應再接受操作。");
-}
-
-#[test]
-fn schedule_manager_adaptive_wait() {
-    let _serial = serial();
-    let directory = TempDir::new();
-    let store = job_store(directory.join("data").join("schedules.json"));
-    let settings = shared_settings();
-    let runner = Arc::new(CountingCliRunner::default());
-
-    let id = Guid::new();
-    store
-        .save(&vec![ScheduledJob {
-            id,
-            scheduled_at: time::now() - Span::seconds(1),
-            ..job("到期喚醒", &directory, &[CliKind::Antigravity, CliKind::Claude])
-        }])
-        .unwrap();
-
-    let manager = manager_with(&store, runner.clone(), &settings, None, None);
-
-    // 排程器採自適應等待，第一輪掃描必須在啟動時立即發生，
-    // 而不是等待任何固定間隔。
     let stopwatch = Instant::now();
-    manager.initialize().unwrap();
-    wait_until(Duration::from_secs(15), || runner.call_count() >= 2);
-    let elapsed = stopwatch.elapsed();
-
-    assert_eq!(runner.call_count(), 2, "應對兩個 CLI 各呼叫一次。");
-    assert!(runner.last_token_saver_mode.load(Ordering::SeqCst), "預設應以節省 Token 模式執行。");
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "到期排程應立即啟動，不應等待輪詢間隔；實際 {} ms。",
-        elapsed.as_millis()
-    );
-
-    wait_until(Duration::from_secs(5), || manager.get_jobs().unwrap()[0].status == ScheduleStatus::Pending);
-    let finished = manager.get_jobs().unwrap().remove(0);
-    assert_eq!(finished.status, ScheduleStatus::Pending, "執行完成後應回到等待狀態。");
-    assert!(finished.scheduled_at > time::now(), "應排到下一個未來時分。");
-
-    // 手動觸發應透過喚醒訊號立即執行，而非等到下一個間隔
-    let manual_stopwatch = Instant::now();
-    manager.run_now(id).unwrap();
-    wait_until(Duration::from_secs(15), || runner.call_count() >= 4);
-    let manual_elapsed = manual_stopwatch.elapsed();
-    assert_eq!(runner.call_count(), 4, "立即執行應再呼叫兩次。");
-    assert!(manual_elapsed < Duration::from_secs(2), "立即執行應馬上啟動；實際 {} ms。", manual_elapsed.as_millis());
-}
-
-#[test]
-fn schedule_manager_restart_does_not_refire() {
-    let _serial = serial();
-    let directory = TempDir::new();
-    let store = job_store(directory.join("data").join("schedules.json"));
-    let settings = shared_settings();
-    let runner = Arc::new(CountingCliRunner::default());
-
-    // 今天的時分已經過了，而且今天已經跑過一次（finished_at 在該時點之後）
-    let already_ran_at = time::now() - Span::minutes(30);
-    let id = Guid::new();
-    store
-        .save(&vec![ScheduledJob {
-            id,
-            scheduled_at: already_ran_at,
-            finished_at: Some(already_ran_at + Span::seconds(20)),
-            ..job("今天已執行", &directory, &[CliKind::Antigravity])
-        }])
-        .unwrap();
-
-    {
-        let manager = manager_with(&store, runner.clone(), &settings, None, None);
-        manager.initialize().unwrap();
-        sleep(1500);
-
-        let stored = manager.get_jobs().unwrap().into_iter().find(|item| item.id == id).unwrap();
-        assert_eq!(runner.call_count(), 0, "重開程式不應重跑今天已完成的喚醒。");
-        assert!(stored.scheduled_at > time::now(), "今天已執行過的排程應排到明天。");
-        assert_eq!(stored.status, ScheduleStatus::Pending, "排程應維持等待中。");
+    manager.run_now(item.id).unwrap();
+    assert!(wait_until(Duration::from_secs(20), || manager
+        .get_jobs()
+        .unwrap()
+        .iter()
+        .any(|job| job.id == item.id && job.last_results.len() == CliKind::ALL.len())));
+    assert!(stopwatch.elapsed() < Duration::from_millis(4500));
+    let finished = manager.get_jobs().unwrap().into_iter().find(|job| job.id == item.id).unwrap();
+    assert!(finished.last_results.iter().all(|result| result.succeeded));
+    assert_eq!(finished.status, ScheduleStatus::Pending);
+    assert!(finished.enabled);
+    for &kind in CliKind::ALL {
+        assert!(directory.join(&format!("{kind}.json")).is_file());
+        let events = events.lock().unwrap();
+        assert!(events.iter().any(|event| event.cli == kind && event.kind == CliActivityKind::Started));
+        assert!(events.iter().any(|event| event.cli == kind && event.kind == CliActivityKind::Completed));
     }
-
-    // 相對地，程式關閉期間錯過的喚醒仍應補做一次
-    let missed_runner = Arc::new(CountingCliRunner::default());
-    store
-        .save(&vec![ScheduledJob {
-            scheduled_at: time::now() - Span::minutes(30),
-            finished_at: None,
-            ..job("錯過未執行", &directory, &[CliKind::Antigravity])
-        }])
-        .unwrap();
-
-    let manager = manager_with(&store, missed_runner.clone(), &settings, None, None);
-    manager.initialize().unwrap();
-    wait_until(Duration::from_secs(10), || missed_runner.call_count() > 0);
-    assert_eq!(missed_runner.call_count(), 1, "程式關閉期間錯過的喚醒仍應補做一次。");
+    manager.delete(item.id).unwrap();
+    manager.shutdown();
+    assert!(manager.get_jobs().is_err());
 }
 
 #[test]
-fn schedule_manager_coalesces_overdue_jobs() {
+fn schedule_manager_obeys_daily_boundaries_and_resets() {
     let _serial = serial();
     let directory = TempDir::new();
-    let store = job_store(directory.join("data").join("schedules.json"));
+    let store = job_store(directory.join("jobs.json"));
     let settings = shared_settings();
+    let before = local_wall_clock(2026, 10, 22, 7, 59, 0);
+    let clock = FakeClock::new(before);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, before);
     let runner = Arc::new(CountingCliRunner::default());
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), before)]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &settings, Some(reader.clone()), Some(clock.clone()));
+    manager.initialize().unwrap();
+    sleep(150);
+    assert_eq!(reader.read_count(CliKind::Codex), 0, "開始前不可偵測或呼叫。");
+    let start = local_wall_clock(2026, 10, 22, 8, 0, 0);
+    clock.set(start);
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1));
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 2));
+    reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), start + Span::hours(5), true)], start));
+    clock.set(start + Span::minutes(10));
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 3));
+    assert_eq!(runner.call_count(), 1, "倒數中不呼叫。");
+    let reset = start + Span::hours(5);
+    ready_usage(&reader, CliKind::Codex, reset);
+    clock.set(reset);
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 2), "倒數結束立即重讀並呼叫。");
+    sleep(100);
+    clock.set(local_wall_clock(2026, 10, 22, 18, 0, 0));
+    wake_scheduler(&manager, &directory);
+    sleep(150);
+    assert_eq!(runner.call_count(), 2, "結束時間不包含在時段內。");
+    clock.set(local_wall_clock(2026, 10, 23, 8, 0, 0));
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 3), "隔天開始時間重新偵測。");
+}
 
-    // 程式關閉了一段時間，三個排程都錯過了各自的時分。
-    let (oldest_id, middle_id, newest_id) = (Guid::new(), Guid::new(), Guid::new());
-    let missed = |id: Guid, name: &str, ago: Span| ScheduledJob {
-        id,
-        scheduled_at: time::now() - ago,
-        finished_at: None,
-        ..job(name, &directory, &[CliKind::Antigravity])
-    };
+#[test]
+fn schedule_manager_countdown_reset_preempts_ten_minute_probe() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("early-reset.json"));
+    let now = local_wall_clock(2026, 10, 22, 8, 0, 0);
+    let clock = FakeClock::new(now);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), now + Span::minutes(3), true)], now));
+    let runner = Arc::new(CountingCliRunner::default());
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now)]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 1));
+    assert_eq!(runner.call_count(), 0);
+    clock.set(now + Span::minutes(1));
+    wake_scheduler(&manager, &directory);
+    sleep(100);
+    assert_eq!(reader.read_count(CliKind::Codex), 1, "未到重讀時刻時不可密集查詢。");
+    clock.set(now + Span::minutes(3));
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "08:03倒數結束，無須等到08:10。");
+    assert!(reader.read_count(CliKind::Codex) >= 2, "必須重讀確認，而非直接依舊快照呼叫。");
+}
+
+#[test]
+fn schedule_manager_reset_survives_ui_snapshot_refresh() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("ui-reset.json"));
+    let now = local_wall_clock(2026, 10, 22, 8, 0, 0);
+    let reset = now + Span::minutes(3);
+    let clock = FakeClock::new(now);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), reset, true)], now));
+    let runner = Arc::new(CountingCliRunner::default());
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now)]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 1));
+    let refreshed =
+        available(CliKind::Codex, vec![window("5h", 0, Span::hours(5), reset + Span::hours(5), false)], reset);
+    reader.set(refreshed.clone());
+    reader.latest.lock().unwrap().insert(CliKind::Codex, refreshed);
+    clock.set(reset);
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "UI先更新觀測時間，仍應在08:03立即重讀。");
+    assert!(reader.read_count(CliKind::Codex) >= 2);
+}
+
+#[test]
+fn schedule_manager_all_jobs_are_quota_gated_and_deduplicated() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("jobs.json"));
+    let settings = shared_settings();
+    let now = local_wall_clock(2026, 10, 22, 10, 0, 0);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    let runner = Arc::new(CountingCliRunner::default());
+    reader.set(available(CliKind::Antigravity, vec![window("7d", 100, Span::days(7), now + Span::days(1), true)], now));
+    ready_usage(&reader, CliKind::Codex, now);
+    ready_usage(&reader, CliKind::Claude, now);
+    reader.set(available(CliKind::AntigravityArgon, Vec::new(), now));
     store
         .save(&vec![
-            missed(oldest_id, "最早錯過", Span::hours(3)),
-            missed(middle_id, "中間錯過", Span::hours(2)),
-            missed(newest_id, "最近錯過", Span::minutes(30)),
+            timed_job(&directory, CliKind::Antigravity, hm(8, 0), hm(18, 0), now),
+            timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now),
+            timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now),
+            timed_job(&directory, CliKind::Claude, hm(8, 0), hm(18, 0), now),
+            timed_job(&directory, CliKind::AntigravityArgon, hm(8, 0), hm(18, 0), now),
+            timed_job(&directory, CliKind::AntigravityClaude, hm(8, 0), hm(18, 0), now),
         ])
         .unwrap();
-
-    let manager = manager_with(&store, runner.clone(), &settings, None, None);
+    let manager = manager_with(&store, runner.clone(), &settings, Some(reader.clone()), Some(FakeClock::new(now)));
     manager.initialize().unwrap();
-    wait_until(Duration::from_secs(10), || runner.call_count() > 0);
-    // 給補跑的那個排程一點時間完成，並讓其餘排程有機會（錯誤地）被觸發。
-    sleep(500);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 2));
+    sleep(150);
+    let executed = runner.executed();
+    assert_eq!(executed.iter().filter(|&&kind| kind == CliKind::Codex).count(), 1, "重疊排程不可重複呼叫同一CLI。");
+    assert!(executed.contains(&CliKind::Claude), "非首筆排程也須偵測並呼叫。");
+    assert!(!executed.contains(&CliKind::Antigravity), "每週額度用盡不呼叫。");
+    assert!(!executed.contains(&CliKind::AntigravityArgon), "空額度視窗不呼叫。");
+    assert!(!executed.contains(&CliKind::AntigravityClaude), "讀取不可用不呼叫。");
+}
 
-    assert_eq!(runner.call_count(), 1, "多個排程同時逾時時只應補做最近的一個。");
+#[test]
+fn schedule_manager_cross_midnight_and_read_past_end() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let settings = shared_settings();
+    let now = local_wall_clock(2026, 10, 23, 1, 0, 0);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, now);
+    let runner = Arc::new(CountingCliRunner::default());
+    let store = job_store(directory.join("overnight.json"));
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(22, 0), hm(6, 0), now)]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &settings, Some(reader), Some(FakeClock::new(now)));
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1));
+    manager.shutdown();
+    let end = local_wall_clock(2026, 10, 23, 6, 0, 0);
+    let clock = FakeClock::new(end - Span::seconds(1));
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, end);
+    let move_clock = clock.clone();
+    *reader.on_read.lock().unwrap() = Some(Box::new(move || move_clock.set(end)));
+    let runner = Arc::new(CountingCliRunner::default());
+    let store = job_store(directory.join("slow-read.json"));
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(22, 0), hm(6, 0), end - Span::seconds(1))]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &settings, Some(reader.clone()), Some(clock));
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 1));
+    sleep(100);
+    assert_eq!(runner.call_count(), 0, "讀取完成時已到結束時間，不可啟動CLI。");
+}
 
-    let jobs = manager.get_jobs().unwrap();
-    let find = |id: Guid| jobs.iter().find(|item| item.id == id).unwrap();
-    assert_eq!(find(newest_id).status, ScheduleStatus::Pending, "被補做的排程應回到等待中。");
-    assert!(find(newest_id).scheduled_at > time::now(), "被補做的排程應排到下一個每日時點。");
-    for id in [middle_id, oldest_id] {
-        assert_eq!(find(id).status, ScheduleStatus::Pending, "被跳過的排程不應卡在執行中。");
-        assert!(find(id).scheduled_at > time::now(), "被跳過的排程應直接推到下一個每日時點，而不是重複呼叫。");
-    }
+#[test]
+fn schedule_manager_without_usage_reader_never_auto_calls() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let settings = shared_settings();
+    let now = local_wall_clock(2026, 10, 22, 10, 0, 0);
+    let clock = FakeClock::new(now);
+    let runner = Arc::new(CountingCliRunner::default());
+    let store = job_store(directory.join("jobs.json"));
+    let item = timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now - Span::days(1));
+    store.save(&vec![item.clone()]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &settings, None, Some(clock.clone()));
+    manager.initialize().unwrap();
+    sleep(100);
+    clock.set(now + Span::hours(6));
+    wake_scheduler(&manager, &directory);
+    sleep(100);
+    assert_eq!(runner.call_count(), 0, "缺少讀取器不可退回固定間隔盲呼叫。");
+    manager.run_now(item.id).unwrap();
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "明確手動呼叫仍可執行。");
 }
 
 #[test]
@@ -1632,6 +1568,12 @@ fn schedule_manager_boundaries_and_state() {
     assert!(matches!(manager.run_now(running_job.id), Err(CoreError::InvalidOperation(_))));
     assert!(matches!(manager.upsert(&running_state), Err(CoreError::InvalidOperation(_))));
     assert!(matches!(manager.delete(running_job.id), Err(CoreError::InvalidOperation(_))));
+    let overlapping = base("重疊目標", "早安");
+    manager.upsert(&overlapping).unwrap();
+    assert!(
+        matches!(manager.run_now(overlapping.id), Err(CoreError::InvalidOperation(_))),
+        "另一排程不可重疊呼叫執行中的CLI。"
+    );
 
     // 9. 驗證 AppSettings.quota_auto_refresh_minutes 預設值與 clone / ensure_defaults
     let test_settings = AppSettings { quota_auto_refresh_minutes: 30, ..AppSettings::default() };
@@ -1642,482 +1584,83 @@ fn schedule_manager_boundaries_and_state() {
 }
 
 #[test]
-fn schedule_manager_auto_interval() {
-    let _serial = serial();
+fn schedule_legacy_seconds_and_end_time_roundtrip() {
     let directory = TempDir::new();
-    let store = job_store(directory.join("data").join("schedules.json"));
-    let settings = shared_settings();
-    let runner = Arc::new(CountingCliRunner::default());
-    let initial_wakeup = hm(5, 30);
-    let interval_job = |name: &str| ScheduledJob {
-        initial_time_of_day: Some(initial_wakeup),
-        recurrence: ScheduleRecurrence::Interval,
-        ..job(name, &directory, &[CliKind::Antigravity])
-    };
-
-    let auto_job = ScheduledJob { scheduled_at: time::now() - Span::seconds(1), ..interval_job("自動模式測試") };
-    store.save(&vec![auto_job.clone()]).unwrap();
-
-    // 1. 測試排程器初始化並觸發首次喚醒
-    {
-        let manager = manager_with(&store, runner.clone(), &settings, None, None);
-        manager.initialize().unwrap();
-        wait_until(Duration::from_secs(10), || runner.call_count() > 0);
-        assert_eq!(runner.call_count(), 1, "首次到期應觸發一次呼叫。");
-
-        let current = || manager.get_jobs().unwrap().into_iter().find(|j| j.id == auto_job.id).unwrap();
-        wait_until(Duration::from_secs(5), || {
-            current().status == ScheduleStatus::Pending && current().finished_at.is_some()
-        });
-        let stored = current();
-        assert_eq!(stored.recurrence, ScheduleRecurrence::Interval, "週期應維持 Interval。");
-        assert_eq!(stored.status, ScheduleStatus::Pending, "執行後應回到 Pending 狀態。");
-        let finished_at = stored.finished_at.expect("應記錄 finished_at。");
-        let expected_next =
-            calculator::get_next_auto_interval_occurrence(stored.initial_time_of_day.unwrap(), &finished_at).unwrap();
-        assert!(
-            (stored.scheduled_at - expected_next).abs() < Span::seconds(2),
-            "執行完成後 scheduled_at 應正確推算，預期：{expected_next}，實際：{}",
-            stored.scheduled_at
-        );
-
-        // 2. 測試手動「立即執行」對自動模式之推進
-        manager.run_now(auto_job.id).unwrap();
-        wait_until(Duration::from_secs(10), || runner.call_count() > 1);
-        assert_eq!(runner.call_count(), 2, "立即執行應再觸發一次呼叫。");
-
-        wait_until(Duration::from_secs(5), || {
-            current().status == ScheduleStatus::Pending && current().finished_at.is_some()
-        });
-        let stored = current();
-        let expected_next = calculator::get_next_auto_interval_occurrence(
-            stored.initial_time_of_day.unwrap(),
-            &stored.finished_at.unwrap(),
-        )
-        .unwrap();
-        assert!(
-            (stored.scheduled_at - expected_next).abs() < Span::seconds(2),
-            "立即執行後 scheduled_at 應重新推進，預期：{expected_next}，實際：{}",
-            stored.scheduled_at
-        );
-    }
-
-    // 3. 測試重啟防護：1 小時前剛跑過（未滿 5 小時 1 分鐘），重開不應重新觸發
-    let recent_runner = Arc::new(CountingCliRunner::default());
-    let now = time::now();
-    let recent_clock = FakeClock::new(local_wall_clock(now.year(), now.month(), now.day(), 12, 0, 0));
-    let recent_ran_at = recent_clock.now() - Span::hours(1);
-    let recent_job = ScheduledJob {
-        scheduled_at: calculator::get_next_auto_interval_occurrence(initial_wakeup, &recent_ran_at).unwrap(),
-        finished_at: Some(recent_ran_at),
-        ..interval_job("近期已執行")
-    };
-    store.save(&vec![recent_job.clone()]).unwrap();
-    {
-        let manager = manager_with(&store, recent_runner.clone(), &settings, None, Some(recent_clock.clone()));
-        manager.initialize().unwrap();
-        sleep(500);
-
-        assert_eq!(recent_runner.call_count(), 0, "5 小時 1 分鐘未到期前重開程式不應重跑。");
-        let stored = manager.get_jobs().unwrap().remove(0);
-        assert!(stored.scheduled_at > recent_clock.now(), "排程時間應在未來的時點。");
-    }
-
-    // 4. 測試隔天逾時開機補做：昨天 23:03 跑過，今天 08:00 開機（超過 05:30），應立即補做一次
-    let late_boot_clock = FakeClock::new(local_wall_clock(2026, 8, 19, 8, 0, 0));
-    let late_boot_runner = Arc::new(CountingCliRunner::default());
-    let yesterday_finished = local_wall_clock(2026, 8, 18, 23, 3, 0);
-    let boot_job = |name: &str| ScheduledJob {
-        scheduled_at: local_wall_clock(2026, 8, 19, 5, 30, 0),
-        finished_at: Some(yesterday_finished),
-        ..interval_job(name)
-    };
-    store.save(&vec![boot_job("隔天逾時開機補做")]).unwrap();
-    {
-        let manager = manager_with(&store, late_boot_runner.clone(), &settings, None, Some(late_boot_clock));
-        manager.initialize().unwrap();
-        wait_until(Duration::from_secs(10), || late_boot_runner.call_count() > 0);
-        assert_eq!(late_boot_runner.call_count(), 1, "隔日 08:00 開機（已過 05:30）應立即補做今日第一輪。");
-        wait_until(Duration::from_secs(5), || manager.get_jobs().unwrap()[0].status == ScheduleStatus::Pending);
-        let late_job = manager.get_jobs().unwrap().remove(0);
-        assert_eq!(
-            time::local_naive(&late_job.scheduled_at),
-            naive(2026, 8, 19, 13, 1, 0),
-            "補做完成後應推進至當日 13:01。"
-        );
-    }
-
-    // 5. 測試隔天提早開機等待：昨天 23:03 跑過，今天 04:30 開機（未到 05:30），不應提前執行
-    let early_boot_clock = FakeClock::new(local_wall_clock(2026, 8, 19, 4, 30, 0));
-    let early_boot_runner = Arc::new(CountingCliRunner::default());
-    store.save(&vec![boot_job("隔天提早開機等待")]).unwrap();
-    {
-        let manager = manager_with(&store, early_boot_runner.clone(), &settings, None, Some(early_boot_clock));
-        manager.initialize().unwrap();
-        sleep(500);
-
-        assert_eq!(early_boot_runner.call_count(), 0, "隔日 04:30 提早開機（未到 05:30）不應提前執行。");
-        let early_job = manager.get_jobs().unwrap().remove(0);
-        assert_eq!(
-            time::local_naive(&early_job.scheduled_at),
-            naive(2026, 8, 19, 5, 30, 0),
-            "排程時間應排定在今日 05:30。"
-        );
-    }
-}
-
-#[test]
-fn schedule_manager_quota_aware_interval() {
-    let _serial = serial();
-    let directory = TempDir::new();
-    let store = job_store(directory.join("data").join("schedules.json"));
-    let settings = shared_settings();
-    let initial_wakeup = hm(8, 0);
-    let interval_job = |name: &str, targets: &[CliKind]| ScheduledJob {
-        initial_time_of_day: Some(initial_wakeup),
-        recurrence: ScheduleRecurrence::Interval,
-        ..job(name, &directory, targets)
-    };
-    let h5 = Span::hours(5);
-
-    // 1. 當日首次時間之前（07:30 < 08:00）：即便未倒數也不提前喚醒
-    let early_now = local_wall_clock(2026, 8, 21, 7, 30, 0);
-    let early_runner = Arc::new(CountingCliRunner::default());
-    let fake_usage_reader = Arc::new(FakeCliUsageReader::default());
-
-    // 模擬三個 CLI：全部未在倒數中（例如 reset 在過去或 100% 額度）
-    let past = early_now - Span::hours(1);
-    fake_usage_reader.set(available(
-        CliKind::Antigravity,
-        vec![window("Antigravity (Gemini)", 0, h5, past, false)],
-        early_now,
-    ));
-    fake_usage_reader.set(available(
-        CliKind::AntigravityClaude,
-        vec![window("Antigravity (Claude / GPT)", 0, h5, past, false)],
-        early_now,
-    ));
-    fake_usage_reader.set(available(
-        CliKind::Claude,
-        vec![
-            window("Claude（5 小時）", 0, h5, past, false),
-            window("Claude（7 天）", 20, Span::days(7), early_now + Span::days(4), false),
-        ],
-        early_now,
-    ));
-
-    store
-        .save(&vec![ScheduledJob {
-            scheduled_at: local_wall_clock(2026, 8, 21, 13, 1, 0),
-            finished_at: Some(local_wall_clock(2026, 8, 20, 23, 0, 0)),
-            ..interval_job("流量未倒數測試", &[CliKind::Antigravity, CliKind::AntigravityClaude, CliKind::Claude])
-        }])
-        .unwrap();
-
-    {
-        let manager = manager_with(
-            &store,
-            early_runner.clone(),
-            &settings,
-            Some(fake_usage_reader.clone()),
-            Some(FakeClock::new(early_now)),
-        );
-        manager.initialize().unwrap();
-        sleep(400);
-        assert_eq!(early_runner.call_count(), 0, "當日首次喚醒時間（08:00）之前，07:30 不應觸發未倒數立即執行。");
-    }
-
-    // 2. 當日首次時間之後（08:30 > 08:00）：
-    // 設定 Antigravity（Gemini）倒數中（resets at 13:30），
-    // AntigravityClaude 與 Claude 未倒數（resets at 07:30，已過期）。
-    // 預期：只喚醒 AntigravityClaude 與 Claude，不呼叫 Antigravity！
-    let late_now = local_wall_clock(2026, 8, 21, 8, 30, 0);
-    let late_runner = Arc::new(CountingCliRunner::default());
-    fake_usage_reader.set(available(
-        CliKind::Antigravity,
-        vec![window("Antigravity (Gemini)", 10, h5, late_now + h5, true)],
-        late_now,
-    ));
-    fake_usage_reader.set(available(
-        CliKind::AntigravityClaude,
-        vec![window("Antigravity (Claude / GPT)", 0, h5, late_now - Span::hours(1), false)],
-        late_now,
-    ));
-    fake_usage_reader.set(available(
-        CliKind::Claude,
-        vec![
-            window("Claude（5 小時）", 0, h5, late_now - Span::minutes(30), false),
-            window("Claude（7 天）", 30, Span::days(7), late_now + Span::days(3), true),
-        ],
-        late_now,
-    ));
-
-    {
-        let manager = manager_with(
-            &store,
-            late_runner.clone(),
-            &settings,
-            Some(fake_usage_reader.clone()),
-            Some(FakeClock::new(late_now)),
-        );
-        manager.initialize().unwrap();
-        wait_until(Duration::from_secs(10), || late_runner.call_count() >= 2);
-        sleep(200);
-
-        assert_eq!(late_runner.call_count(), 2, "當日首次時間後，應只呼叫未倒數的 2 個 CLI。");
-        let executed = late_runner.executed();
-        assert!(!executed.contains(&CliKind::Antigravity), "處於倒數中的 Antigravity 不應被呼叫。");
-        assert!(executed.contains(&CliKind::AntigravityClaude), "未倒數的 AntigravityClaude 應被呼叫。");
-        assert!(executed.contains(&CliKind::Claude), "未倒數的 Claude 應被呼叫。");
-    }
-
-    // 3. 背景排程迴圈即使被頻繁喚醒，也只能每 10 分鐘查一次額度（與看板的自動重新整理設定無關）。
-    // 這是 Claude /api/oauth/usage 不再因每 30 秒重查而觸發 HTTP 429 的迴歸測試。
-    settings.lock().unwrap().quota_auto_refresh_minutes = 0;
-    let throttled_now = local_wall_clock(2026, 8, 21, 9, 0, 0);
-    let throttled_clock = FakeClock::new(throttled_now);
-    let throttled_usage_reader = Arc::new(FakeCliUsageReader::default());
-    // 模擬未抓到倒數（例如 100% 額度或未在倒數中）
-    throttled_usage_reader.set(available(
-        CliKind::Claude,
-        vec![window("Claude（5 小時）", 0, h5, throttled_now - Span::hours(1), false)],
-        throttled_now,
-    ));
-    store
-        .save(&vec![ScheduledJob {
-            scheduled_at: throttled_now + Span::hours(4),
-            finished_at: Some(throttled_now - Span::hours(1)),
-            ..interval_job("額度探測節流測試", &[CliKind::Claude])
-        }])
-        .unwrap();
-
-    {
-        let manager = manager_with(
-            &store,
-            Arc::new(CountingCliRunner::default()),
-            &settings,
-            Some(throttled_usage_reader.clone()),
-            Some(throttled_clock.clone()),
-        );
-        manager.initialize().unwrap();
-        wait_until(Duration::from_secs(3), || throttled_usage_reader.read_count(CliKind::Claude) >= 2);
-        assert_eq!(
-            throttled_usage_reader.read_count(CliKind::Claude),
-            2,
-            "啟動探測與執行後捕捉新倒數應各讀取一次 Claude 額度。"
-        );
-
-        wait_until(Duration::from_secs(3), || manager.get_jobs().unwrap()[0].status == ScheduleStatus::Pending);
-        let throttled_job = manager.get_jobs().unwrap().remove(0);
-        for _ in 0..3 {
-            manager.upsert(&throttled_job).unwrap();
-            sleep(100);
-        }
-        assert_eq!(
-            throttled_usage_reader.read_count(CliKind::Claude),
-            2,
-            "10 分鐘探測間隔內即使排程器被喚醒多次，也不應重查 Claude 額度。"
-        );
-
-        // 推進 11 分鐘，因為仍處於未倒數狀態，應觸發定期探測
-        throttled_clock.set(throttled_now + Span::minutes(11));
-        manager.upsert(&throttled_job).unwrap();
-        wait_until(Duration::from_secs(3), || throttled_usage_reader.read_count(CliKind::Claude) >= 3);
-        assert!(
-            throttled_usage_reader.read_count(CliKind::Claude) >= 3,
-            "超過 10 分鐘後，應允許下一次 Claude 額度探測。"
-        );
-    }
-
-    // 4. 倒數結束時（Countdown Ended）自動喚醒並探測
-    let countdown_end_now = local_wall_clock(2026, 8, 21, 9, 0, 0);
-    let countdown_end_clock = FakeClock::new(countdown_end_now);
-    let countdown_end_reader = Arc::new(FakeCliUsageReader::default());
-    let countdown_end_runner = Arc::new(CountingCliRunner::default());
-
-    // 模擬 Claude 倒數即將在 15 分鐘後（09:15）結束
-    let reset_point = countdown_end_now + Span::minutes(15);
-    countdown_end_reader.set(available(
-        CliKind::Claude,
-        vec![window("Claude（5 小時）", 10, h5, reset_point, true)],
-        countdown_end_now,
-    ));
-    store
-        .save(&vec![ScheduledJob {
-            scheduled_at: reset_point,
-            finished_at: Some(countdown_end_now - Span::hours(1)),
-            ..interval_job("倒數結束自動喚醒測試", &[CliKind::Claude])
-        }])
-        .unwrap();
-
-    {
-        let manager = manager_with(
-            &store,
-            countdown_end_runner.clone(),
-            &settings,
-            Some(countdown_end_reader.clone()),
-            Some(countdown_end_clock.clone()),
-        );
-        manager.initialize().unwrap();
-        wait_until(Duration::from_secs(3), || countdown_end_reader.read_count(CliKind::Claude) >= 1);
-        sleep(150);
-        assert_eq!(countdown_end_reader.read_count(CliKind::Claude), 1, "啟動初始化探測。");
-        assert_eq!(countdown_end_runner.call_count(), 0, "倒數中不應喚醒。");
-
-        // 時間推進至倒數剛結束（09:16），且伺服器已更新為未倒數（額度已重置）
-        countdown_end_reader.set(available(
-            CliKind::Claude,
-            vec![window("Claude（5 小時）", 0, h5, reset_point, false)],
-            countdown_end_now + Span::minutes(16),
-        ));
-        countdown_end_clock.set(countdown_end_now + Span::minutes(16));
-        // 喚醒排程器評估
-        let countdown_job = manager.get_jobs().unwrap().remove(0);
-        manager.upsert(&countdown_job).unwrap();
-
-        wait_until(Duration::from_secs(5), || countdown_end_runner.call_count() >= 1);
-        assert_eq!(countdown_end_runner.call_count(), 1, "倒數結束後，排程器應自動探測並喚醒已重置的 Claude。");
-        assert!(countdown_end_reader.read_count(CliKind::Claude) >= 2, "倒數結束與執行前/後應觸發額度讀取。");
-    }
-
-    // 5. 開始時間後每 10 分鐘讀取一次「所有」目標的倒數狀態（含倒數中的 CLI），沒有倒數的才呼叫。
-    let probe_now = local_wall_clock(2026, 8, 21, 10, 0, 0);
-    let probe_clock = FakeClock::new(probe_now);
-    let probe_reader = Arc::new(FakeCliUsageReader::default());
-    let probe_runner = Arc::new(CountingCliRunner::default());
-    let counting = |kind: CliKind, observed_at: Moment| {
-        available(kind, vec![window("5 小時", 10, h5, probe_now + Span::hours(2), true)], observed_at)
-    };
-    probe_reader.set(counting(CliKind::Codex, probe_now));
-    probe_reader.set(counting(CliKind::Claude, probe_now));
-    store
-        .save(&vec![ScheduledJob {
-            scheduled_at: probe_now + Span::hours(3),
-            finished_at: Some(probe_now - Span::hours(3)),
-            ..interval_job("每 10 分鐘偵測倒數", &[CliKind::Codex, CliKind::Claude])
-        }])
-        .unwrap();
-
-    {
-        let manager = manager_with(
-            &store,
-            probe_runner.clone(),
-            &settings,
-            Some(probe_reader.clone()),
-            Some(probe_clock.clone()),
-        );
-        manager.initialize().unwrap();
-        let reads = || (probe_reader.read_count(CliKind::Codex), probe_reader.read_count(CliKind::Claude));
-        wait_until(Duration::from_secs(3), || reads() == (1, 1));
-        sleep(150);
-        assert_eq!(reads(), (1, 1), "開始時間後應立即讀取所有目標的倒數狀態各一次。");
-        assert_eq!(probe_runner.call_count(), 0, "全部倒數中不應呼叫。");
-        let stored = manager.get_jobs().unwrap().remove(0);
-        assert_eq!(
-            time::local_naive(&stored.scheduled_at),
-            naive(2026, 8, 21, 10, 10, 0),
-            "全部倒數中時，排程時間應顯示下一次讀取倒數的時點。"
-        );
-
-        // 未滿 10 分鐘：即使排程器被喚醒也不重讀。
-        probe_clock.set(probe_now + Span::minutes(5));
-        manager.upsert(&stored).unwrap();
-        sleep(200);
-        assert_eq!(reads(), (1, 1), "未滿 10 分鐘不應重讀倒數狀態。");
-
-        // 滿 10 分鐘：重讀所有目標；Claude 已無倒數 → 只呼叫 Claude。
-        probe_reader.set(available(
-            CliKind::Claude,
-            vec![window("5 小時", 0, h5, probe_now - Span::hours(1), false)],
-            probe_now + Span::minutes(10),
-        ));
-        probe_clock.set(probe_now + Span::minutes(10));
-        manager.upsert(&stored).unwrap();
-        wait_until(Duration::from_secs(5), || probe_runner.call_count() >= 1);
-        sleep(200);
-        assert_eq!(probe_reader.read_count(CliKind::Codex), 2, "滿 10 分鐘應重讀倒數中的 Codex。");
-        assert_eq!(probe_runner.call_count(), 1, "只應呼叫沒有倒數的 CLI。");
-        assert_eq!(probe_runner.executed(), vec![CliKind::Claude], "倒數中的 Codex 不應被呼叫。");
-    }
-
-    // 6. 跨過 24:00：下一次讀取倒數排到隔天的開始時間。
-    let next_probe =
-        calculator::get_next_auto_probe_occurrence(initial_wakeup, &local_wall_clock(2026, 8, 21, 23, 55, 0)).unwrap();
-    assert_eq!(time::local_naive(&next_probe), naive(2026, 8, 22, 8, 0, 0), "23:55 之後應排到隔天 08:00。");
-    let next_probe =
-        calculator::get_next_auto_probe_occurrence(initial_wakeup, &local_wall_clock(2026, 8, 21, 9, 3, 0)).unwrap();
-    assert_eq!(time::local_naive(&next_probe), naive(2026, 8, 21, 9, 13, 0), "當日應每 10 分鐘讀取一次。");
-}
-
-#[test]
-fn schedule_manager_migrates_to_auto_and_skips_exhausted() {
-    let _serial = serial();
-    let directory = TempDir::new();
-    let store = job_store(directory.join("jobs.json"));
-    let now = local_wall_clock(2026, 10, 21, 9, 0, 0);
-    let clock = FakeClock::new(now);
-    let runner = Arc::new(CountingCliRunner::default());
-    let usage_reader = Arc::new(FakeCliUsageReader::default());
-    let settings = shared_settings();
-    let h5 = Span::hours(5);
-
-    // 舊版的自動倒數模式與每日模式都必須遷移為自動模式，並保留開始時間。
-    let (countdown_id, daily_id) = (Guid::new(), Guid::new());
-    store
-        .save(&vec![
-            ScheduledJob {
-                id: countdown_id,
-                recurrence: ScheduleRecurrence::Countdown,
-                initial_time_of_day: Some(Span::hours(8)),
-                scheduled_at: local_wall_clock(2026, 10, 20, 8, 0, 0),
-                ..job("舊倒數模式", &directory, &[CliKind::Antigravity, CliKind::Codex])
-            },
-            ScheduledJob {
-                id: daily_id,
-                recurrence: ScheduleRecurrence::Daily,
-                scheduled_at: local_wall_clock(2026, 10, 21, 7, 30, 0),
-                finished_at: Some(local_wall_clock(2026, 10, 21, 7, 31, 0)),
-                ..job("舊每日模式", &directory, &[CliKind::Claude])
-            },
-        ])
-        .unwrap();
-
-    // 日誌重現：AGY(Gemini) 每週額度已用 100%，5 小時視窗沒有重置時間（未倒數）。
-    // 舊版每 2 分鐘呼叫一次都回 HTTP 429；額度用盡時不應呼叫。
-    usage_reader.set(available(
-        CliKind::Antigravity,
-        vec![
-            CliUsageWindow::new("Five Hour", 0, Some(h5), None, false),
-            window("Weekly", 100, Span::days(7), now + Span::days(3), true),
-        ],
-        now,
-    ));
-    usage_reader.set(available(CliKind::Codex, vec![window("5h", 0, h5, now - Span::hours(1), false)], now));
-
-    let manager = manager_with(&store, runner.clone(), &settings, Some(usage_reader.clone()), Some(clock.clone()));
+    let store = job_store(directory.join("legacy-seconds.json"));
+    let now = local_wall_clock(2026, 10, 22, 6, 0, 0);
+    let original_time = local_wall_clock(2026, 10, 22, 8, 49, 37);
+    let mut legacy = ScheduledJob { enabled: false, scheduled_at: original_time, ..ScheduledJob::default() }.to_json();
+    legacy.as_object_mut().unwrap().remove("InitialTimeOfDay");
+    legacy.as_object_mut().unwrap().remove("EndTimeOfDay");
+    legacy.as_object_mut().unwrap().remove("ScheduleRevision");
+    std::fs::write(store.path(), serde_json::json!([legacy]).to_string()).unwrap();
+    let manager = manager_with(
+        &store,
+        Arc::new(CountingCliRunner::default()),
+        &shared_settings(),
+        None,
+        Some(FakeClock::new(now)),
+    );
     manager.initialize().unwrap();
-    let persisted = store.load().unwrap();
-    for stored in &persisted {
-        assert_eq!(stored.recurrence, ScheduleRecurrence::Interval, "「{}」應遷移為自動模式。", stored.name);
-    }
-    let find = |id: Guid| persisted.iter().find(|stored| stored.id == id).unwrap().clone();
-    assert_eq!(find(countdown_id).initial_time_of_day, Some(Span::hours(8)), "應保留原本的開始時間。");
-    assert_eq!(find(daily_id).initial_time_of_day, Some(hm(7, 30)), "每日模式應以原時分作為開始時間。");
+    manager.shutdown();
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded[0].scheduled_at, original_time, "保留歷史排程秒數。");
+    assert_eq!(loaded[0].initial_time_of_day, Some(hm(8, 49)));
+    assert_eq!(loaded[0].end_time_of_day, Span::days(1), "缺少結束時間預設24:00。");
+    let mut custom = loaded[0].clone();
+    custom.end_time_of_day = hm(6, 0);
+    store.save(&vec![custom.clone()]).unwrap();
+    assert_eq!(store.load().unwrap(), vec![custom], "跨日時段可往返保存。");
+}
 
-    wait_until(Duration::from_secs(5), || runner.call_count() >= 1);
-    sleep(200);
-    assert_eq!(runner.executed(), vec![CliKind::Codex], "只應呼叫未倒數且仍有額度的 Codex。");
-    assert_eq!(usage_reader.read_count(CliKind::Antigravity), 1, "仍應讀取 AGY 的倒數狀態。");
-
-    // 10 分鐘後再次讀取：每週額度仍用盡，依舊不呼叫 AGY。
-    wait_until(Duration::from_secs(5), || {
-        manager.get_jobs().unwrap().iter().all(|stored| stored.status == ScheduleStatus::Pending)
+#[test]
+fn schedule_manager_rechecks_window_before_worker_starts() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("worker.json"));
+    let end = local_wall_clock(2026, 10, 22, 18, 0, 0);
+    let clock = FakeClock::new(end - Span::seconds(1));
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, end - Span::seconds(1));
+    let runner = Arc::new(CountingCliRunner::default());
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), end - Span::seconds(1))]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
+    let move_clock = clock.clone();
+    let read = reader.clone();
+    manager.on_jobs_changed(move || {
+        if read.read_count(CliKind::Codex) > 0 {
+            move_clock.set(end);
+        }
     });
-    clock.set(now + Span::minutes(10));
-    manager.upsert(&manager.get_jobs().unwrap().into_iter().find(|stored| stored.id == countdown_id).unwrap()).unwrap();
-    wait_until(Duration::from_secs(5), || usage_reader.read_count(CliKind::Antigravity) >= 2);
-    sleep(200);
-    assert!(!runner.executed().contains(&CliKind::Antigravity), "額度用盡的 AGY 在重置前不應被呼叫。");
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) > 0));
+    sleep(150);
+    assert_eq!(runner.call_count(), 0, "排入執行後、工作執行緒啟動前到達結束時間，不可呼叫。");
+    assert_eq!(reader.read_count(CliKind::Codex), 1, "略過呼叫後不可在結束時間外重讀。");
+}
+
+#[test]
+fn schedule_manager_rechecks_window_after_start_event() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("launch.json"));
+    let end = local_wall_clock(2026, 10, 22, 18, 0, 0);
+    let clock = FakeClock::new(end - Span::seconds(1));
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, end - Span::seconds(1));
+    let runner = Arc::new(CountingCliRunner::default());
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), end - Span::seconds(1))]).unwrap();
+    let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
+    manager.on_activity_logged(move |event| {
+        if event.kind == CliActivityKind::Started {
+            clock.set(end);
+        }
+    });
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) > 0));
+    sleep(150);
+    assert_eq!(runner.call_count(), 0, "開始事件處理期間超過結束時間，真正呼叫前仍須攔下。");
+    assert_eq!(reader.read_count(CliKind::Codex), 1, "略過呼叫後不可在結束時間外重讀。");
 }
 
 #[test]
@@ -2151,6 +1694,7 @@ fn schedule_legacy_json_migration_is_stable() {
                 let object = value.as_object_mut().unwrap();
                 object.remove("ScheduleRevision");
                 object.remove("InitialTimeOfDay");
+                object.remove("EndTimeOfDay");
                 object.insert(
                     "recurrence".to_string(),
                     if numeric {
@@ -2192,7 +1736,7 @@ fn schedule_legacy_json_migration_is_stable() {
     let saved = std::fs::read(store.path()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
     assert!(json.as_array().unwrap().iter().all(|value| {
-        value["ScheduleRevision"] == 1
+        value["ScheduleRevision"] == aiwake_core::models::SCHEDULE_REVISION
             && value["Recurrence"] == "Interval"
             && value["Targets"] == serde_json::json!(["Codex", "Claude"])
     }));
@@ -2217,7 +1761,7 @@ fn schedule_migration_rejects_damage_without_overwriting() {
     let valid = ScheduledJob { enabled: false, ..ScheduledJob::default() }.to_json();
     let mut cases = vec!["null".to_string(), "[".to_string(), "{}".to_string(), "[{}]".to_string()];
     for (field, invalid) in [
-        ("ScheduleRevision", serde_json::json!(2)),
+        ("ScheduleRevision", serde_json::json!(aiwake_core::models::SCHEDULE_REVISION + 1)),
         ("ScheduleRevision", serde_json::json!(-1)),
         ("Recurrence", serde_json::json!(99)),
         ("Recurrence", serde_json::json!("Unknown")),
@@ -2226,6 +1770,9 @@ fn schedule_migration_rejects_damage_without_overwriting() {
         ("Id", serde_json::json!("無效")),
         ("ScheduledAt", serde_json::json!("無效")),
         ("InitialTimeOfDay", serde_json::json!("24:00:00")),
+        ("EndTimeOfDay", serde_json::json!("1.01:00:00")),
+        ("EndTimeOfDay", serde_json::json!("無效")),
+        ("EndTimeOfDay", serde_json::json!(null)),
         ("CustomData", serde_json::json!("不可遺失")),
         ("name", serde_json::json!("重複欄位")),
     ] {

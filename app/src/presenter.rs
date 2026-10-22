@@ -21,9 +21,18 @@ fn remaining_text(remaining: Span) -> String {
     }
 }
 
+pub fn time_of_day(value: Span) -> String {
+    format!("{:02}:{:02}", value.num_hours(), value.num_minutes() % 60)
+}
+
 pub fn time(job: &ScheduledJob) -> String {
-    // 只有自動模式：顯示下一次讀取倒數的時點。
-    format!("10分偵測 ({})", time::local_naive(&job.scheduled_at).format("%H:%M"))
+    let start = job.initial_time_of_day.unwrap_or_else(|| time::local_time_of_day(&job.scheduled_at));
+    format!(
+        "{}–{}{}",
+        time_of_day(start),
+        time_of_day(job.end_time_of_day),
+        if job.end_time_of_day < start { "（隔日）" } else { "" }
+    )
 }
 
 pub fn countdown(
@@ -49,7 +58,7 @@ pub fn countdown(
                     snapshots.get(target).filter(|snapshot| snapshot.availability == CliUsageAvailability::Available);
                 let state = match snapshot.and_then(|snapshot| snapshot.short_window_or_first()) {
                     None => "尚未讀取".to_string(),
-                    // 例如每週額度已用完：自動模式在重置前不會呼叫。
+                    // 例如每週額度已用完：排程在重置前不會呼叫。
                     Some(_) if exhausted_until(snapshot, now).is_some() => {
                         format!("額度用盡 {}", remaining_text(exhausted_until(snapshot, now).unwrap_or(*now) - *now))
                     }
@@ -124,8 +133,9 @@ mod tests {
     }
 
     #[test]
-    fn time_column_reflects_recurrence() {
-        assert_eq!(time(&job()), "10分偵測 (08:49)");
+    fn time_column_shows_detection_window() {
+        assert_eq!(time(&job()), "08:49–24:00");
+        assert_eq!(time(&ScheduledJob { end_time_of_day: Span::hours(6), ..job() }), "08:49–06:00（隔日）");
     }
 
     #[test]
