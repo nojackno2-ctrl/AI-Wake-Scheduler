@@ -66,6 +66,16 @@ fn fake_profile(output_path: &Path, delay_milliseconds: u64, exit_code: i32) -> 
     }
 }
 
+fn fake_current_runner(paths: AppDataPaths) -> ProcessCliRunner {
+    ProcessCliRunner::with_update_checker(paths, |tool, executable, _, _| aiwake_core::cli_update::CliUpdateStatus {
+        tool,
+        executable,
+        installed: Some("1.0.0".into()),
+        latest: Some("1.0.0".into()),
+        error: None,
+    })
+}
+
 fn hm(hours: i64, minutes: i64) -> Span {
     Span::hours(hours) + Span::minutes(minutes)
 }
@@ -1086,7 +1096,7 @@ fn cli_runner_safe_arguments() {
     let directory = TempDir::new();
     let output_path = directory.join("arguments.json");
     let paths = AppDataPaths::new(Some(&directory.join("data").to_string_lossy()));
-    let runner = ProcessCliRunner::new(paths);
+    let runner = fake_current_runner(paths);
     let cancel = CancelToken::none();
     let profile = fake_profile(&output_path, 0, 0);
     let message = "早安 & whoami";
@@ -1291,7 +1301,7 @@ fn schedule_manager_manual_parallel_run() {
             .cli_profiles
             .insert(kind, fake_profile(&directory.join(&format!("{kind}.json")), 1000, 0));
     }
-    let manager = manager_with(&store, Arc::new(ProcessCliRunner::new(paths)), &settings, None, None);
+    let manager = manager_with(&store, Arc::new(fake_current_runner(paths)), &settings, None, None);
     manager.initialize().unwrap();
     let item = ScheduledJob { enabled: false, ..job("手動平行", &directory, CliKind::ALL) };
     manager.upsert(&item).unwrap();
@@ -1341,11 +1351,11 @@ fn schedule_manager_obeys_daily_boundaries_and_resets() {
     clock.set(start);
     wake_scheduler(&manager, &directory);
     assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1));
-    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 2));
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 1));
     reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), start + Span::hours(5), true)], start));
     clock.set(start + Span::minutes(10));
     wake_scheduler(&manager, &directory);
-    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 3));
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 2));
     assert_eq!(runner.call_count(), 1, "倒數中不呼叫。");
     let reset = start + Span::hours(5);
     ready_usage(&reader, CliKind::Codex, reset);
@@ -1363,7 +1373,7 @@ fn schedule_manager_obeys_daily_boundaries_and_resets() {
 }
 
 #[test]
-fn schedule_manager_countdown_reset_preempts_ten_minute_probe() {
+fn schedule_manager_countdown_reset_waits_for_aligned_probe() {
     let _serial = serial();
     let directory = TempDir::new();
     let store = job_store(directory.join("early-reset.json"));
@@ -1383,8 +1393,54 @@ fn schedule_manager_countdown_reset_preempts_ten_minute_probe() {
     assert_eq!(reader.read_count(CliKind::Codex), 1, "未到重讀時刻時不可密集查詢。");
     clock.set(now + Span::minutes(3));
     wake_scheduler(&manager, &directory);
-    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "08:03倒數結束，無須等到08:10。");
+    sleep(100);
+    assert_eq!(runner.call_count(), 0, "08:03 不是設定刻度，不可提前呼叫。");
+    clock.set(now + Span::minutes(10));
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "08:10 才檢查並呼叫。");
     assert!(reader.read_count(CliKind::Codex) >= 2, "必須重讀確認，而非直接依舊快照呼叫。");
+}
+
+#[test]
+fn schedule_manager_configurable_intervals_share_check_and_call_slots() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("slots.json"));
+    let now = local_wall_clock(2026, 10, 22, 8, 3, 0);
+    let clock = FakeClock::new(now);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, now);
+    ready_usage(&reader, CliKind::Claude, now);
+    let runner = Arc::new(CountingCliRunner::default());
+    store
+        .save(&vec![
+            ScheduledJob {
+                probe_interval_minutes: 5,
+                ..timed_job(&directory, CliKind::Codex, hm(8, 3), hm(18, 0), now)
+            },
+            ScheduledJob {
+                probe_interval_minutes: 15,
+                ..timed_job(&directory, CliKind::Claude, hm(8, 3), hm(18, 0), now)
+            },
+        ])
+        .unwrap();
+    let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
+    manager.initialize().unwrap();
+    sleep(100);
+    assert_eq!(reader.read_count(CliKind::Codex), 0, "非刻度啟動不可檢查。");
+    assert_eq!(runner.call_count(), 0);
+    for (minute, calls, codex_reads, claude_reads) in [(5, 1, 1, 0), (10, 2, 2, 0), (15, 4, 3, 1)] {
+        clock.set(local_wall_clock(2026, 10, 22, 8, minute, 0));
+        wake_scheduler(&manager, &directory);
+        assert!(wait_until(Duration::from_secs(3), || runner.call_count() == calls));
+        sleep(100);
+        assert_eq!(reader.read_count(CliKind::Codex), codex_reads);
+        assert_eq!(reader.read_count(CliKind::Claude), claude_reads);
+        wake_scheduler(&manager, &directory);
+        sleep(100);
+        assert_eq!(runner.call_count(), calls, "同刻度不得重複呼叫。");
+    }
+    manager.shutdown();
 }
 
 #[test]
@@ -1408,7 +1464,11 @@ fn schedule_manager_reset_survives_ui_snapshot_refresh() {
     reader.latest.lock().unwrap().insert(CliKind::Codex, refreshed);
     clock.set(reset);
     wake_scheduler(&manager, &directory);
-    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "UI先更新觀測時間，仍應在08:03立即重讀。");
+    sleep(100);
+    assert_eq!(runner.call_count(), 0, "UI 更新快照也不得在非刻度呼叫。");
+    clock.set(now + Span::minutes(10));
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "下一刻度重新檢查。");
     assert!(reader.read_count(CliKind::Codex) >= 2);
 }
 
@@ -1463,14 +1523,19 @@ fn schedule_manager_cross_midnight_and_read_past_end() {
     assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1));
     manager.shutdown();
     let end = local_wall_clock(2026, 10, 23, 6, 0, 0);
-    let clock = FakeClock::new(end - Span::seconds(1));
+    let clock = FakeClock::new(end - Span::minutes(1));
     let reader = Arc::new(FakeCliUsageReader::default());
     ready_usage(&reader, CliKind::Codex, end);
     let move_clock = clock.clone();
     *reader.on_read.lock().unwrap() = Some(Box::new(move || move_clock.set(end)));
     let runner = Arc::new(CountingCliRunner::default());
     let store = job_store(directory.join("slow-read.json"));
-    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(22, 0), hm(6, 0), end - Span::seconds(1))]).unwrap();
+    store
+        .save(&vec![ScheduledJob {
+            probe_interval_minutes: 1,
+            ..timed_job(&directory, CliKind::Codex, hm(22, 0), hm(6, 0), end - Span::minutes(1))
+        }])
+        .unwrap();
     let manager = manager_with(&store, runner.clone(), &settings, Some(reader.clone()), Some(clock));
     manager.initialize().unwrap();
     assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 1));
@@ -1507,7 +1572,7 @@ fn schedule_manager_boundaries_and_state() {
     let paths = AppDataPaths::new(Some(&directory.join("data").to_string_lossy()));
     let jobs = job_store(paths.jobs_file());
     let settings = shared_settings();
-    let runner = Arc::new(ProcessCliRunner::new(paths));
+    let runner = Arc::new(fake_current_runner(paths));
 
     let manager = manager_with(&jobs, runner, &settings, None, None);
     manager.initialize().unwrap();
@@ -1619,11 +1684,16 @@ fn schedule_manager_rechecks_window_before_worker_starts() {
     let directory = TempDir::new();
     let store = job_store(directory.join("worker.json"));
     let end = local_wall_clock(2026, 10, 22, 18, 0, 0);
-    let clock = FakeClock::new(end - Span::seconds(1));
+    let clock = FakeClock::new(end - Span::minutes(1));
     let reader = Arc::new(FakeCliUsageReader::default());
-    ready_usage(&reader, CliKind::Codex, end - Span::seconds(1));
+    ready_usage(&reader, CliKind::Codex, end - Span::minutes(1));
     let runner = Arc::new(CountingCliRunner::default());
-    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), end - Span::seconds(1))]).unwrap();
+    store
+        .save(&vec![ScheduledJob {
+            probe_interval_minutes: 1,
+            ..timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), end - Span::minutes(1))
+        }])
+        .unwrap();
     let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
     let move_clock = clock.clone();
     let read = reader.clone();
@@ -1645,11 +1715,16 @@ fn schedule_manager_rechecks_window_after_start_event() {
     let directory = TempDir::new();
     let store = job_store(directory.join("launch.json"));
     let end = local_wall_clock(2026, 10, 22, 18, 0, 0);
-    let clock = FakeClock::new(end - Span::seconds(1));
+    let clock = FakeClock::new(end - Span::minutes(1));
     let reader = Arc::new(FakeCliUsageReader::default());
-    ready_usage(&reader, CliKind::Codex, end - Span::seconds(1));
+    ready_usage(&reader, CliKind::Codex, end - Span::minutes(1));
     let runner = Arc::new(CountingCliRunner::default());
-    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), end - Span::seconds(1))]).unwrap();
+    store
+        .save(&vec![ScheduledJob {
+            probe_interval_minutes: 1,
+            ..timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), end - Span::minutes(1))
+        }])
+        .unwrap();
     let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
     manager.on_activity_logged(move |event| {
         if event.kind == CliActivityKind::Started {
@@ -2122,11 +2197,115 @@ fn cli_update_version_compare() {
     assert!(!status(Some("0.163.0"), Some("0.163.0")).update_available());
     assert!(!status(Some("0.164.0"), Some("0.163.0")).update_available(), "本機較新（預覽版）不應提示。");
     assert!(!status(None, Some("0.163.0")).update_available(), "讀不到本機版本時不應提示。");
+    assert!(status(Some("0.163.0"), Some("0.163.0")).require_current().is_ok());
+    assert!(status(Some("0.164.0"), Some("0.163.0")).require_current().is_ok());
+    assert!(status(None, Some("0.163.0")).require_current().is_err());
     assert_eq!(status(Some("0.160.0"), Some("0.163.0")).describe(), "Codex CLI：0.160.0 → 0.163.0（有新版本）");
 
     let update = aiwake_core::cli_update::create_update_start_info(CliTool::Claude, "claude", "").unwrap();
     assert!(update.arguments.contains("update") && update.arguments.contains("|| pause"), "更新失敗時應暫停主控台。");
     assert!(!update.create_no_window, "更新必須在看得見的主控台執行。");
+}
+
+#[test]
+fn cli_runner_requires_verified_current_version() {
+    use aiwake_core::cli_update::{CliTool, CliUpdateStatus};
+    let directory = TempDir::new();
+    for &kind in CliKind::ALL {
+        let phase = Arc::new(AtomicUsize::new(0));
+        let checks = phase.clone();
+        let output = directory.join(&format!("gate-{kind}.json"));
+        let runner = ProcessCliRunner::with_update_checker(
+            AppDataPaths::new(Some(&directory.join("data").to_string_lossy())),
+            move |tool, executable, _, _| {
+                assert_eq!(tool, CliTool::from_kind(kind));
+                let index = checks.fetch_add(1, Ordering::SeqCst);
+                CliUpdateStatus {
+                    tool,
+                    executable,
+                    installed: if index == 2 { None } else { Some("1.0.0".into()) },
+                    latest: if index == 1 {
+                        None
+                    } else if index < 4 {
+                        Some("2.0.0".into())
+                    } else {
+                        Some("1.0.0".into())
+                    },
+                    error: (index == 3).then(|| "網路查詢失敗".into()),
+                }
+            },
+        );
+        for _ in 0..4 {
+            let result = runner.run(
+                kind,
+                &fake_profile(&output, 0, 0),
+                "測試",
+                &directory.text(),
+                Duration::from_secs(10),
+                true,
+                &CancelToken::none(),
+                None,
+            );
+            assert!(!result.succeeded && result.error.contains("已阻擋 CLI 呼叫"));
+            assert_eq!(result.exit_code, None, "被阻擋時不可啟動模型呼叫程序。");
+            assert!(!output.exists(), "舊版、未知版本與查詢失敗均不可送出提示。");
+            assert!(Path::new(&result.log_path).is_file());
+        }
+        let result = runner.run(
+            kind,
+            &fake_profile(&output, 0, 0),
+            "測試",
+            &directory.text(),
+            Duration::from_secs(10),
+            true,
+            &CancelToken::none(),
+            None,
+        );
+        assert!(result.succeeded, "確認更新後可呼叫：{}", result.error);
+        assert!(output.is_file());
+        assert_eq!(phase.load(Ordering::SeqCst), 5, "每次呼叫皆重新確認，不沿用舊快取。");
+    }
+}
+
+#[test]
+fn aligned_intervals_and_legacy_defaults() {
+    use calculator::next_aligned_detection as next;
+    let now = local_wall_clock(2026, 10, 22, 8, 3, 12);
+    for (interval, hour, minute) in [(5, 8, 5), (15, 8, 15), (60, 9, 0), (7, 8, 7)] {
+        assert_eq!(
+            next(hm(8, 3), hm(18, 0), &now, interval, true).unwrap(),
+            local_wall_clock(2026, 10, 22, hour, minute, 0)
+        );
+    }
+    let boundary = local_wall_clock(2026, 10, 22, 8, 15, 0);
+    assert_eq!(next(hm(8, 3), hm(18, 0), &boundary, 15, true).unwrap(), boundary);
+    assert_eq!(next(hm(8, 3), hm(18, 0), &boundary, 15, false).unwrap(), boundary + Span::minutes(15));
+    let late = local_wall_clock(2026, 10, 22, 23, 59, 0);
+    assert_eq!(next(hm(22, 0), hm(6, 0), &late, 5, false).unwrap(), local_wall_clock(2026, 10, 23, 0, 0, 0));
+    assert_eq!(
+        next(hm(8, 3), hm(18, 0), &local_wall_clock(2026, 10, 22, 17, 59, 0), 15, false).unwrap(),
+        local_wall_clock(2026, 10, 23, 8, 15, 0)
+    );
+    assert!(next(hm(8, 1), hm(8, 2), &now, 15, true).is_err(), "沒有刻度的時段不可建立。");
+    for invalid in [0, -1, 61] {
+        assert!(next(hm(0, 0), hm(24, 0), &now, invalid, true).is_err());
+    }
+    let job = ScheduledJob { probe_interval_minutes: 5, ..ScheduledJob::default() };
+    assert_eq!(ScheduledJob::from_json(&job.to_json()).unwrap().probe_interval_minutes, 5);
+    let mut legacy = job.to_json();
+    legacy.as_object_mut().unwrap().remove("ProbeIntervalMinutes");
+    legacy["ScheduleRevision"] = 2.into();
+    assert_eq!(ScheduledJob::from_json(&legacy).unwrap().probe_interval_minutes, 10);
+}
+
+#[test]
+fn cli_version_failure_cannot_pass_with_version_text() {
+    let directory = TempDir::new();
+    let script = directory.join("version-failed.cmd");
+    std::fs::write(&script, "@echo off\r\necho 999.0.0\r\nexit /b 7\r\n").unwrap();
+    let result =
+        aiwake_core::cli_update::installed_version(&script.to_string_lossy(), &directory.text(), &CancelToken::none());
+    assert!(result.is_err_and(|error| error.contains("結束碼 7")), "版本程序失敗時，即使印出版本號也不可放行。");
 }
 
 #[test]

@@ -2,10 +2,46 @@
 
 use crate::error::{CoreError, CoreResult};
 use crate::time::{self, Moment, Span};
+use chrono::Timelike;
 
-/// 偵測時段內讀取所有目標倒數狀態的間隔（10 分鐘）。
-pub fn auto_probe_interval() -> Span {
-    Span::minutes(10)
+pub fn validate_interval(minutes: i32) -> CoreResult<()> {
+    if !(1..=60).contains(&minutes) {
+        return Err(CoreError::OutOfRange("檢查與呼叫間隔必須為 1 至 60 分鐘。".into()));
+    }
+    Ok(())
+}
+
+/// 此分鐘是否為整點起算的刻度；秒數容許背景工作正常啟動的延遲。
+pub fn aligned_minute(now: &Moment, minutes: i32) -> bool {
+    validate_interval(minutes).is_ok() && time::local_naive(now).minute().is_multiple_of(minutes as u32)
+}
+
+/// 下一個有效刻度；inclusive 容許目前刻度所在分鐘，否則取之後的刻度。
+pub fn next_aligned_detection(
+    start: Span,
+    end: Span,
+    now: &Moment,
+    minutes: i32,
+    inclusive: bool,
+) -> CoreResult<Moment> {
+    validate_interval(minutes)?;
+    validate_window(start, end)?;
+    let local = time::local_naive(now);
+    let mut candidate = local
+        .with_second(0)
+        .and_then(|value| value.with_nanosecond(0))
+        .ok_or_else(|| CoreError::InvalidOperation("無法計算分鐘刻度。".into()))?;
+    if !inclusive {
+        candidate += Span::minutes(1);
+    }
+    for _ in 0..=4320 {
+        let moment = time::from_local_naive(candidate);
+        if candidate.minute().is_multiple_of(minutes as u32) && in_detection_window(start, end, &moment) {
+            return Ok(if inclusive && moment < *now { *now } else { moment });
+        }
+        candidate += Span::minutes(1);
+    }
+    Err(CoreError::InvalidArgument("此時段內沒有符合間隔的分鐘刻度，請調整時間或間隔。".into()))
 }
 
 /// 每日偵測時段：開始包含、結束不包含；結束可為 24:00，較早則跨午夜。

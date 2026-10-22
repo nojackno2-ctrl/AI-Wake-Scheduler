@@ -235,6 +235,7 @@ fn main_window_editor_settings_and_tray() {
     assert_eq!(text_of(control(editor, main::ID_NAME)), "AI 倒數喚醒");
     assert_eq!(text_of(control(editor, main::ID_MESSAGE)), "早安");
     assert_eq!(text_of(control(editor, main::ID_END_TIME)), "24:00");
+    assert_eq!(text_of(control(editor, main::ID_PROBE_INTERVAL)), "10");
     assert_eq!(text_of(save_button), "建立排程");
     for index in 0..CliKind::ALL.len() as i32 {
         assert!(is_checked(control(editor, main::ID_TARGET_BASE + index)), "新排程預設應勾選全部 CLI。");
@@ -259,6 +260,7 @@ fn main_window_editor_settings_and_tray() {
     // ── 建立排程（先取消啟用，避免真的送出訊息）──
     set_checked(control(editor, main::ID_ENABLED), false);
     set_text(control(editor, main::ID_END_TIME), "23:30");
+    set_text(control(editor, main::ID_PROBE_INTERVAL), "5");
     set_text(control(editor, main::ID_NAME), "測試排程");
     notify(editor, main::ID_SAVE, BN_CLICKED);
     wait_until("排程出現在清單", short, || w32::send(list, LVM_GETITEMCOUNT, 0, 0) == 1);
@@ -270,6 +272,7 @@ fn main_window_editor_settings_and_tray() {
     assert_eq!(created[0].recurrence, ScheduleRecurrence::Interval, "舊資料週期僅作相容用途。");
     assert_eq!(created[0].end_time_of_day, aiwake_core::Span::hours(23) + aiwake_core::Span::minutes(30));
     assert!(created[0].initial_time_of_day.is_some(), "排程應保存開始時間。");
+    assert_eq!(created[0].probe_interval_minutes, 5);
     assert!(!created[0].enabled && created[0].status == ScheduleStatus::Disabled, "取消啟用的排程應為已停用。");
     assert_eq!(created[0].targets, catalog::kinds(), "新排程預設應依畫面順序包含全部 CLI。");
     assert_eq!(created[0].message, "早安");
@@ -286,11 +289,14 @@ fn main_window_editor_settings_and_tray() {
     assert_eq!(modified[0].targets, &catalog::kinds()[1..], "取消勾選的 CLI 不應保留在目標中。");
     assert!(!modified[0].enabled, "修改後仍應維持停用。");
     assert_eq!(modified[0].end_time_of_day, created[0].end_time_of_day, "修改其他欄位應保留結束時間。");
+    assert_eq!(modified[0].probe_interval_minutes, 5);
     // 新增清空後，再用清單原生鍵盤選取既有排程，確認結束時間還原。
     notify(window, main::ID_NEW, BN_CLICKED);
     wait_until("新增還原結束時間", short, || text_of(control(editor, main::ID_END_TIME)) == "24:00");
+    assert_eq!(text_of(control(editor, main::ID_PROBE_INTERVAL)), "10");
     w32::send(list, 0x0100, 0x24, 0);
     wait_until("重新選取還原結束時間", short, || text_of(control(editor, main::ID_END_TIME)) == "23:30");
+    assert_eq!(text_of(control(editor, main::ID_PROBE_INTERVAL)), "5");
     w32::send(editor, WM_VSCROLL, 7, 0);
     screenshot(window, "02-editor-bottom");
     w32::send(editor, WM_VSCROLL, 6, 0);
@@ -395,7 +401,7 @@ echo FAKE-CLI-OK
     assert!(!saved.start_with_windows, "隔離模式不得啟用正式的開機啟動。");
     assert!(saved.cli_profiles.values().all(|profile| Path::new(&profile.executable) == fake_cli));
 
-    // ── 立即執行：確認對話框 → 平行執行 → 終端機輸出 → 結果 ──
+    // ── 立即執行：確認對話框 → 未知版本阻擋 → 終端機錯誤 → 結果 ──
     wait_until("設定儲存後的額度讀取完成", long, || text_of(refresh_button) == "重新讀取倒數");
     notify(window, main::ID_RUN_NOW, BN_CLICKED);
     let confirm = wait_for("立即執行的確認對話框", short, || message_box(process_id));
@@ -413,13 +419,14 @@ echo FAKE-CLI-OK
     let finished = load_jobs(&data_directory).remove(0);
     assert!(finished.enabled, "立即執行會啟用排程。");
     for result in &finished.last_results {
-        assert!(result.succeeded && result.exit_code == Some(0), "{} 應成功：{}", result.cli, result.error);
+        assert!(!result.succeeded && result.exit_code.is_none(), "{} 未確認版本時應阻擋：{}", result.cli, result.error);
+        assert!(result.error.contains("已阻擋 CLI 呼叫"));
         assert!(Path::new(&result.log_path).is_file(), "每次執行都應留下日誌。");
     }
     let terminal = control(window, main::ID_TERMINAL_OUTPUT);
     wait_until("終端機顯示執行過程", short, || {
         let output = text_of(terminal);
-        output.matches("✓").count() == expected_runs && output.contains("FAKE-CLI-OK")
+        output.matches("✗").count() == expected_runs && output.contains("已阻擋 CLI 呼叫")
     });
     let output = text_of(terminal);
     assert!(output.contains("▶ Codex 開始執行，訊息：早安"), "終端機應顯示開始事件：{output}");
@@ -428,7 +435,7 @@ echo FAKE-CLI-OK
     notify(window, main::ID_SHOW_RESULT, BN_CLICKED);
     let results = wait_for("執行結果對話框", short, || message_box(process_id));
     let summary = text_of(control(results, 0xFFFF));
-    assert!(summary.contains("Codex CLI：成功") && summary.contains("結束碼：0"), "結果摘要不正確：{summary}");
+    assert!(summary.contains("Codex CLI：失敗") && summary.contains("已阻擋 CLI 呼叫"), "結果摘要不正確：{summary}");
     w32::post(results, WM_CLOSE, 0, 0);
     wait_until("結果對話框關閉", short, || message_box(process_id).is_none());
 

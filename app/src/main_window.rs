@@ -67,6 +67,7 @@ pub const ID_CHECK_UPDATES: i32 = 107;
 pub const ID_NAME: i32 = 110;
 pub const ID_TIME: i32 = 112;
 pub const ID_END_TIME: i32 = 111;
+pub const ID_PROBE_INTERVAL: i32 = 116;
 pub const ID_MESSAGE: i32 = 113;
 pub const ID_WORKING_DIRECTORY: i32 = 114;
 pub const ID_BROWSE: i32 = 115;
@@ -115,7 +116,7 @@ const CDRF_NOTIFYITEMDRAW: isize = 0x20;
 
 const EMPTY_STATE_TEXT: &str = "目前沒有排程\r\n選擇下方的「新增」，建立每天自動喚醒。";
 const HEADER_SUBTITLE: &str = "每天從開始時間偵測至結束時間，沒有倒數就呼叫勾選的 CLI（預設訊息：早安）";
-const EDITOR_NOTE: &str = "每天在開始至結束時段內每 10 分鐘讀取倒數，已知倒數結束時立即重讀；未倒數即呼叫，倒數中、額度用盡或讀取失敗則等待。結束可填 24:00，早於開始則跨午夜。節省 Token 模式會停用工具、MCP 伺服器與專案說明檔，並以最低推理量要求最短回覆，把每次喚醒的用量壓到接近下限。";
+const EDITOR_NOTE: &str = "檢查與呼叫共用整點刻度：間隔 5 分鐘為每小時 00、05、10…分；15 分鐘為 00、15、30、45 分。僅在開始至結束時段內檢查，未倒數且 CLI 版本通過才呼叫，其餘等下一刻度。結束可填 24:00，早於開始則跨午夜。節省 Token 模式停用工具與 MCP，並使用最低推理量。";
 /// 內容區至少這麼寬時改用三欄（清單｜排程內容｜額度看板）。
 const WIDE_LAYOUT_WIDTH: i32 = 940;
 /// 編輯面板至少這麼寬時「排程內容」與「額度看板」左右並排。
@@ -202,6 +203,7 @@ pub struct MainWindow {
     name_input: HWND,
     time_input: HWND,
     end_time_input: HWND,
+    interval_input: HWND,
     message_input: HWND,
     working_directory_input: HWND,
     browse_button: HWND,
@@ -327,6 +329,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
     let name_input = ui::create_edit(editor, ID_NAME, 0);
     let time_input = ui::create_time_picker(editor, ID_TIME);
     let end_time_input = ui::create_edit(editor, ID_END_TIME, 5);
+    let interval_input = ui::create_edit(editor, ID_PROBE_INTERVAL, 2);
     let message_input = ui::create_edit(editor, ID_MESSAGE, 50);
     let working_directory_input = ui::create_edit(editor, ID_WORKING_DIRECTORY, 0);
     let browse_button = theme::create_button(editor, ID_BROWSE, "瀏覽…", ButtonVariant::Secondary);
@@ -369,6 +372,7 @@ pub fn create(host: Arc<AppHost>, icon: HICON, start_minimized: bool, title_suff
         name_input,
         time_input,
         end_time_input,
+        interval_input,
         message_input,
         working_directory_input,
         browse_button,
@@ -520,6 +524,7 @@ impl MainWindow {
             self.name_input,
             self.time_input,
             self.end_time_input,
+            self.interval_input,
             self.message_input,
             self.working_directory_input,
             self.browse_button,
@@ -814,7 +819,7 @@ impl MainWindow {
         });
         y += section_height + s(12);
 
-        let label_width = ["名稱", "開始時間", "結束時間", "訊息", "工作目錄", "傳送至"]
+        let label_width = ["名稱", "開始時間", "結束時間", "間隔（分）", "訊息", "工作目錄", "傳送至"]
             .iter()
             .map(|text| fonts.table_header.measure(text).0)
             .max()
@@ -836,6 +841,7 @@ impl MainWindow {
             ("名稱", self.name_input),
             ("開始時間", self.time_input),
             ("結束時間", self.end_time_input),
+            ("間隔（分）", self.interval_input),
             ("訊息", self.message_input),
         ] {
             row_label(&mut labels, label, y, input_height);
@@ -1415,6 +1421,13 @@ impl MainWindow {
     fn save_schedule(&self) {
         let (hour, minute) = ui::time_picker_get(self.time_input);
         let time_of_day = Span::hours(hour as i64) + Span::minutes(minute as i64);
+        let interval = match w32::get_text(self.interval_input).trim().parse::<i32>() {
+            Ok(value) if calculator::validate_interval(value).is_ok() => value,
+            _ => {
+                self.show_error("檢查與呼叫間隔請輸入 1 至 60 分鐘，依每小時整點刻度執行。");
+                return;
+            }
+        };
 
         let end_text = w32::get_text(self.end_time_input);
         let end_time = if end_text.trim() == "24:00" {
@@ -1426,7 +1439,8 @@ impl MainWindow {
             .ok_or_else(|| CoreError::InvalidArgument("結束時間請輸入 HH:mm，範圍 00:00 至 24:00。".to_string()))
             .and_then(|end| {
                 calculator::validate_window(time_of_day, end)?;
-                calculator::next_detection(time_of_day, end, &time::now(), Span::zero()).map(|next| (next, end))
+                calculator::next_aligned_detection(time_of_day, end, &time::now(), interval, true)
+                    .map(|next| (next, end))
             })
             .and_then(|(scheduled_at, end_time_of_day)| {
                 let job = ScheduledJob {
@@ -1435,6 +1449,7 @@ impl MainWindow {
                     scheduled_at,
                     initial_time_of_day: Some(time_of_day),
                     end_time_of_day,
+                    probe_interval_minutes: interval,
                     message: w32::get_text(self.message_input).trim().to_string(),
                     working_directory: w32::get_text(self.working_directory_input).trim().to_string(),
                     targets: self.selected_targets(),
@@ -1539,6 +1554,7 @@ impl MainWindow {
             (initial_time.num_minutes() % 60) as u32,
         );
         w32::set_text(self.end_time_input, &presenter::time_of_day(job.end_time_of_day));
+        w32::set_text(self.interval_input, &job.probe_interval_minutes.to_string());
         w32::set_text(self.message_input, &job.message);
         w32::set_text(self.working_directory_input, &job.working_directory);
         for (kind, check) in &self.target_checks {
@@ -1562,6 +1578,7 @@ impl MainWindow {
         w32::set_text(self.name_input, aiwake_core::models::DEFAULT_JOB_NAME);
         ui::time_picker_set(self.time_input, proposed.hour(), proposed.minute());
         w32::set_text(self.end_time_input, "24:00");
+        w32::set_text(self.interval_input, "10");
         w32::set_text(self.message_input, aiwake_core::models::DEFAULT_JOB_MESSAGE);
         w32::set_text(self.working_directory_input, &self.host.wakeup_workspace());
         for (_, check) in &self.target_checks {
@@ -1707,11 +1724,15 @@ impl MainWindow {
             self.cli_updates.borrow().iter().filter(|status| status.update_available()).cloned().collect();
         if available.is_empty() {
             if interactive {
-                self.set_status("所有 CLI 都已是最新版本", palette().success);
+                if self.cli_updates.borrow().iter().all(|status| status.require_current().is_ok()) {
+                    self.set_status("所有 CLI 都已確認版本，可呼叫", palette().success);
+                } else {
+                    self.set_status("部分 CLI 無法確認版本，已阻擋其呼叫；請檢查更新結果。", palette().danger);
+                }
             }
         } else {
             let summary = available.iter().map(|status| status.describe()).collect::<Vec<_>>().join("；");
-            self.set_status(&format!("CLI 有新版本可更新：{summary}"), palette().danger);
+            self.set_status(&format!("必須更新才能呼叫：{summary}"), palette().danger);
         }
 
         if interactive {
@@ -1745,7 +1766,12 @@ impl MainWindow {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            tray::balloon(self.hwnd, "CLI 有新版本", &format!("{lines}\n點這則通知查看並更新。"), false);
+            tray::balloon(
+                self.hwnd,
+                "CLI 必須更新",
+                &format!("{lines}\n更新前已阻擋呼叫。點這則通知查看並更新。"),
+                false,
+            );
         }
     }
 
@@ -1759,9 +1785,14 @@ impl MainWindow {
         let lines = statuses.iter().map(CliUpdateStatus::describe).collect::<Vec<_>>().join("\r\n");
         let available: Vec<CliUpdateStatus> = statuses.into_iter().filter(|status| status.update_available()).collect();
         if available.is_empty() {
+            let message = if self.cli_updates.borrow().iter().all(|status| status.require_current().is_ok()) {
+                "所有 CLI 都已確認版本，可呼叫。"
+            } else {
+                "無法確認版本的 CLI 已阻擋呼叫，請排除上述錯誤後重新檢查。"
+            };
             w32::message_box(
                 Some(self.hwnd),
-                &format!("{lines}\r\n\r\n所有 CLI 都已是最新版本。"),
+                &format!("{lines}\r\n\r\n{message}"),
                 APP_TITLE,
                 w32::MB_OK | w32::MB_ICONINFORMATION,
             );
@@ -1775,7 +1806,7 @@ impl MainWindow {
         let answer = w32::message_box(
             Some(self.hwnd),
             &format!(
-                "{lines}\r\n\r\n要開啟主控台執行各 CLI 自己的更新指令嗎？\r\n（將執行：{commands}；更新期間請勿關閉主控台）"
+                "{lines}\r\n\r\n上述舊版 CLI 更新前禁止手動與排程呼叫。\r\n要開啟主控台執行各 CLI 自己的更新指令嗎？\r\n（將執行：{commands}；更新期間請勿關閉主控台）"
             ),
             APP_TITLE,
             w32::MB_YESNO | w32::MB_ICONQUESTION,

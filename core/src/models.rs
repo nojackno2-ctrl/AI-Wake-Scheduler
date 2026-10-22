@@ -472,7 +472,7 @@ pub const DEFAULT_JOB_NAME: &str = "AI 倒數喚醒";
 pub const DEFAULT_JOB_MESSAGE: &str = "早安";
 
 /// 排程資料遷移版本；未標記的舊資料視為版本 0。
-pub const SCHEDULE_REVISION: i32 = 2;
+pub const SCHEDULE_REVISION: i32 = 3;
 
 pub fn user_profile_directory() -> String {
     std::env::var("USERPROFILE").unwrap_or_default()
@@ -491,6 +491,7 @@ pub struct ScheduledJob {
     pub recurrence: ScheduleRecurrence,
     pub initial_time_of_day: Option<Span>,
     pub end_time_of_day: Span,
+    pub probe_interval_minutes: i32,
     pub enabled: bool,
     pub status: ScheduleStatus,
     pub started_at: Option<Moment>,
@@ -511,6 +512,7 @@ impl Default for ScheduledJob {
             recurrence: ScheduleRecurrence::Interval,
             initial_time_of_day: None,
             end_time_of_day: Span::days(1),
+            probe_interval_minutes: 10,
             enabled: true,
             status: ScheduleStatus::Pending,
             started_at: None,
@@ -544,6 +546,7 @@ impl JsonModel for ScheduledJob {
             "Recurrence": self.recurrence.name(),
             "InitialTimeOfDay": self.initial_time_of_day.map(time::format_span),
             "EndTimeOfDay": time::format_span(self.end_time_of_day),
+            "ProbeIntervalMinutes": self.probe_interval_minutes,
             "Enabled": self.enabled,
             "Status": self.status.name(),
             "StartedAt": self.started_at.as_ref().map(time::format_json_moment),
@@ -557,6 +560,8 @@ impl JsonModel for ScheduledJob {
         let mut job = ScheduledJob { schedule_revision: 0, ..ScheduledJob::default() };
         validate_fields(object, job.to_json())?;
         read_i32(object, "ScheduleRevision", &mut job.schedule_revision)?;
+        read_i32(object, "ProbeIntervalMinutes", &mut job.probe_interval_minutes)?;
+        crate::calculator::validate_interval(job.probe_interval_minutes).map_err(|error| error.to_string())?;
         if !(0..=SCHEDULE_REVISION).contains(&job.schedule_revision) {
             return Err("不支援此排程資料版本，請使用較新的程式。".to_string());
         }

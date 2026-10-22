@@ -2,7 +2,7 @@
 //!
 //! 三個 CLI 都有自己的 `update` 子命令，但都沒有「只檢查不安裝」的模式，
 //! 所以這裡自行比對：本機版本由 `<cli> --version` 取得，最新版本向各 CLI 的發布來源查詢。
-//! 本程式只負責提示與開啟更新主控台，實際安裝一律交給 CLI 自己的 `update`。
+//! 呼叫前強制確認版本；實際安裝交給 CLI 自己的 `update`。
 
 use std::cmp::Ordering;
 use std::sync::LazyLock;
@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use regex::Regex;
 
-use crate::error::CoreResult;
+use crate::error::{CoreError, CoreResult};
 use crate::http::{self, HttpRequest};
 use crate::login::{self, LoginStartInfo};
 use crate::models::CliKind;
@@ -31,6 +31,14 @@ pub enum CliTool {
 }
 
 impl CliTool {
+    pub fn from_kind(kind: CliKind) -> Self {
+        match kind {
+            CliKind::Antigravity | CliKind::AntigravityClaude | CliKind::AntigravityArgon => Self::Antigravity,
+            CliKind::Codex => Self::Codex,
+            CliKind::Claude => Self::Claude,
+        }
+    }
+
     pub const ALL: [CliTool; 3] = [CliTool::Antigravity, CliTool::Codex, CliTool::Claude];
 
     pub fn display_name(self) -> &'static str {
@@ -78,6 +86,22 @@ pub struct CliUpdateStatus {
 }
 
 impl CliUpdateStatus {
+    /// 只有成功確認本機版本不低於最新版本時才允許呼叫。
+    pub fn require_current(&self) -> CoreResult<()> {
+        if self.executable.is_some()
+            && self.installed.is_some()
+            && self.latest.is_some()
+            && self.error.is_none()
+            && !self.update_available()
+        {
+            return Ok(());
+        }
+        Err(CoreError::InvalidOperation(format!(
+            "已阻擋 CLI 呼叫：{}。必須先完成更新並確認版本；請使用「檢查 CLI 更新…」後重試。",
+            self.describe()
+        )))
+    }
+
     pub fn update_available(&self) -> bool {
         match (&self.installed, &self.latest) {
             (Some(installed), Some(latest)) => compare_versions(latest, installed) == Ordering::Greater,
@@ -129,6 +153,9 @@ pub fn parse_latest_version(body: &str) -> Option<String> {
 pub fn installed_version(executable: &str, working_directory: &str, cancel: &CancelToken) -> Result<String, String> {
     let execution = process::execute(executable, &["--version"], working_directory, VERSION_TIMEOUT, cancel, None)
         .map_err(|error| error.message().to_string())?;
+    if execution.timed_out || execution.exit_code != 0 {
+        return Err(format!("版本檢查失敗（結束碼 {}，逾時：{}）", execution.exit_code, execution.timed_out));
+    }
     let output = format!("{}\n{}", execution.standard_output, execution.standard_error);
     parse_version(&output).ok_or_else(|| format!("無法辨識版本輸出（結束碼 {}）", execution.exit_code))
 }

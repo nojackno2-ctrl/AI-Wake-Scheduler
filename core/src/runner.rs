@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::cli_update::{self, CliTool, CliUpdateStatus};
 use crate::command_builder;
 use crate::error::{CoreError, CoreResult};
 use crate::locator;
@@ -50,11 +51,22 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// 實際的程序啟動交給 `process`，日誌交給 `CliLogWriter`。
 pub struct ProcessCliRunner {
     log: CliLogWriter,
+    update_checker: Box<UpdateChecker>,
 }
+
+type UpdateChecker = dyn Fn(CliTool, Option<String>, &str, &CancelToken) -> CliUpdateStatus + Send + Sync;
 
 impl ProcessCliRunner {
     pub fn new(paths: AppDataPaths) -> Self {
-        Self { log: CliLogWriter::new(paths) }
+        Self::with_update_checker(paths, cli_update::check)
+    }
+
+    /// 注入版本來源供隔離測試使用；放行規則仍由執行器統一套用。
+    pub fn with_update_checker(
+        paths: AppDataPaths,
+        checker: impl Fn(CliTool, Option<String>, &str, &CancelToken) -> CliUpdateStatus + Send + Sync + 'static,
+    ) -> Self {
+        Self { log: CliLogWriter::new(paths), update_checker: Box::new(checker) }
     }
 }
 
@@ -81,6 +93,17 @@ impl CliRunner for ProcessCliRunner {
                 CoreError::FileNotFound(format!("找不到 {}。請在設定中指定可執行檔。", kind.display_name()))
             })?;
             result.executable_path = executable.clone();
+
+            if cancel.is_canceled() {
+                return Err(CoreError::Canceled);
+            }
+            let status =
+                (self.update_checker)(CliTool::from_kind(kind), Some(executable.clone()), working_directory, cancel);
+            if cancel.is_canceled() {
+                return Err(CoreError::Canceled);
+            }
+            crate::debug_log::write("更新", format!("呼叫前強制檢查：{}", status.describe()));
+            status.require_current()?;
 
             let arguments =
                 command_builder::build_for_profile(kind, message, Some(profile), token_saver_mode, Some(timeout))?;

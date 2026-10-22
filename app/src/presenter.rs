@@ -28,10 +28,11 @@ pub fn time_of_day(value: Span) -> String {
 pub fn time(job: &ScheduledJob) -> String {
     let start = job.initial_time_of_day.unwrap_or_else(|| time::local_time_of_day(&job.scheduled_at));
     format!(
-        "{}–{}{}",
+        "{}–{}{}／{}分",
         time_of_day(start),
         time_of_day(job.end_time_of_day),
-        if job.end_time_of_day < start { "（隔日）" } else { "" }
+        if job.end_time_of_day < start { "（隔日）" } else { "" },
+        job.probe_interval_minutes
     )
 }
 
@@ -134,8 +135,8 @@ mod tests {
 
     #[test]
     fn time_column_shows_detection_window() {
-        assert_eq!(time(&job()), "08:49–24:00");
-        assert_eq!(time(&ScheduledJob { end_time_of_day: Span::hours(6), ..job() }), "08:49–06:00（隔日）");
+        assert_eq!(time(&job()), "08:49–24:00／10分");
+        assert_eq!(time(&ScheduledJob { end_time_of_day: Span::hours(6), ..job() }), "08:49–06:00（隔日）／10分");
     }
 
     #[test]
