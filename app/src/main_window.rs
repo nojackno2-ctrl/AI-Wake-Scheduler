@@ -54,7 +54,7 @@ use crate::w32::{
 
 pub const WINDOW_CLASS: &str = "AiWakeMainWindow";
 const EDITOR_CLASS: &str = "AiWakeEditorPanel";
-pub const APP_TITLE: &str = "AI 倒數喚醒";
+pub const APP_TITLE: &str = concat!("AI 倒數喚醒 v", env!("CARGO_PKG_VERSION"));
 
 pub const ID_LIST: i32 = 100;
 pub const ID_NEW: i32 = 101;

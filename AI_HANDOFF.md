@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-10-22 Codex：應用程式顯示版本號（完成）
+
+- 使用者要求應用程式顯示版本號；開始時 main 工作樹乾淨，HEAD 為 ab4d3fc。
+- `app/src/main_window.rs` 的共用標題透過 `concat!` 與 `env!("CARGO_PKG_VERSION")` 產生「AI 倒數喚醒 v2.2.0」，同步供視窗標題、頂端自繪標題與系統匣提示使用，往後隨 Cargo 版本更新。
+- 驗證：`rustc -vV` 確認 `x86_64-pc-windows-msvc`；依序 `cargo check --workspace --locked`、`cargo test --workspace --locked`、`cargo build --workspace --locked` 全部通過（30 通過、4 選用整合測試略過）；`cargo fmt --all -- --check` 與 `git diff --check` 通過。
+- 視窗證據：PowerShell 隱藏啟動後讀取 `MainWindowTitle` 得到空字串，無法作為驗證；改於既有 `ui_smoke` 加入跨行程視窗文字斷言，再執行 `cargo test -p aiwake-app --test ui_smoke --locked` 通過，確認實際標題為「AI 倒數喚醒 v2.2.0（功能驗證）」。
+- 限制：未人工檢視頂端文字與系統匣提示的繪製；未更新正式安裝版或發布資產。
+
 ## 2026-10-22 Claude：發布 v2.2.0（完成）
 
 - 使用者要求「發布執行檔」（明確授權發布）；版本選 v2.2.0（新增功能、設定與排程自動遷移相容）。

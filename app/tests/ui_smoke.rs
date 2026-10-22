@@ -221,6 +221,11 @@ fn main_window_editor_settings_and_tray() {
         top_window(process_id, main::WINDOW_CLASS).filter(|hwnd| is_visible(*hwnd))
     });
     assert!(text_of(window).contains("功能驗證"), "隔離模式應在標題標示功能驗證。");
+    assert_eq!(
+        text_of(window),
+        format!("AI 倒數喚醒 v{}（功能驗證）", env!("CARGO_PKG_VERSION")),
+        "主視窗應顯示目前套件版本。"
+    );
     let editor = child_of_class(window, "AiWakeEditorPanel");
     let list = control(window, main::ID_LIST);
     let save_button = control(editor, main::ID_SAVE);
