@@ -27,3 +27,5 @@
 - UI 端對端測試與擷圖：模式下拉已移除、「檢查 CLI 更新…」按鈕完整顯示。
 
 未實測：自動模式以真實 CLI 長時間運作、點擊系統匣更新通知與更新確認對話框、由程式開啟的更新主控台、安裝包生命週期 QA、重開機自動啟動。
+
+已發布：[v2.2.0](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v2.2.0)（2026-10-22，Latest）。標籤與執行檔來源：8b2064251a063930b7842986ec4bf2a054c86e15，該提交 CI 五時區通過。GitHub 三項資產的官方 SHA256 digest 與本機一致；重新下載後 `sha256sum -c SHA256SUMS.txt` 兩項 OK。
