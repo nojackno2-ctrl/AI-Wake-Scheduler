@@ -4,7 +4,7 @@
 
 - 使用者要求「發布執行檔」（明確授權發布）；版本選 v2.2.0（新增功能、設定與排程自動遷移相容）。
 - 變更：版本 2.1.0→2.2.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）；新增 `docs/RELEASE_v2.2.0.md`；`docs/FEATURE_VERIFICATION.md` 新增 v2.2.0 發布檢查。
-- 資產（`dist2.2.0elease\`，dist 不納入版控）：Setup（sha256 6ef96e03…ad75）、Portable ZIP（f16a1f00…e7bc）、SHA256SUMS.txt。
+- 資產（`dist\v2.2.0\release\`，dist 不納入版控）：Setup（sha256 6ef96e03…ad75）、Portable ZIP（f16a1f00…e7bc）、SHA256SUMS.txt。
 - 驗證：見 `docs/FEATURE_VERIFICATION.md`「v2.2.0 發布檢查」。
 - 待辦：提交後等 CI 五時區通過，再建立附註標籤 `v2.2.0` 並 `gh release create`，重新下載校驗。
 
