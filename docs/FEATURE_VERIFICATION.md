@@ -16,6 +16,14 @@
 
 CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，於 UTC、台北、印度、太平洋、澳洲東部五個時區矩陣執行 fmt、clippy、build、test。
 
+## 2026-10-22 v2.2.0 發布檢查（Claude）
+
+- 版本 2.2.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）。
+- fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked` 30 通過、4 opt-in 略過（暫存 CARGO_TARGET_DIR）。
+- `build-installer.ps1 -SkipTests -OutputDirectory dist2.2.0`（以獨立 `powershell.exe -File` 執行；在 PowerShell 5.1 工作階段內以 `&` 呼叫時，cargo 的 stderr 進度會被當成錯誤而中止）：安裝程式 2,441,426 bytes，ProductVersion 2.2.0.0，SHA256 6ef96e03…ad75；執行檔 1,842,176 bytes，FileVersion／ProductVersion 2.2.0。免安裝 ZIP（f16a1f00…e7bc）內僅 `AI倒數喚醒.exe`（1,842,176 bytes）與 LICENSE。
+- Release 執行檔以 `--verify-ui` 啟動 8 秒仍在執行，除錯日誌記錄「啟動 v2.2.0」並讀取真實額度。
+- 未驗證：安裝包生命週期 QA（`tests/Verify-Installer.ps1`）本版未重跑；系統匣更新通知與更新對話框未實際點擊。
+
 ## 2026-10-21 v2.1.0 發布檢查（Claude）
 
 - 版本 2.1.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）。
