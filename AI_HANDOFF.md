@@ -1,5 +1,14 @@
 # AI HANDOFF
 
+## 2026-10-22 Codex：AGY 重複失敗為本機舊安裝版（已升級）
+
+- 新證據：本機 debug-20261022.log 顯示 14:37 啟動 Program Files 的 v2.1.0，只有一個舊倒數模式排程；14:37:33、14:39:43 均已讀到 Gemini 每週 100%、10-24 08:30:47 重置，卻仍呼叫。因此此次直接原因是尚未更新安裝版，並非目前 v2.2.0 的單排程額度閘門失效。
+- 已取消原先委派的擴大修復工作（exit 130，無原始碼變更）。多排程限制仍維持既有未解決狀態，不在此次安裝修復內。
+- 驗證：安裝包 SHA-256 為 6ef96e03cd6c33e0dd8350716cf21dcbc659e5fac8a8706f3e8864703477ad75，符合 SHA256SUMS.txt；`cargo test -p aiwake-core --locked schedule_manager_migrates_to_auto_and_skips_exhausted` 1 通過。
+- 正式設定與排程已備份於本機資料目錄 backups/20261022-before-v2.2.0（未納入 Git）。第一次安裝因 RestartManager 無法關閉舊程式而中止，版本仍 2.1.0；第二次使用安裝器 FORCECLOSEAPPLICATIONS 重試成功（安裝日誌 Installation process succeeded、無須重新啟動 Windows），已由原 Program Files 路徑重啟；檔案版本與 14:43:24 啟動日誌均為 2.2.0。
+
+- 升級前後 settings.json／schedules.json 雜湊一致；但升級前備份的 schedules.json 已是空陣列，新版載入 0 個排程，未重建或擅自新增工作。新版實際讀到 Gemini 每週 100%、10-24 08:30:47 重置，Claude 亦已可讀取。未完成正式排程的現場略過驗證，也未驗證額度重置後喚醒；保留上述回歸測試證據。
+
 ## 2026-10-22 Codex：應用程式顯示版本號（完成）
 
 - 使用者要求應用程式顯示版本號；開始時 main 工作樹乾淨，HEAD 為 ab4d3fc。
