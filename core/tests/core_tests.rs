@@ -2121,6 +2121,172 @@ fn schedule_manager_migrates_to_auto_and_skips_exhausted() {
 }
 
 #[test]
+fn schedule_legacy_json_migration_is_stable() {
+    let directory = TempDir::new();
+    let store = job_store(directory.join("legacy.json"));
+    let now = local_wall_clock(2026, 10, 22, 6, 0, 0);
+    let clock = FakeClock::new(now);
+    let settings = shared_settings();
+    let runner = Arc::new(CountingCliRunner::default());
+    let mut source = Vec::new();
+    // 所有舊週期與狀態都同時驗證名稱、整數及大小寫相容。
+    for (index, recurrence) in ScheduleRecurrence::ALL.iter().enumerate() {
+        for (status_index, status) in ScheduleStatus::ALL.iter().enumerate() {
+            for numeric in [false, true] {
+                let mut value = ScheduledJob {
+                    name: format!("自訂 {index} {status_index} {numeric}"),
+                    message: "保留訊息".to_string(),
+                    working_directory: directory.text(),
+                    scheduled_at: now + Span::hours(2),
+                    recurrence: *recurrence,
+                    enabled: status_index % 2 == 0,
+                    status: *status,
+                    started_at: Some(now - Span::hours(1)),
+                    finished_at: Some(now - Span::minutes(30)),
+                    last_results: vec![CliRunResult::new(CliKind::Codex)],
+                    targets: vec![CliKind::Codex, CliKind::Claude],
+                    ..ScheduledJob::default()
+                }
+                .to_json();
+                let object = value.as_object_mut().unwrap();
+                object.remove("ScheduleRevision");
+                object.remove("InitialTimeOfDay");
+                object.insert(
+                    "recurrence".to_string(),
+                    if numeric {
+                        serde_json::json!(index)
+                    } else {
+                        serde_json::json!(recurrence.name().to_ascii_lowercase())
+                    },
+                );
+                object.remove("Recurrence");
+                if numeric {
+                    object.insert("Status".to_string(), serde_json::json!(status_index));
+                    object.insert("Targets".to_string(), serde_json::json!([2, 3]));
+                    object["LastResults"][0]["Cli"] = serde_json::json!(2);
+                }
+                source.push(value);
+            }
+        }
+    }
+    let text = format!("\u{feff}{}", serde_json::to_string(&source).unwrap());
+    std::fs::write(store.path(), text).unwrap();
+    let original = store.load().unwrap();
+    {
+        let manager = manager_with(&store, runner.clone(), &settings, None, Some(clock.clone()));
+        manager.initialize().unwrap();
+        let migrated = store.load().unwrap();
+        for (before, after) in original.iter().zip(&migrated) {
+            let mut expected = before.clone();
+            expected.schedule_revision = aiwake_core::models::SCHEDULE_REVISION;
+            expected.recurrence = ScheduleRecurrence::Interval;
+            expected.initial_time_of_day = Some(hm(8, 0));
+            if expected.status == ScheduleStatus::Running {
+                expected.status = if expected.enabled { ScheduleStatus::Pending } else { ScheduleStatus::Disabled };
+                expected.started_at = None;
+            }
+            assert_eq!(*after, expected, "只允許遷移版本、模式、開始時間與中斷狀態改變。");
+        }
+        manager.shutdown();
+    }
+    let saved = std::fs::read(store.path()).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&saved).unwrap();
+    assert!(json.as_array().unwrap().iter().all(|value| {
+        value["ScheduleRevision"] == 1
+            && value["Recurrence"] == "Interval"
+            && value["Targets"] == serde_json::json!(["Codex", "Claude"])
+    }));
+    // 非標準空白可證明再次初始化沒有重新序列化，而非碰巧寫出相同內容。
+    let unchanged = format!("  {}\n", String::from_utf8(saved).unwrap());
+    std::fs::write(store.path(), &unchanged).unwrap();
+    {
+        let manager = manager_with(&store, runner.clone(), &settings, None, Some(clock));
+        manager.initialize().unwrap();
+        manager.shutdown();
+    }
+    assert_eq!(std::fs::read_to_string(store.path()).unwrap(), unchanged);
+    assert_eq!(runner.call_count(), 0, "停用、完成、失敗或尚未到期的排程不得被遷移觸發。");
+}
+
+#[test]
+fn schedule_migration_rejects_damage_without_overwriting() {
+    let directory = TempDir::new();
+    let store = job_store(directory.join("damaged.json"));
+    let settings = shared_settings();
+    let runner = Arc::new(CountingCliRunner::default());
+    let valid = ScheduledJob { enabled: false, ..ScheduledJob::default() }.to_json();
+    let mut cases = vec!["null".to_string(), "[".to_string(), "{}".to_string(), "[{}]".to_string()];
+    for (field, invalid) in [
+        ("ScheduleRevision", serde_json::json!(2)),
+        ("ScheduleRevision", serde_json::json!(-1)),
+        ("Recurrence", serde_json::json!(99)),
+        ("Recurrence", serde_json::json!("Unknown")),
+        ("Status", serde_json::json!("Unknown")),
+        ("Targets", serde_json::json!([2, 99])),
+        ("Id", serde_json::json!("無效")),
+        ("ScheduledAt", serde_json::json!("無效")),
+        ("InitialTimeOfDay", serde_json::json!("24:00:00")),
+        ("CustomData", serde_json::json!("不可遺失")),
+        ("name", serde_json::json!("重複欄位")),
+    ] {
+        let mut broken = valid.clone();
+        broken[field] = invalid;
+        cases.push(serde_json::json!([valid, broken]).to_string());
+    }
+    for field in ["Id", "ScheduledAt"] {
+        let mut broken = valid.clone();
+        broken.as_object_mut().unwrap().remove(field);
+        cases.push(serde_json::json!([valid, broken]).to_string());
+    }
+    cases.push(serde_json::json!([valid, valid]).to_string());
+    for text in cases {
+        std::fs::write(store.path(), &text).unwrap();
+        let manager = manager_with(&store, runner.clone(), &settings, None, None);
+        assert!(matches!(manager.initialize(), Err(CoreError::InvalidData(_))), "應拒絕：{text}");
+        assert!(manager.get_jobs().unwrap().is_empty(), "不得發布部分成功的資料。");
+        manager.shutdown();
+        assert_eq!(std::fs::read_to_string(store.path()).unwrap(), text, "錯誤不得覆寫原檔。");
+    }
+    assert_eq!(runner.call_count(), 0);
+}
+
+#[test]
+fn schedule_latest_restart_preserves_probe_time_and_terminal_history() {
+    let directory = TempDir::new();
+    let store = job_store(directory.join("latest.json"));
+    let now = local_wall_clock(2026, 10, 22, 10, 0, 0);
+    let runner = Arc::new(CountingCliRunner::default());
+    let settings = shared_settings();
+    let active = ScheduledJob {
+        initial_time_of_day: Some(hm(8, 0)),
+        scheduled_at: now + Span::minutes(5),
+        finished_at: Some(now - Span::minutes(5)),
+        ..ScheduledJob::default()
+    };
+    let mut jobs = vec![active];
+    for enabled in [false, true] {
+        for status in [ScheduleStatus::Completed, ScheduleStatus::Failed, ScheduleStatus::Disabled] {
+            jobs.push(ScheduledJob {
+                enabled,
+                status,
+                scheduled_at: now - Span::days(10),
+                initial_time_of_day: Some(hm(8, 0)),
+                finished_at: Some(now - Span::days(9)),
+                ..ScheduledJob::default()
+            });
+        }
+    }
+    store.save(&jobs).unwrap();
+    let before = std::fs::read(store.path()).unwrap();
+    let manager = manager_with(&store, runner.clone(), &settings, None, Some(FakeClock::new(now)));
+    manager.initialize().unwrap();
+    manager.shutdown();
+    assert_eq!(store.load().unwrap(), jobs);
+    assert_eq!(std::fs::read(store.path()).unwrap(), before);
+    assert_eq!(runner.call_count(), 0);
+}
+
+#[test]
 fn installer_contract() {
     let mut directory = Some(Path::new(env!("CARGO_MANIFEST_DIR")));
     while let Some(candidate) = directory {

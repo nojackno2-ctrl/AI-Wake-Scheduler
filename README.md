@@ -186,12 +186,17 @@ powershell -ExecutionPolicy Bypass -File .\tests\Verify-Installer.ps1 -SetupPath
 
 - **根目錄**：`%LOCALAPPDATA%\AI倒數喚醒\`
 - **排程設定**：`%LOCALAPPDATA%\AI倒數喚醒\schedules.json`
+
 - **CLI 設定**：`%LOCALAPPDATA%\AI倒數喚醒\settings.json`
 - **執行日誌**：`%LOCALAPPDATA%\AI倒數喚醒\logs\`（包含每次執行的標準輸出與錯誤訊息）
 - **除錯日誌**：`%LOCALAPPDATA%\AI倒數喚醒\logs\debug-YYYYMMDD.log`（排程判斷、每次額度讀取結果、CLI 呼叫與錯誤，保留 14 天）
 - **匯出除錯日誌**：主視窗或系統匣選單的「匯出除錯日誌…」會把目前額度、設定、排程與所有日誌合併成一個 `.txt`，回報問題時附上即可。檔案包含 CLI 輸出與工作目錄路徑，分享前請自行檢查。
 - **CLI 更新提示**：啟動 1 分鐘後與之後每 12 小時，比對 agy、Codex、Claude Code 的本機版本（`--version`）與最新版本（agy 官方自動更新服務、npm registry）。有新版本時跳一次系統匣通知（同一版本只提示一次）並在狀態列顯示；按「檢查 CLI 更新…」（主視窗或系統匣選單）可隨時檢查，確認後會開主控台執行各 CLI 自己的 `update` 指令，完成後自動重新檢查。
 - **隔離工作區**：`%LOCALAPPDATA%\AI倒數喚醒\workspace\`（喚醒執行時的專用空白目錄）
+
+新版啟動時會自動將舊排程轉為自動模式，並在每筆資料寫入 `ScheduleRevision` 遷移版本。沿用原開始時間、目標、訊息、工作目錄與執行紀錄；停用或已完成／失敗的排程不會因此重新啟用，未來的執行時間也不會提前。最新資料無異動時不重寫。舊版字串與整數列舉、屬性大小寫及 UTF-8 BOM 仍可讀取。
+
+若資料損壞、缺少識別碼或執行時間、版本超出支援範圍，或包含無法保留的未知欄位，會停止載入並保留原檔，不以空排程覆寫；解析錯誤會嘗試另存 `.corrupted.*` 備份。資料遷移不會更新程式執行檔或安裝版本。
 
 ---
 

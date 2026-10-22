@@ -1,5 +1,14 @@
 # AI HANDOFF
 
+## 2026-10-22 Codex：舊排程資料安全遷移（完成）
+
+- 範圍：修改核心、回歸測試與說明；委派工作未操作 Git，主代理依授權檢查後提交與推送。保留其他聊天的交接紀錄，不修改正式資料或安裝程式。
+- 證據：`store.rs` 原將 JSON null 視為空資料；`models.rs` 原會替缺少 Id／ScheduledAt 的資料產生預設值；`manager.initialize` 原每次重算所有狀態並無條件保存，缺少遷移版本與穩定性驗證。
+- 已實作：每筆 ScheduleRevision、舊整數／名稱列舉相容、必要欄位與版本檢查、未知欄位拒絕載入以免遺失；保留停用與完成狀態、未來時間及執行紀錄，無變更不寫入，完整載入並保存成功才啟動排程。新增三項回歸測試涵蓋 50 筆舊週期／狀態／列舉組合、再次載入不重寫、最新時間與終止狀態、混合損壞資料與重複識別碼不覆寫。
+- 驗證：依序 `cargo check --workspace --locked`、`cargo test --workspace --locked`、`cargo build --workspace --locked` 全部通過（app 10、隔離 UI 1、core 22 通過；4 項真實 CLI 選用測試略過）。`cargo fmt --all -- --check`、`git diff --check` 通過；`rustc -vV` host 為 x86_64-pc-windows-msvc，無連結錯誤，使用原 target 即可完成。主代理另執行 `cargo test -p aiwake-core --locked schedule_`（12 通過）與 `cargo clippy --workspace --all-targets --locked -- -D warnings` 通過。
+- 限制：未以正式資料或安裝版實測遷移，未執行真實 CLI 額度測試；只升級排程資料，不升級執行檔。另一聊天的「開始／結束時段排程」已明確暫停，未將其功能納入本輪。AGENTS.md、Cargo.lock 與安裝程式無差異。
+- 環境：預設 Shell 沙箱啟動失敗（helper_unknown_error），唯讀檢查改用獲核准的提升執行；未變更系統或正式資料。
+
 ## 2026-10-22 Codex：AGY 重複失敗為本機舊安裝版（已升級）
 
 - 新證據：本機 debug-20261022.log 顯示 14:37 啟動 Program Files 的 v2.1.0，只有一個舊倒數模式排程；14:37:33、14:39:43 均已讀到 Gemini 每週 100%、10-24 08:30:47 重置，卻仍呼叫。因此此次直接原因是尚未更新安裝版，並非目前 v2.2.0 的單排程額度閘門失效。

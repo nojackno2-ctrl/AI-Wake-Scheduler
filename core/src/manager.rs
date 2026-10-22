@@ -17,7 +17,7 @@ use crate::debug_log;
 use crate::error::{CoreError, CoreResult};
 use crate::models::{
     AppSettings, CliActivityEvent, CliActivityKind, CliKind, CliProfile, CliRunResult, Guid, ScheduleRecurrence,
-    ScheduleStatus, ScheduledJob,
+    ScheduleStatus, ScheduledJob, SCHEDULE_REVISION,
 };
 use crate::runner::CliRunner;
 use crate::store::DataStore;
@@ -156,35 +156,53 @@ impl ScheduleManager {
         self.inner.ensure_not_disposed()?;
         let inner = &self.inner;
         let mut loaded = inner.job_store.load()?;
+        let original = loaded.clone();
         let now = inner.now();
+        let mut ids = std::collections::HashSet::new();
 
         for job in &mut loaded {
+            if !ids.insert(job.id) {
+                return Err(CoreError::InvalidData("排程識別碼重複，未儲存任何變更。".to_string()));
+            }
+            if !(0..=SCHEDULE_REVISION).contains(&job.schedule_revision) {
+                return Err(CoreError::InvalidData("不支援此排程資料版本。".to_string()));
+            }
             // 只保留自動模式。舊版本的單次、每日、每週與自動倒數模式一律遷移為自動模式，
             // 開始時間沿用原本的開始時間（每日等模式則取原排程的時分）。
             let initial_time = initial_time_of(job);
             job.recurrence = ScheduleRecurrence::Interval;
             job.initial_time_of_day = Some(initial_time);
+            if !time::is_valid_time_of_day(initial_time) {
+                return Err(CoreError::InvalidData("開始時間必須介於 00:00 到 23:59。".to_string()));
+            }
+            job.schedule_revision = SCHEDULE_REVISION;
 
-            job.scheduled_at = match job.finished_at {
-                Some(finished) if local_date(&finished) < local_date(&now) => {
-                    // 上次執行在今日以前（昨天或更早）
-                    // 今日的首次喚醒基準時間
-                    let today_initial = calculator::get_previous_daily_occurrence(initial_time, &now)?;
-                    if finished >= today_initial {
-                        calculator::get_next_daily_occurrence(initial_time, &now)?
-                    } else {
-                        today_initial
+            // 停用與終止狀態保留歷史時間；未到期的排程也不因重啟而提前。
+            if job.enabled
+                && matches!(job.status, ScheduleStatus::Pending | ScheduleStatus::Running)
+                && job.scheduled_at <= now
+            {
+                job.scheduled_at = match job.finished_at {
+                    Some(finished) if local_date(&finished) < local_date(&now) => {
+                        // 上次執行在今日以前（昨天或更早）
+                        // 今日的首次喚醒基準時間
+                        let today_initial = calculator::get_previous_daily_occurrence(initial_time, &now)?;
+                        if finished >= today_initial {
+                            calculator::get_next_daily_occurrence(initial_time, &now)?
+                        } else {
+                            today_initial
+                        }
                     }
-                }
-                // 上次執行在今天之內
-                Some(finished) => calculator::get_next_auto_interval_occurrence(initial_time, &finished)?,
-                // 從未執行過：設定為今日首次喚醒
-                None => calculator::get_previous_daily_occurrence(initial_time, &now)?,
-            };
+                    // 上次執行在今天之內
+                    Some(finished) => calculator::get_next_auto_interval_occurrence(initial_time, &finished)?,
+                    // 從未執行過：設定為今日首次喚醒
+                    None => calculator::get_previous_daily_occurrence(initial_time, &now)?,
+                };
+            }
 
             if job.status == ScheduleStatus::Running {
                 // 上次是被強制關閉的，不可能還在跑。
-                job.status = ScheduleStatus::Pending;
+                job.status = if job.enabled { ScheduleStatus::Pending } else { ScheduleStatus::Disabled };
                 job.started_at = None;
             }
         }
@@ -195,8 +213,11 @@ impl ScheduleManager {
         }
         {
             let mut jobs = lock(&inner.jobs);
+            // 所有資料成功解析、遷移並儲存後，才發布至記憶體與啟動背景排程。
+            if loaded != original {
+                inner.job_store.save(&loaded)?;
+            }
             *jobs = loaded;
-            inner.job_store.save(&jobs)?;
         }
 
         let loop_inner = Arc::clone(inner);
@@ -225,6 +246,7 @@ impl ScheduleManager {
             // 核心層只接受自動模式。
             let initial_time = initial_time_of(&saved);
             saved.recurrence = ScheduleRecurrence::Interval;
+            saved.schedule_revision = SCHEDULE_REVISION;
             saved.initial_time_of_day = Some(initial_time);
             if saved.scheduled_at <= now {
                 saved.scheduled_at = calculator::get_next_daily_occurrence(initial_time, &now)?;

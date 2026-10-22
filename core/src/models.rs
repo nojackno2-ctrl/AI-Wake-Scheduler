@@ -30,7 +30,8 @@ macro_rules! named_enum {
                     Value::String(text) => Self::parse(text),
                     Value::Number(number) => number
                         .as_u64()
-                        .and_then(|index| Self::ALL.get(index as usize).copied()),
+                        .and_then(|index| usize::try_from(index).ok())
+                        .and_then(|index| Self::ALL.get(index).copied()),
                     _ => None,
                 }
             }
@@ -154,6 +155,21 @@ fn field<'a>(object: &'a Map<String, Value>, name: &str) -> Option<&'a Value> {
 
 fn expect_object<'a>(value: &'a Value, what: &str) -> Result<&'a Map<String, Value>, String> {
     value.as_object().ok_or_else(|| format!("{what} 必須是 JSON 物件。"))
+}
+
+/// 避免自動儲存時捨棄無法理解的欄位，或任選大小寫重複的欄位。
+fn validate_fields(object: &Map<String, Value>, template: Value) -> Result<(), String> {
+    let known = expect_object(&template, "欄位範本")?;
+    let mut seen = std::collections::HashSet::new();
+    for key in object.keys() {
+        if !known.keys().any(|name| name.eq_ignore_ascii_case(key)) {
+            return Err(format!("無法保留未知欄位：{key}。"));
+        }
+        if !seen.insert(key.to_ascii_lowercase()) {
+            return Err(format!("欄位名稱重複：{key}。"));
+        }
+    }
+    Ok(())
 }
 
 fn read_string(object: &Map<String, Value>, name: &str, target: &mut String) -> Result<(), String> {
@@ -442,6 +458,7 @@ impl JsonModel for CliRunResult {
     fn from_json(value: &Value) -> Result<Self, String> {
         let object = expect_object(value, "執行結果")?;
         let mut result = CliRunResult::new(CliKind::Antigravity);
+        validate_fields(object, result.to_json())?;
         read_enum!(object, "Cli", CliKind, result.cli);
         read_bool(object, "Succeeded", &mut result.succeeded)?;
         match field(object, "ExitCode") {
@@ -468,6 +485,9 @@ impl JsonModel for CliRunResult {
 pub const DEFAULT_JOB_NAME: &str = "AI 倒數喚醒";
 pub const DEFAULT_JOB_MESSAGE: &str = "早安";
 
+/// 排程資料遷移版本；未標記的舊資料視為版本 0。
+pub const SCHEDULE_REVISION: i32 = 1;
+
 pub fn user_profile_directory() -> String {
     std::env::var("USERPROFILE").unwrap_or_default()
 }
@@ -475,6 +495,7 @@ pub fn user_profile_directory() -> String {
 /// 排程工作模型。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScheduledJob {
+    pub schedule_revision: i32,
     pub id: Guid,
     pub name: String,
     pub scheduled_at: Moment,
@@ -493,6 +514,7 @@ pub struct ScheduledJob {
 impl Default for ScheduledJob {
     fn default() -> Self {
         Self {
+            schedule_revision: SCHEDULE_REVISION,
             id: Guid::new(),
             name: DEFAULT_JOB_NAME.to_string(),
             scheduled_at: time::now() + Span::minutes(5),
@@ -524,6 +546,7 @@ impl ScheduledJob {
 impl JsonModel for ScheduledJob {
     fn to_json(&self) -> Value {
         json!({
+            "ScheduleRevision": self.schedule_revision,
             "Id": self.id.to_string(),
             "Name": self.name,
             "ScheduledAt": time::format_json_moment(&self.scheduled_at),
@@ -542,15 +565,16 @@ impl JsonModel for ScheduledJob {
 
     fn from_json(value: &Value) -> Result<Self, String> {
         let object = expect_object(value, "排程")?;
-        let mut job = ScheduledJob::default();
+        let mut job = ScheduledJob { schedule_revision: 0, ..ScheduledJob::default() };
+        validate_fields(object, job.to_json())?;
+        read_i32(object, "ScheduleRevision", &mut job.schedule_revision)?;
+        if !(0..=SCHEDULE_REVISION).contains(&job.schedule_revision) {
+            return Err("不支援此排程資料版本，請使用較新的程式。".to_string());
+        }
 
-        if let Some(value) = field(object, "Id") {
-            job.id = value.as_str().and_then(Guid::parse).ok_or("Id 不是有效的 GUID。")?;
-        }
+        job.id = field(object, "Id").and_then(Value::as_str).and_then(Guid::parse).ok_or("Id 不是有效的 GUID。")?;
         read_string(object, "Name", &mut job.name)?;
-        if let Some(value) = field(object, "ScheduledAt") {
-            job.scheduled_at = read_moment(value, "ScheduledAt")?;
-        }
+        job.scheduled_at = read_moment(field(object, "ScheduledAt").ok_or("缺少 ScheduledAt。")?, "ScheduledAt")?;
         read_string(object, "Message", &mut job.message)?;
         read_string(object, "WorkingDirectory", &mut job.working_directory)?;
 
@@ -574,6 +598,9 @@ impl JsonModel for ScheduledJob {
                 job.initial_time_of_day =
                     Some(value.as_str().and_then(time::parse_span).ok_or("InitialTimeOfDay 不是有效的時間。")?)
             }
+        }
+        if job.initial_time_of_day.is_some_and(|start| !time::is_valid_time_of_day(start)) {
+            return Err("InitialTimeOfDay 必須介於 00:00 到 23:59。".to_string());
         }
         read_bool(object, "Enabled", &mut job.enabled)?;
         read_enum!(object, "Status", ScheduleStatus, job.status);

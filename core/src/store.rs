@@ -50,9 +50,6 @@ impl<T: JsonModel + Send> DataStore<T> for JsonFileStore<T> {
             Ok(value) => value,
             Err(_) => return Err(self.corrupted()),
         };
-        if value.is_null() {
-            return Ok((self.default_factory)());
-        }
         T::from_json(&value).map_err(|_| self.corrupted())
     }
 
