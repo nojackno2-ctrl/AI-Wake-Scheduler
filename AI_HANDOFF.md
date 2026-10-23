@@ -7,6 +7,7 @@
 - 驗證：`cargo test --workspace` 全數通過（含新增 `weekly_takes_the_dial_without_five_hour_countdown`），`cargo clippy --workspace` 無警告。
 - 未驗證：未實際啟動程式目視檢查卡片排版。
 - 後續修正（使用者截圖回饋）：圓環固定顯示 5 小時視窗（未倒數也一樣），只有沒有 5 小時視窗時才改顯示每週；圓環「額度用盡」只看圓環本身的視窗，每週用盡由每週列標紅；卡片下方只保留每週列，其他視窗（如 Claude Opus 7 天）不再列出。fmt、clippy `--all-targets`、`cargo test --workspace` 通過；仍未目視檢查。
+- 再修正（使用者：每週 0% 要更明顯）：每週用盡時卡片改紅框淡紅底，圓環上方「每週額度」、中間紅字「用盡」、下方紅字每週重置倒數，5 小時弧線改灰；每週列標籤改為「⚠ 每週已用盡」。fmt、clippy、`cargo test --workspace`、`cargo build --release` 通過；未目視檢查。
 
 ## 2026-10-23 Claude：修正 Claude 5 小時倒數讀取不到（完成）
 

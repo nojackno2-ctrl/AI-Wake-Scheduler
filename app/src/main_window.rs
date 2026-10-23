@@ -917,7 +917,14 @@ impl Dashboard {
         let (primary_index, weekly_index) = group.as_ref().map_or((None, None), |g| board::primary_and_weekly(&g.rows));
         let primary = primary_index.and_then(|i| group.as_ref()?.rows.get(i));
         let weekly = weekly_index.and_then(|i| group.as_ref()?.rows.get(i));
-        theme::card(colors).inner_margin(12).show(ui, |ui| {
+        // 每週用盡時 5 小時剩多少都不能用，整張卡改以每週用盡為主要訊息。
+        let weekly_exhausted = weekly.is_some_and(|row| row.remaining_percent == 0);
+        let frame = if weekly_exhausted {
+            theme::card(colors).stroke(Stroke::new(1.5, theme::DANGER)).fill(theme::DANGER.gamma_multiply(0.06))
+        } else {
+            theme::card(colors)
+        };
+        frame.inner_margin(12).show(ui, |ui| {
             ui.vertical(|ui| {
                 let inner_width = (width - 26.0).max(96.0);
                 ui.set_width(inner_width);
@@ -948,6 +955,8 @@ impl Dashboard {
                     let percent = row.remaining_percent as f32 / 100.0;
                     let color = if row.remaining_percent == 0 {
                         theme::DANGER
+                    } else if weekly_exhausted {
+                        colors.muted.gamma_multiply(0.6)
                     } else if row.remaining_percent < 20 {
                         theme::WARN
                     } else {
@@ -986,13 +995,23 @@ impl Dashboard {
                     value = "登入".into();
                     countdown = "需要授權".into();
                 }
-                if let Some(row) = primary {
+                let mut label = primary.map(|row| row.label.clone());
+                if let Some(row) = weekly.filter(|_| weekly_exhausted) {
+                    label = Some("每週額度".into());
+                    value = "用盡".into();
+                    countdown = match row.resets_at {
+                        Some(reset) => board::format_countdown((reset - now).max(Span::zero())),
+                        None => "等待重置".into(),
+                    };
+                }
+                let alert = exhausted || weekly_exhausted;
+                if let Some(label) = label {
                     ui.painter().text(
                         center - egui::vec2(0.0, 24.0),
                         egui::Align2::CENTER_CENTER,
-                        &row.label,
+                        label,
                         FontId::proportional(9.5),
-                        colors.muted,
+                        if weekly_exhausted { theme::DANGER } else { colors.muted },
                     );
                 }
                 ui.painter().text(
@@ -1000,19 +1019,23 @@ impl Dashboard {
                     egui::Align2::CENTER_CENTER,
                     &value,
                     FontId::proportional(22.0),
-                    colors.text,
+                    if weekly_exhausted { theme::DANGER } else { colors.text },
                 );
                 ui.painter().text(
                     center + egui::vec2(0.0, 14.0),
                     egui::Align2::CENTER_CENTER,
                     &countdown,
                     FontId::monospace(10.5),
-                    if exhausted { theme::DANGER } else { colors.secondary },
+                    if alert { theme::DANGER } else { colors.secondary },
                 );
                 response.on_hover_text(group.as_ref().map(|g| g.message.as_str()).unwrap_or("等待額度讀取"));
                 // 每週額度固定在圓環下方第一列，沒有資料時也保留位置讓各卡片對齊。
                 ui.horizontal(|ui| {
-                    ui.small("每週");
+                    if weekly_exhausted {
+                        ui.label(RichText::new("⚠ 每週已用盡").size(11.0).strong().color(theme::DANGER));
+                    } else {
+                        ui.small("每週");
+                    }
                     let (percent, text, danger) = match weekly {
                         Some(row) => (
                             row.percent_text.clone(),
