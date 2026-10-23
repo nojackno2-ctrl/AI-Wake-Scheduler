@@ -1,5 +1,15 @@
 # AI HANDOFF
 
+## 2026-10-23 Antigravity：取消強制更新 CLI 阻擋呼叫，改回提示通知（完成）
+
+- 使用者要求：「取消強制更新CLI的設定，改成提示就好」。開始時 `main` 工作樹乾淨。
+- 變更：
+  - `core/src/runner.rs`、`core/src/cli_update.rs`：移除 `ProcessCliRunner` 呼叫前的版本檢查閘門（`update_checker`、`with_update_checker` 與 `CliUpdateStatus::require_current`），手動與排程呼叫不再因 CLI 有新版本或無法查詢版本而被阻擋。
+  - `app/src/main_window.rs`、`README.md`：`on_cli_updates_checked` 與 `show_cli_updates` 的狀態列文字、系統匣氣泡通知及對話框訊息改回單純提示「CLI 有新版本可更新」與詢問是否開啟更新主控台，移除「必須更新才能呼叫／更新前已阻擋呼叫」等強制字眼；同步更新 README 說明。
+  - `app/tests/ui_smoke.rs`、`core/tests/core_tests.rs`：端對端 UI 測試 `ID_RUN_NOW` 恢復驗證假 CLI 正常執行成功並輸出 `FAKE-CLI-OK`；移除強制版本阻擋相關測試與 `fake_current_runner`。
+- 驗證：依序執行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（app 10、隔離 UI `ui_smoke` 1、core 28，共 39 項通過，4 項 opt-in 忽略）、`cargo build --workspace --locked` 與 `git diff --check` 全部通過。
+- 限制：未重新打包正式安裝版或發布新版本。
+
 ## 2026-10-23 Antigravity：讀取間隔改為僅在未讀到倒數時讀取，並記住下次倒數結束時間（完成）
 
 - 使用者要求：「讀取間格改成沒有讀取到倒數就讀取，然後會記住下一次倒數結束德時間」（經確認：倒數結束時間一到且在偵測時段內即立即重讀並喚醒，未倒數才依間隔重試；同時套用於排程偵測與主視窗額度看板並共用記住的倒數結束時間）。

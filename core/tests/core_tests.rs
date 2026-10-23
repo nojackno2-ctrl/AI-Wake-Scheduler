@@ -66,16 +66,6 @@ fn fake_profile(output_path: &Path, delay_milliseconds: u64, exit_code: i32) -> 
     }
 }
 
-fn fake_current_runner(paths: AppDataPaths) -> ProcessCliRunner {
-    ProcessCliRunner::with_update_checker(paths, |tool, executable, _, _| aiwake_core::cli_update::CliUpdateStatus {
-        tool,
-        executable,
-        installed: Some("1.0.0".into()),
-        latest: Some("1.0.0".into()),
-        error: None,
-    })
-}
-
 fn hm(hours: i64, minutes: i64) -> Span {
     Span::hours(hours) + Span::minutes(minutes)
 }
@@ -1096,7 +1086,7 @@ fn cli_runner_safe_arguments() {
     let directory = TempDir::new();
     let output_path = directory.join("arguments.json");
     let paths = AppDataPaths::new(Some(&directory.join("data").to_string_lossy()));
-    let runner = fake_current_runner(paths);
+    let runner = ProcessCliRunner::new(paths);
     let cancel = CancelToken::none();
     let profile = fake_profile(&output_path, 0, 0);
     let message = "早安 & whoami";
@@ -1301,7 +1291,7 @@ fn schedule_manager_manual_parallel_run() {
             .cli_profiles
             .insert(kind, fake_profile(&directory.join(&format!("{kind}.json")), 1000, 0));
     }
-    let manager = manager_with(&store, Arc::new(fake_current_runner(paths)), &settings, None, None);
+    let manager = manager_with(&store, Arc::new(ProcessCliRunner::new(paths)), &settings, None, None);
     manager.initialize().unwrap();
     let item = ScheduledJob { enabled: false, ..job("手動平行", &directory, CliKind::ALL) };
     manager.upsert(&item).unwrap();
@@ -1575,7 +1565,7 @@ fn schedule_manager_boundaries_and_state() {
     let paths = AppDataPaths::new(Some(&directory.join("data").to_string_lossy()));
     let jobs = job_store(paths.jobs_file());
     let settings = shared_settings();
-    let runner = Arc::new(fake_current_runner(paths));
+    let runner = Arc::new(ProcessCliRunner::new(paths));
 
     let manager = manager_with(&jobs, runner, &settings, None, None);
     manager.initialize().unwrap();
@@ -2200,74 +2190,11 @@ fn cli_update_version_compare() {
     assert!(!status(Some("0.163.0"), Some("0.163.0")).update_available());
     assert!(!status(Some("0.164.0"), Some("0.163.0")).update_available(), "本機較新（預覽版）不應提示。");
     assert!(!status(None, Some("0.163.0")).update_available(), "讀不到本機版本時不應提示。");
-    assert!(status(Some("0.163.0"), Some("0.163.0")).require_current().is_ok());
-    assert!(status(Some("0.164.0"), Some("0.163.0")).require_current().is_ok());
-    assert!(status(None, Some("0.163.0")).require_current().is_err());
     assert_eq!(status(Some("0.160.0"), Some("0.163.0")).describe(), "Codex CLI：0.160.0 → 0.163.0（有新版本）");
 
     let update = aiwake_core::cli_update::create_update_start_info(CliTool::Claude, "claude", "").unwrap();
     assert!(update.arguments.contains("update") && update.arguments.contains("|| pause"), "更新失敗時應暫停主控台。");
     assert!(!update.create_no_window, "更新必須在看得見的主控台執行。");
-}
-
-#[test]
-fn cli_runner_requires_verified_current_version() {
-    use aiwake_core::cli_update::{CliTool, CliUpdateStatus};
-    let directory = TempDir::new();
-    for &kind in CliKind::ALL {
-        let phase = Arc::new(AtomicUsize::new(0));
-        let checks = phase.clone();
-        let output = directory.join(&format!("gate-{kind}.json"));
-        let runner = ProcessCliRunner::with_update_checker(
-            AppDataPaths::new(Some(&directory.join("data").to_string_lossy())),
-            move |tool, executable, _, _| {
-                assert_eq!(tool, CliTool::from_kind(kind));
-                let index = checks.fetch_add(1, Ordering::SeqCst);
-                CliUpdateStatus {
-                    tool,
-                    executable,
-                    installed: if index == 2 { None } else { Some("1.0.0".into()) },
-                    latest: if index == 1 {
-                        None
-                    } else if index < 4 {
-                        Some("2.0.0".into())
-                    } else {
-                        Some("1.0.0".into())
-                    },
-                    error: (index == 3).then(|| "網路查詢失敗".into()),
-                }
-            },
-        );
-        for _ in 0..4 {
-            let result = runner.run(
-                kind,
-                &fake_profile(&output, 0, 0),
-                "測試",
-                &directory.text(),
-                Duration::from_secs(10),
-                true,
-                &CancelToken::none(),
-                None,
-            );
-            assert!(!result.succeeded && result.error.contains("已阻擋 CLI 呼叫"));
-            assert_eq!(result.exit_code, None, "被阻擋時不可啟動模型呼叫程序。");
-            assert!(!output.exists(), "舊版、未知版本與查詢失敗均不可送出提示。");
-            assert!(Path::new(&result.log_path).is_file());
-        }
-        let result = runner.run(
-            kind,
-            &fake_profile(&output, 0, 0),
-            "測試",
-            &directory.text(),
-            Duration::from_secs(10),
-            true,
-            &CancelToken::none(),
-            None,
-        );
-        assert!(result.succeeded, "確認更新後可呼叫：{}", result.error);
-        assert!(output.is_file());
-        assert_eq!(phase.load(Ordering::SeqCst), 5, "每次呼叫皆重新確認，不沿用舊快取。");
-    }
 }
 
 #[test]

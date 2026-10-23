@@ -1888,15 +1888,11 @@ impl MainWindow {
             self.cli_updates.borrow().iter().filter(|status| status.update_available()).cloned().collect();
         if available.is_empty() {
             if interactive {
-                if self.cli_updates.borrow().iter().all(|status| status.require_current().is_ok()) {
-                    self.set_status("所有 CLI 都已確認版本，可呼叫", palette().success);
-                } else {
-                    self.set_status("部分 CLI 無法確認版本，已阻擋其呼叫；請檢查更新結果。", palette().danger);
-                }
+                self.set_status("所有 CLI 都已是最新版本", palette().success);
             }
         } else {
             let summary = available.iter().map(|status| status.describe()).collect::<Vec<_>>().join("；");
-            self.set_status(&format!("必須更新才能呼叫：{summary}"), palette().danger);
+            self.set_status(&format!("CLI 有新版本可更新：{summary}"), palette().danger);
         }
 
         if interactive {
@@ -1930,12 +1926,7 @@ impl MainWindow {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            tray::balloon(
-                self.hwnd,
-                "CLI 必須更新",
-                &format!("{lines}\n更新前已阻擋呼叫。點這則通知查看並更新。"),
-                false,
-            );
+            tray::balloon(self.hwnd, "CLI 有新版本", &format!("{lines}\n點這則通知查看並更新。"), false);
         }
     }
 
@@ -1949,14 +1940,9 @@ impl MainWindow {
         let lines = statuses.iter().map(CliUpdateStatus::describe).collect::<Vec<_>>().join("\r\n");
         let available: Vec<CliUpdateStatus> = statuses.into_iter().filter(|status| status.update_available()).collect();
         if available.is_empty() {
-            let message = if self.cli_updates.borrow().iter().all(|status| status.require_current().is_ok()) {
-                "所有 CLI 都已確認版本，可呼叫。"
-            } else {
-                "無法確認版本的 CLI 已阻擋呼叫，請排除上述錯誤後重新檢查。"
-            };
             w32::message_box(
                 Some(self.hwnd),
-                &format!("{lines}\r\n\r\n{message}"),
+                &format!("{lines}\r\n\r\n所有 CLI 都已是最新版本。"),
                 APP_TITLE,
                 w32::MB_OK | w32::MB_ICONINFORMATION,
             );
@@ -1970,7 +1956,7 @@ impl MainWindow {
         let answer = w32::message_box(
             Some(self.hwnd),
             &format!(
-                "{lines}\r\n\r\n上述舊版 CLI 更新前禁止手動與排程呼叫。\r\n要開啟主控台執行各 CLI 自己的更新指令嗎？\r\n（將執行：{commands}；更新期間請勿關閉主控台）"
+                "{lines}\r\n\r\n要開啟主控台執行各 CLI 自己的更新指令嗎？\r\n（將執行：{commands}；更新期間請勿關閉主控台）"
             ),
             APP_TITLE,
             w32::MB_YESNO | w32::MB_ICONQUESTION,

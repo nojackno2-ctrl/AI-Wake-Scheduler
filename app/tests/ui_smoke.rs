@@ -506,7 +506,7 @@ echo FAKE-CLI-OK
     assert!(!saved.start_with_windows, "隔離模式不得啟用正式的開機啟動。");
     assert!(saved.cli_profiles.values().all(|profile| Path::new(&profile.executable) == fake_cli));
 
-    // ── 立即執行：確認對話框 → 未知版本阻擋 → 終端機錯誤 → 結果 ──
+    // ── 立即執行：確認對話框 → 平行執行 → 終端機輸出 → 結果 ──
     wait_until("設定儲存後的額度讀取完成", long, || text_of(refresh_button) == "重新讀取倒數");
     notify(window, main::ID_RUN_NOW, BN_CLICKED);
     let confirm = wait_for("立即執行的確認對話框", short, || message_box(process_id));
@@ -524,14 +524,13 @@ echo FAKE-CLI-OK
     let finished = load_jobs(&data_directory).remove(0);
     assert!(finished.enabled, "立即執行會啟用排程。");
     for result in &finished.last_results {
-        assert!(!result.succeeded && result.exit_code.is_none(), "{} 未確認版本時應阻擋：{}", result.cli, result.error);
-        assert!(result.error.contains("已阻擋 CLI 呼叫"));
+        assert!(result.succeeded && result.exit_code == Some(0), "{} 應成功：{}", result.cli, result.error);
         assert!(Path::new(&result.log_path).is_file(), "每次執行都應留下日誌。");
     }
     let terminal = control(window, main::ID_TERMINAL_OUTPUT);
     wait_until("終端機顯示執行過程", short, || {
         let output = text_of(terminal);
-        output.matches("✗").count() == expected_runs && output.contains("已阻擋 CLI 呼叫")
+        output.matches("✓").count() == expected_runs && output.contains("FAKE-CLI-OK")
     });
     let output = text_of(terminal);
     assert!(output.contains("▶ Codex 開始執行，訊息：早安"), "終端機應顯示開始事件：{output}");
@@ -540,7 +539,7 @@ echo FAKE-CLI-OK
     notify(window, main::ID_SHOW_RESULT, BN_CLICKED);
     let results = wait_for("執行結果對話框", short, || message_box(process_id));
     let summary = text_of(control(results, 0xFFFF));
-    assert!(summary.contains("Codex CLI：失敗") && summary.contains("已阻擋 CLI 呼叫"), "結果摘要不正確：{summary}");
+    assert!(summary.contains("Codex CLI：成功") && summary.contains("結束碼：0"), "結果摘要不正確：{summary}");
     w32::post(results, WM_CLOSE, 0, 0);
     wait_until("結果對話框關閉", short, || message_box(process_id).is_none());
 
