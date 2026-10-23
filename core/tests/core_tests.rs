@@ -1920,6 +1920,32 @@ fn schedule_manager_all_jobs_are_quota_gated_and_deduplicated() {
 }
 
 #[test]
+fn schedule_manager_wakes_claude_when_access_token_is_stale() {
+    let _serial = serial();
+    let directory = TempDir::new();
+    let store = job_store(directory.join("jobs.json"));
+    let settings = shared_settings();
+    let now = local_wall_clock(2026, 10, 24, 10, 0, 0);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    let runner = Arc::new(CountingCliRunner::default());
+    reader.set(CliUsageSnapshot {
+        credentials_stale: true,
+        ..CliUsageSnapshot::new(CliKind::Claude, CliUsageAvailability::Unavailable, Vec::new(), "權杖逾期", now)
+    });
+    store
+        .save(&vec![
+            timed_job(&directory, CliKind::Claude, hm(8, 0), hm(18, 0), now),
+            timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now),
+        ])
+        .unwrap();
+    let manager = manager_with(&store, runner.clone(), &settings, Some(reader.clone()), Some(FakeClock::new(now)));
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1));
+    sleep(150);
+    assert_eq!(runner.executed(), vec![CliKind::Claude], "權杖逾期須呼叫 Claude 換新；其他讀取不可用仍不呼叫。");
+}
+
+#[test]
 fn schedule_manager_cross_midnight_and_read_past_end() {
     let _serial = serial();
     let directory = TempDir::new();

@@ -59,6 +59,8 @@ impl CliUsageWindow {
 
 /// 一次唯讀用量查詢的結果。
 /// `requires_login` 表示失敗原因是 CLI 登入失效，UI 據此提供一鍵登入。
+/// `credentials_stale` 表示登入仍有效、只是短效 access token 已逾期：本程式不刷新憑證，
+/// 需由呼叫 CLI 讓它自行換新，因此排程應允許喚醒，而非要求使用者重新登入。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CliUsageSnapshot {
     pub cli: CliKind,
@@ -67,6 +69,7 @@ pub struct CliUsageSnapshot {
     pub message: String,
     pub observed_at: Moment,
     pub requires_login: bool,
+    pub credentials_stale: bool,
 }
 
 impl CliUsageSnapshot {
@@ -77,7 +80,15 @@ impl CliUsageSnapshot {
         message: impl Into<String>,
         observed_at: Moment,
     ) -> Self {
-        Self { cli, availability, windows, message: message.into(), observed_at, requires_login: false }
+        Self {
+            cli,
+            availability,
+            windows,
+            message: message.into(),
+            observed_at,
+            requires_login: false,
+            credentials_stale: false,
+        }
     }
 
     /// 5 小時短週期額度視窗；沒有時取第一個視窗。
@@ -109,7 +120,13 @@ impl CliUsageSnapshot {
         format!(
             "{:?}{}；視窗 [{}]；訊息：{}",
             self.availability,
-            if self.requires_login { "（需要登入）" } else { "" },
+            if self.requires_login {
+                "（需要登入）"
+            } else if self.credentials_stale {
+                "（權杖待換新）"
+            } else {
+                ""
+            },
             windows.join("、"),
             self.message
         )
@@ -425,10 +442,6 @@ impl CliUsageReader {
             }
         }
 
-        if let Some(retry_after_at) = state.retry_after_at.filter(|retry| observed_at < *retry) {
-            return Ok(create_claude_rate_limited_snapshot(&state, &observed_at, &retry_after_at));
-        }
-
         let credentials_path = match claude_credentials_path().filter(|path| path.is_file()) {
             Some(path) => path,
             None => {
@@ -436,10 +449,8 @@ impl CliUsageReader {
             }
         };
 
-        let read_token =
-            |path: &Path| read_claude_access_token(path).map(|token| token.filter(|t| !t.trim().is_empty()));
-        let mut access_token = match read_token(&credentials_path) {
-            Ok(Some(token)) => token,
+        let credentials = match read_claude_credentials(&credentials_path) {
+            Ok(Some(credentials)) => credentials,
             Ok(None) => {
                 return Ok(login_required(
                     CliKind::Claude,
@@ -449,6 +460,18 @@ impl CliUsageReader {
             }
             Err(message) => return Ok(unavailable(CliKind::Claude, message, observed_at)),
         };
+        // 逾期的 access token 查詢只會得到 401 或 429（且會被限流），直接交由 CLI 換新；
+        // 先前的 429 多半由舊權杖造成，換新後應重新查詢。
+        if credentials.is_expired(&observed_at) {
+            state.retry_after_at = None;
+            return Ok(stale_claude_credentials(&credentials, observed_at));
+        }
+
+        if let Some(retry_after_at) = state.retry_after_at.filter(|retry| observed_at < *retry) {
+            return Ok(create_claude_rate_limited_snapshot(&state, &observed_at, &retry_after_at));
+        }
+
+        let mut access_token = credentials.access_token;
 
         for attempt in 0..2 {
             let token = access_token.clone();
@@ -500,14 +523,16 @@ impl CliUsageReader {
             }
 
             // Claude Code 可能剛好在另一個程序輪替短效 access token；重新讀檔後重試一次。
-            if response.status == 401 && attempt == 0 {
-                if let Ok(Some(refreshed)) = read_token(&credentials_path) {
-                    if refreshed != access_token {
-                        access_token = refreshed;
+            if response.status == 401 {
+                if let Ok(Some(refreshed)) = read_claude_credentials(&credentials_path) {
+                    if attempt == 0 && refreshed.access_token != access_token {
+                        access_token = refreshed.access_token;
                         continue;
                     }
+                    // 有 refresh token 代表登入仍有效（權杖被提前撤銷或時鐘誤差），交由 CLI 換新。
+                    return Ok(stale_claude_credentials(&refreshed, observed_at));
                 }
-                return Ok(login_required(CliKind::Claude, "Claude Code 登入憑證已過期，請重新登入。", observed_at));
+                return Ok(login_required(CliKind::Claude, "Claude Code 登入憑證已失效，請重新登入。", observed_at));
             }
 
             if response.status == 429 {
@@ -556,6 +581,7 @@ impl UsageReader for CliUsageReader {
         // Codex 與 Antigravity 的登入失效只會以錯誤文字呈現；Claude 已在讀取時明確標記。
         if snapshot.availability == CliUsageAvailability::Unavailable
             && !snapshot.requires_login
+            && !snapshot.credentials_stale
             && login::looks_like_login_required(Some(&snapshot.message))
         {
             snapshot.requires_login = true;
@@ -1121,12 +1147,58 @@ fn claude_credentials_path() -> Option<PathBuf> {
         .map(|profile| PathBuf::from(profile).join(".claude").join(".credentials.json"))
 }
 
-/// 只讀取 access token 欄位；本程式不持有也不寫入任何憑證。
-fn read_claude_access_token(credentials_path: &Path) -> Result<Option<String>, String> {
+/// Claude Code 憑證檔中與額度查詢有關的欄位；refresh token 只記錄是否存在，不保留內容。
+#[derive(Debug, Clone, PartialEq)]
+struct ClaudeCredentials {
+    access_token: String,
+    expires_at: Option<Moment>,
+    has_refresh_token: bool,
+}
+
+impl ClaudeCredentials {
+    /// 預留 1 分鐘，避免查詢途中剛好逾期。
+    fn is_expired(&self, observed_at: &Moment) -> bool {
+        self.expires_at.is_some_and(|expires| expires <= *observed_at + Span::minutes(1))
+    }
+}
+
+/// 只讀取憑證欄位；本程式不持有也不寫入任何憑證。
+fn read_claude_credentials(credentials_path: &Path) -> Result<Option<ClaudeCredentials>, String> {
     let text = std::fs::read_to_string(credentials_path).map_err(|error| error.to_string())?;
+    parse_claude_credentials(&text)
+}
+
+fn parse_claude_credentials(text: &str) -> Result<Option<ClaudeCredentials>, String> {
     let root: Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| format!("Claude 額度 JSON 解析失敗：{error}"))?;
-    Ok(object_property(&root, "claudeAiOauth").and_then(|oauth| get_string(oauth, "accessToken")))
+        .map_err(|error| format!("Claude 憑證 JSON 解析失敗：{error}"))?;
+    let Some(oauth) = object_property(&root, "claudeAiOauth") else {
+        return Ok(None);
+    };
+    let Some(access_token) = get_string(oauth, "accessToken").filter(|token| !token.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let expires_at = oauth
+        .get("expiresAt")
+        .and_then(Value::as_i64)
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|expires| expires.fixed_offset());
+    let has_refresh_token = get_string(oauth, "refreshToken").is_some_and(|token| !token.trim().is_empty());
+    Ok(Some(ClaudeCredentials { access_token, expires_at, has_refresh_token }))
+}
+
+/// access token 逾期但仍可換新時的快照；沒有 refresh token 才真的需要重新登入。
+fn stale_claude_credentials(credentials: &ClaudeCredentials, observed_at: Moment) -> CliUsageSnapshot {
+    if !credentials.has_refresh_token {
+        return login_required(CliKind::Claude, "Claude Code 登入憑證已失效，請重新登入。", observed_at);
+    }
+    CliUsageSnapshot {
+        credentials_stale: true,
+        ..unavailable(
+            CliKind::Claude,
+            "Claude 存取權杖已逾期，下次呼叫 Claude CLI 時會自動換新；登入仍有效。",
+            observed_at,
+        )
+    }
 }
 
 /// 解析 Claude Code /api/oauth/usage 的 JSON 回應，供測試與協定更新驗證。
@@ -1405,5 +1477,29 @@ mod tests {
         assert!(!limited.windows.is_empty(), "保留歷史資料供診斷");
         let response = HttpResponse { status: 429, body: String::new(), retry_after: Some(i64::MAX.to_string()) };
         assert_eq!(resolve_claude_retry_after(&response, &observed), observed + Span::minutes(5));
+    }
+
+    #[test]
+    fn claude_expired_access_token_with_refresh_token_is_stale_not_login_required() {
+        // 2026-10-23 22:57:41（+08:00）逾期，與使用者日誌中的憑證相同情境。
+        let json = r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1792767461194}}"#;
+        let credentials = parse_claude_credentials(json).unwrap().unwrap();
+        let expires = chrono::DateTime::parse_from_rfc3339("2026-10-23T22:57:41+08:00").unwrap();
+        assert!(!credentials.is_expired(&(expires - Span::minutes(2))));
+        assert!(credentials.is_expired(&(expires - Span::seconds(30))), "預留 1 分鐘緩衝");
+        assert!(credentials.is_expired(&(expires + Span::hours(8))));
+
+        let stale = stale_claude_credentials(&credentials, expires + Span::hours(1));
+        assert!(stale.credentials_stale && !stale.requires_login, "登入仍有效時不可要求重新登入");
+        assert!(!login::looks_like_login_required(Some(&stale.message)), "訊息不可被誤判為需要登入");
+
+        let without_refresh =
+            parse_claude_credentials(r#"{"claudeAiOauth":{"accessToken":"a","expiresAt":1}}"#).unwrap().unwrap();
+        let login = stale_claude_credentials(&without_refresh, expires);
+        assert!(login.requires_login && !login.credentials_stale, "沒有 refresh token 才需要重新登入");
+
+        let unknown_expiry = parse_claude_credentials(r#"{"claudeAiOauth":{"accessToken":"a"}}"#).unwrap().unwrap();
+        assert!(!unknown_expiry.is_expired(&expires), "缺少 expiresAt 時照常查詢");
+        assert!(parse_claude_credentials(r#"{"claudeAiOauth":{"accessToken":" "}}"#).unwrap().is_none());
     }
 }

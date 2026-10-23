@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-10-24 Claude：修正 Claude 權杖逾期誤報「請重新登入」且不喚醒（完成）
+
+- 使用者：「明明有登入，為什麼一直叫我登入」→ 要求修正下方診斷的死結。
+- 變更：`usage.rs` 讀憑證時一併解析 `expiresAt` 與是否有 `refreshToken`（只記是否存在）；`CliUsageSnapshot` 新增 `credentials_stale`。access token 逾期（含 1 分鐘緩衝）時不再打額度 API（避免 429），回傳「權杖待換新」快照並清除 429 退避；401 且有 refresh token 時同樣視為待換新；只有缺 refresh token 才 `requires_login`。`manager.rs` 偵測到 `credentials_stale` 時允許呼叫 CLI（日誌「存取權杖已逾期，呼叫 CLI 以換新權杖」），其他讀取不可用仍不呼叫。
+- 測試：新增 `claude_expired_access_token_with_refresh_token_is_stale_not_login_required`（固定 +08:00 時間，不受 CI 時區影響）與 `schedule_manager_wakes_claude_when_access_token_is_stale`。fmt、clippy `--all-targets -D warnings`、`cargo test --workspace --locked`（app 18、UI 2、core 42+1，4 opt-in 忽略，0 失敗）、`cargo build --release --locked` 通過。
+- 實機佐證：執行 `claude.exe --print --model claude-haiku-5-5 ...` 一次，`expiresAt` 由 10-23 22:57 更新為 10-24 14:29，證實 CLI 呼叫會換新權杖（也順便解除使用者目前的卡住狀態）。
+- 未驗證：未以新版程式實機觀察權杖逾期→自動喚醒的完整流程；使用者電腦上執行中的版本需重新建置／安裝並重啟才套用。refresh token 本身失效時 CLI 會失敗，每個偵測間隔重試一次（受 2 分鐘冷卻限制），屆時需使用者登入。
+
 ## 2026-10-24 Claude：診斷 Claude 遇到 429 不喚醒（僅調查，未改程式）
 
 - 使用者回報「Claude 遇到 429 不工作」。

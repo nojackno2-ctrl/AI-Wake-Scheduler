@@ -616,18 +616,24 @@ impl Inner {
                 }
                 match result {
                     Ok(value) => {
-                        let reason =
-                            if value.availability != CliUsageAvailability::Available || value.windows.is_empty() {
-                                Some("額度無法確認，不呼叫".to_string())
-                            } else if let Some(reset) = exhausted_until(Some(&value), &observed) {
-                                Some(format!("額度已用盡，至 {} 重置前不呼叫", local_text(&reset)))
-                            } else if value.windows.iter().any(|window| window.used_percent >= 100) {
-                                Some("額度已用盡且尚未確認重置，不呼叫".to_string())
-                            } else if is_counting_down(Some(&value), &observed) {
-                                Some("倒數中，不呼叫".to_string())
-                            } else {
-                                None
-                            };
+                        // 權杖逾期時讀不到額度，但呼叫 CLI 正好會換新權杖；不呼叫就會一直卡在讀不到。
+                        let reason = if value.credentials_stale {
+                            debug_log::write(
+                                "偵測",
+                                format!("{} 存取權杖已逾期，呼叫 CLI 以換新權杖", kind.short_name()),
+                            );
+                            None
+                        } else if value.availability != CliUsageAvailability::Available || value.windows.is_empty() {
+                            Some("額度無法確認，不呼叫".to_string())
+                        } else if let Some(reset) = exhausted_until(Some(&value), &observed) {
+                            Some(format!("額度已用盡，至 {} 重置前不呼叫", local_text(&reset)))
+                        } else if value.windows.iter().any(|window| window.used_percent >= 100) {
+                            Some("額度已用盡且尚未確認重置，不呼叫".to_string())
+                        } else if is_counting_down(Some(&value), &observed) {
+                            Some("倒數中，不呼叫".to_string())
+                        } else {
+                            None
+                        };
                         if let Some(reason) = reason {
                             debug_log::write("偵測", format!("{} {reason}", kind.short_name()));
                         } else if !targets.contains(&kind) {
