@@ -26,3 +26,5 @@
 - 先前各次變更另有：五個 CLI 目標真實唯讀額度讀取、安裝包隔離生命週期 QA（以重構後的 egui 版執行）與 egui 渲染擷圖人工檢視。
 
 未實測：本版安裝包生命週期 QA 未重跑、新額度卡在真實額度下的目視檢查、自動模式以真實 CLI 長時間運作、重開機自動啟動。
+
+已發布：[v2.3.0](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/releases/tag/v2.3.0)（2026-10-23，Latest）。標籤與執行檔來源：ce3bfec40106de08fa457a5162dfc5fd031c29d7，該提交 CI 五時區通過。GitHub 三項資產的官方 SHA256 digest 與本機一致；重新下載後 `sha256sum -c SHA256SUMS.txt` 兩項 OK。
