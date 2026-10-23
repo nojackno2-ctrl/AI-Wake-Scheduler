@@ -66,7 +66,7 @@ CI（`.github/workflows/ci.yml`）在 windows-latest 以釘選的 Rust 1.99.0，
 
 - 版本 2.3.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）。
 - fmt、clippy `--all-targets -D warnings` 通過；`cargo test --workspace --locked` 62 通過、4 opt-in 略過。
-- `build-installer.ps1 -SkipTests -OutputDirectory dist2.3.0`（獨立 `powershell.exe -File`）：安裝程式 5,118,653 bytes，SHA256 04a5c614…108e；執行檔 9,854,976 bytes，FileVersion／ProductVersion 2.3.0，SHA256 8be78840…c752。免安裝 ZIP（d42a8978…59dc）內僅 `AI倒數喚醒.exe`（9,854,976 bytes）與 LICENSE。
+- `build-installer.ps1 -SkipTests -OutputDirectory dist\v2.3.0`（獨立 `powershell.exe -File`）：安裝程式 5,118,653 bytes，SHA256 04a5c614…108e；執行檔 9,854,976 bytes，FileVersion／ProductVersion 2.3.0，SHA256 8be78840…c752。免安裝 ZIP（d42a8978…59dc）內僅 `AI倒數喚醒.exe`（9,854,976 bytes）與 LICENSE。
 - Release 執行檔以 `--verify-ui` 啟動 8 秒仍在執行，除錯日誌記錄「啟動 v2.3.0」；隔離 QA 資料夾已清除。
 - 未驗證：本版安裝包生命週期 QA（`tests/Verify-Installer.ps1`）未重跑；新額度卡未以真實額度目視檢查。
 
