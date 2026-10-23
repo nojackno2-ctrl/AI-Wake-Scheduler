@@ -1,5 +1,12 @@
 # AI HANDOFF
 
+## 2026-10-23 Claude：發布 v2.3.0（進行中）
+
+- 使用者要求「發布執行檔」（明確授權發布）；版本選 v2.3.0（egui 新介面、倒數記憶、每週額度顯示，資料格式相容）。
+- 變更：版本 2.2.0→2.3.0（`Cargo.toml`、`Cargo.lock`、`.iss`、README 下載檔名）；新增 `docs/RELEASE_v2.3.0.md`；`docs/FEATURE_VERIFICATION.md` 新增 v2.3.0 發布檢查。
+- 資產（`dist2.3.0elease\`，不納入版控）：Setup（04a5c614…108e）、Portable ZIP（d42a8978…59dc）、SHA256SUMS.txt。
+- 驗證：見 `docs/FEATURE_VERIFICATION.md`「v2.3.0 發布檢查」。
+
 ## 2026-10-23 Claude：額度卡片顯示每週倒數（完成）
 
 - 使用者需求：每週倒數也要顯示、位置統一；沒有 5 小時倒數時圓環改顯示每週額度。
