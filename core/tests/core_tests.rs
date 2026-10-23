@@ -1194,6 +1194,22 @@ fn cli_usage_reader() {
     let later = observed_at + Span::seconds(10);
     let cached_tiny_claude = usage::refresh_claude_snapshot(&tiny_claude, &later, "cached");
     assert!(is_counting_down(Some(&cached_tiny_claude), &later), "Claude 微量使用的快取更新亦應保留有效倒數。");
+    // 日誌情境：喚醒後 utilization 為 0，但重置時間固定在 現在 + 5 小時 之前。
+    let zero_started_claude = usage::parse_claude_usage(
+        &format!(
+            r#"{{"five_hour":{{"utilization":0.0,"resets_at":"{}"}}}}"#,
+            iso(observed_at + Span::hours(5) - Span::minutes(20))
+        ),
+        &observed_at,
+    )
+    .unwrap();
+    assert!(is_counting_down(Some(&zero_started_claude), &observed_at), "Claude 0% 但視窗已開始時應判定為倒數中。");
+    let zero_idle_claude = usage::parse_claude_usage(
+        &format!(r#"{{"five_hour":{{"utilization":0.0,"resets_at":"{}"}}}}"#, iso(observed_at + Span::hours(5))),
+        &observed_at,
+    )
+    .unwrap();
+    assert!(!is_counting_down(Some(&zero_idle_claude), &observed_at), "Claude 0% 且重置時間隨讀取滑動時不可當成倒數。");
 
     let agy_error = usage::parse_antigravity_model_configs(
         "{\"error\":{\"message\":\"invalid CSRF token\"}}",

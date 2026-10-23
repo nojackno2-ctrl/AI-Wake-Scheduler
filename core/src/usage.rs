@@ -1155,7 +1155,9 @@ pub fn parse_claude_usage(json: &str, observed_at: &Moment) -> Result<CliUsageSn
         };
         let resets_at = window.get("resets_at").and_then(Value::as_str).and_then(time::parse_moment);
         let used_percent = (utilization.round() as i32).clamp(0, 100);
-        let is_active_countdown = utilization > 0.0 && resets_at.is_some_and(|reset| reset > *observed_at);
+        // 喚醒訊息用量極小時 utilization 會是 0，需同 Codex 以重置時間判斷視窗已開始。
+        let started = utilization > 0.0 || window_started(resets_at, Some(duration), observed_at);
+        let is_active_countdown = started && resets_at.is_some_and(|reset| reset > *observed_at);
         windows.push(CliUsageWindow::new(display_name, used_percent, Some(duration), resets_at, is_active_countdown));
     }
 
@@ -1346,22 +1348,25 @@ fn add_window(
     let resets_at = window.get("resetsAt").and_then(Value::as_i64).and_then(time::from_unix_seconds);
 
     let clamped_used = used_percent.clamp(0, 100);
-    // 喚醒訊息用量極小，usedPercent 常四捨五入為 0，但視窗其實已開始倒數。
-    // 未開始的視窗其重置時間會隨讀取時間滑動（約為 現在 + 視窗長度），已開始者固定；
-    // 因此重置時間明顯早於「現在 + 視窗長度」即視為倒數中。
-    let window_started = match (resets_at, duration) {
+    let is_active_countdown = (clamped_used > 0 || window_started(resets_at, duration, observed_at))
+        && resets_at.is_some_and(|reset| reset > *observed_at);
+    destination.push(CliUsageWindow::new(name, clamped_used, duration, resets_at, is_active_countdown));
+}
+
+/// 喚醒訊息用量極小，已用百分比常為 0，但視窗其實已開始倒數。
+/// 未開始的視窗其重置時間會隨讀取時間滑動（約為 現在 + 視窗長度），已開始者固定；
+/// 因此重置時間明顯早於「現在 + 視窗長度」即視為倒數中。
+fn window_started(resets_at: Option<Moment>, duration: Option<Span>, observed_at: &Moment) -> bool {
+    match (resets_at, duration) {
         (Some(reset), Some(duration)) => reset
             .checked_add_signed(duration_slack())
             .zip(observed_at.checked_add_signed(duration))
             .is_some_and(|(reset, end)| reset < end),
         _ => false,
-    };
-    let is_active_countdown =
-        (clamped_used > 0 || window_started) && resets_at.is_some_and(|reset| reset > *observed_at);
-    destination.push(CliUsageWindow::new(name, clamped_used, duration, resets_at, is_active_countdown));
+    }
 }
 
-/// 判斷 Codex 視窗是否已開始的容許誤差：涵蓋伺服器時鐘與讀取延遲。
+/// 判斷視窗是否已開始的容許誤差：涵蓋伺服器時鐘與讀取延遲。
 fn duration_slack() -> Span {
     Span::minutes(1)
 }

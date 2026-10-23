@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-10-23 Claude：修正 Claude 5 小時倒數讀取不到（完成）
+
+- 使用者回報「讀取不到 claude 的倒數」。
+- 證據（debug-20261023.log）：Claude 每次喚醒成功後讀取仍為 `Claude（5 小時） 已用 0% 重置 10-24 02:30:00 未倒數`，重置時間固定不變，自動模式因此每 10 分鐘重複呼叫 Claude。原因：`parse_claude_usage` 要求 `utilization > 0` 才算倒數，喚醒訊息用量回報為 0；10-21 只修了 Codex 的 `add_window`，Claude 未套用。
+- 變更：`usage.rs` 抽出共用 `window_started`（重置時間 + 1 分鐘 < 觀測時間 + 視窗長度即已開始），Codex 與 Claude 共用；`core_tests` 新增 Claude 0% 已開始／重置時間滑動兩種案例。
+- 驗證：fmt、clippy `-D warnings` 通過；`cargo test --workspace --locked`（暫存 CARGO_TARGET_DIR）全數通過、4 opt-in 忽略、0 失敗。
+- 未驗證：未以實機新版本觀察 Claude 讀取；未確認 Claude API 在視窗未開始時是否回傳 null 或滑動的 resets_at（兩者皆判為未倒數）。正在執行的程式需重新建置並重啟才會套用。
+
 ## 2026-10-23 Codex：完整程式檢查與最佳化（完成）
 
 - 目標：檢查核心排程／並行／資料保存／CLI 程序及 egui 介面，修正可重現問題並驗證；起始 main／1bc7b80 工作樹乾淨。
