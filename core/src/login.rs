@@ -79,7 +79,7 @@ pub fn create_console_start_info(
         return Err(CoreError::InvalidArgument("可執行檔不可為空白。".to_string()));
     }
 
-    let shell_arguments = process::build_command_shell_arguments(executable, arguments);
+    let shell_arguments = process::build_command_shell_arguments(executable, arguments)?;
     // build_command_shell_arguments 以一對外層引號收尾，把 || pause 放進引號內。
     let arguments = format!("{} || pause\"", &shell_arguments[..shell_arguments.len() - 1]);
     let working_directory = (!working_directory.trim().is_empty() && Path::new(working_directory).is_dir())

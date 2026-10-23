@@ -203,11 +203,11 @@ pub fn parse_span(text: &str) -> Option<Span> {
         return None;
     }
 
-    let span = Span::days(days)
-        + Span::hours(hours)
-        + Span::minutes(minutes)
-        + Span::seconds(seconds)
-        + Span::nanoseconds(nanoseconds);
+    let span = Span::try_days(days)?
+        .checked_add(&Span::hours(hours))?
+        .checked_add(&Span::minutes(minutes))?
+        .checked_add(&Span::seconds(seconds))?
+        .checked_add(&Span::nanoseconds(nanoseconds))?;
     Some(if negative { -span } else { span })
 }
 

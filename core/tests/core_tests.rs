@@ -228,6 +228,445 @@ fn available(kind: CliKind, windows: Vec<CliUsageWindow>, observed_at: Moment) -
     CliUsageSnapshot::new(kind, CliUsageAvailability::Available, windows, "讀取成功", observed_at)
 }
 
+#[derive(Default)]
+struct FailingJobStore {
+    jobs: Mutex<Vec<ScheduledJob>>,
+    fail: AtomicBool,
+    save_attempts: AtomicUsize,
+}
+
+impl DataStore<Vec<ScheduledJob>> for FailingJobStore {
+    fn load(&self) -> CoreResult<Vec<ScheduledJob>> {
+        Ok(self.jobs.lock().unwrap().clone())
+    }
+
+    fn save(&self, jobs: &Vec<ScheduledJob>) -> CoreResult<()> {
+        self.save_attempts.fetch_add(1, Ordering::SeqCst);
+        if self.fail.load(Ordering::SeqCst) {
+            return Err(CoreError::Io("測試注入儲存失敗".into()));
+        }
+        *self.jobs.lock().unwrap() = jobs.clone();
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ControlledRunner {
+    started: AtomicBool,
+    release: AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl CliRunner for ControlledRunner {
+    fn run(
+        &self,
+        kind: CliKind,
+        _: &CliProfile,
+        _: &str,
+        _: &str,
+        _: Duration,
+        _: bool,
+        cancel: &CancelToken,
+        _: Option<&dyn Fn(bool, &str)>,
+    ) -> CliRunResult {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.store(true, Ordering::SeqCst);
+        while !self.release.load(Ordering::SeqCst) {
+            if cancel.wait(Duration::from_millis(10)) {
+                break;
+            }
+        }
+        let mut result = CliRunResult::new(kind);
+        result.succeeded = true;
+        result.exit_code = Some(0);
+        result.log_path = "必須保留的已執行結果".into();
+        result
+    }
+
+    fn probe(&self, kind: CliKind, _: &CliProfile, _: &str, _: &CancelToken) -> CliProbeResult {
+        CliProbeResult { cli: kind, succeeded: true, summary: String::new(), executable_path: String::new() }
+    }
+}
+
+#[test]
+fn regression_completion_save_failure_retains_results_and_retries() {
+    let directory = TempDir::new();
+    let store = Arc::new(FailingJobStore::default());
+    let runner = Arc::new(ControlledRunner::default());
+    let now = local_wall_clock(2026, 10, 23, 10, 1, 0);
+    let clock = FakeClock::new(now);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, now);
+    let manager = ScheduleManager::new(
+        store.clone(),
+        runner.clone(),
+        AppSettings::default,
+        Some(reader.clone()),
+        Some(clock.clone()),
+    );
+    let item = timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now);
+    manager.upsert(&item).unwrap();
+    let errors = Arc::new(AtomicUsize::new(0));
+    let seen = errors.clone();
+    manager.on_background_error(move |_| {
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+    manager.initialize().unwrap();
+    manager.run_now(item.id).unwrap();
+    assert!(wait_until(Duration::from_secs(3), || runner.started.load(Ordering::SeqCst)));
+    assert_eq!(store.load().unwrap()[0].status, ScheduleStatus::Running);
+    let attempts = store.save_attempts.load(Ordering::SeqCst);
+    store.fail.store(true, Ordering::SeqCst);
+    runner.release.store(true, Ordering::SeqCst);
+    assert!(wait_until(Duration::from_secs(3), || errors.load(Ordering::SeqCst) > 0));
+    let finished = manager.get_jobs().unwrap()[0].clone();
+    assert_eq!(finished.status, ScheduleStatus::Pending);
+    assert!(finished.finished_at.is_some());
+    assert_eq!(finished.last_results.len(), 1);
+    assert_eq!(finished.last_results[0].log_path, "必須保留的已執行結果");
+    assert!(wait_until(Duration::from_secs(3), || store.save_attempts.load(Ordering::SeqCst) >= attempts + 3));
+    assert_eq!(manager.get_jobs().unwrap()[0], finished, "持續失敗不可回復 Running 或抹掉結果");
+    assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+    store.fail.store(false, Ordering::SeqCst);
+    assert!(wait_until(Duration::from_secs(3), || store.load().unwrap()[0] == finished), "恢復後無須新操作即重試存檔");
+    let next = local_wall_clock(2026, 10, 23, 10, 10, 0);
+    clock.set(next);
+    ready_usage(&reader, CliKind::Codex, next);
+    wake_scheduler(&manager, &directory);
+    assert!(
+        wait_until(Duration::from_secs(3), || runner.calls.load(Ordering::SeqCst) == 2),
+        "排程與目標保留必須恢復運作"
+    );
+    manager.shutdown();
+}
+
+fn batch_forwarder(directory: &TempDir, extension: &str) -> PathBuf {
+    let folder = directory.join("batch 空白 & ! ^");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_aiwake-fake-cli"), folder.join("native.exe")).unwrap();
+    let script = folder.join(format!("forward.{extension}"));
+    std::fs::write(&script, "@echo off\r\n\"%~dp0native.exe\" %*\r\n").unwrap();
+    script
+}
+
+#[test]
+fn regression_batch_arguments_round_trip_without_injection() {
+    let directory = TempDir::new();
+    for extension in ["cmd", "bat"] {
+        let script = batch_forwarder(&directory, extension);
+        let output = directory.join("arguments.json");
+        let marker = directory.join("AUDIT-MARKER.txt");
+        let payload = format!("a\\\" & echo AUDIT-MARKER>{} & rem \\\"", marker.display());
+        let mut arguments = strings(&[
+            "--fake-cli-output",
+            &output.to_string_lossy(),
+            &payload,
+            "%AIWAKE_FAKE_VAR%",
+            "!AIWAKE_FAKE_VAR!",
+            "a^b",
+            "含 空白",
+            "",
+            "C:\\尾端 空白\\",
+            "中文",
+            "say \"hi\" & done",
+        ]);
+        let (mut command, used_shell) =
+            process::build_command(&script.to_string_lossy(), &arguments, &directory.text());
+        command.env("AIWAKE_FAKE_VAR", "不可展開");
+        let result = command.output().unwrap();
+        assert!(used_shell && result.status.success(), "{extension}：{}", String::from_utf8_lossy(&result.stderr));
+        let actual: Vec<String> = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(actual, arguments);
+        assert!(!marker.exists(), "不可執行參數中的命令");
+
+        // 預設節省 Token 的各 CLI 參數也必須實際通過批次檔。
+        for &kind in CliKind::ALL {
+            arguments = command_builder::build_with_arguments(kind, "早安", None, true, None).unwrap();
+            arguments.extend(strings(&["--fake-cli-output", &output.to_string_lossy()]));
+            let result = process::execute(
+                &script.to_string_lossy(),
+                &arguments,
+                &directory.text(),
+                Duration::from_secs(5),
+                &CancelToken::new(),
+                None,
+            )
+            .unwrap();
+            assert_eq!(result.exit_code, 0, "{}", result.standard_error);
+            let actual: Vec<String> = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+            assert_eq!(actual, arguments);
+        }
+    }
+}
+
+#[test]
+fn regression_batch_rejects_multiline_but_native_preserves_it() {
+    let directory = TempDir::new();
+    let script = batch_forwarder(&directory, "cmd");
+    let output = directory.join("multiline.json");
+    for message in ["第一行\r第二行", "第一行\n第二行", "第一行\r\n第二行"] {
+        let arguments = ["--fake-cli-output", &output.to_string_lossy(), message];
+        let error = process::execute(
+            &script.to_string_lossy(),
+            &arguments,
+            &directory.text(),
+            Duration::from_secs(5),
+            &CancelToken::new(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, CoreError::InvalidArgument(ref text) if text.contains("CR/LF")));
+        assert!(!output.exists());
+        let result = process::execute(
+            env!("CARGO_BIN_EXE_aiwake-fake-cli"),
+            &arguments,
+            &directory.text(),
+            Duration::from_secs(5),
+            &CancelToken::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.exit_code, 0);
+        let actual: Vec<String> = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(actual, arguments);
+        std::fs::remove_file(&output).unwrap();
+    }
+}
+
+#[test]
+fn regression_console_rejects_injection_and_runs_quoted_paths() {
+    use std::os::windows::process::CommandExt;
+    let directory = TempDir::new();
+    let script = batch_forwarder(&directory, "cmd");
+    let output = directory.join("console.json");
+    let marker = directory.join("AUDIT-MARKER.txt");
+    let payload = format!("a\\\" & echo AUDIT-MARKER>{} & rem \\\"", marker.display());
+    for invalid in [payload.as_str(), "%AIWAKE_FAKE_VAR%", "a\rb", "a\nb", "a\0b"] {
+        assert!(login::create_console_start_info(invalid, &["login"], "").is_err());
+        assert!(login::create_console_start_info(&script.to_string_lossy(), &[invalid], "").is_err());
+    }
+    for executable in
+        [script.to_string_lossy().into_owned(), script.with_file_name("native.exe").to_string_lossy().into_owned()]
+    {
+        let arguments = [
+            "--fake-cli-output",
+            &output.to_string_lossy(),
+            "a&b",
+            "!AIWAKE_FAKE_VAR!",
+            "a^b",
+            "",
+            "中文 空白",
+            "C:\\尾端\\",
+        ];
+        let info = login::create_console_start_info(&executable, &arguments, &directory.text()).unwrap();
+        let result = std::process::Command::new(&info.file_name)
+            .raw_arg(&info.arguments)
+            .env("AIWAKE_FAKE_VAR", "不可展開")
+            .creation_flags(process::CREATE_NO_WINDOW)
+            .output()
+            .unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let actual: Vec<String> = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(actual, arguments);
+        assert!(!marker.exists());
+    }
+}
+
+#[test]
+fn regression_failed_save_preserves_jobs_and_manual_reservation() {
+    let directory = TempDir::new();
+    let store = Arc::new(FailingJobStore::default());
+    let runner = Arc::new(CountingCliRunner::default());
+    let manager = ScheduleManager::new(store.clone(), runner.clone(), AppSettings::default, None, None);
+    let item = job("儲存失敗", &directory, &[CliKind::Codex]);
+    manager.upsert(&item).unwrap();
+    let original = manager.get_jobs().unwrap();
+    store.fail.store(true, Ordering::SeqCst);
+    let mut edited = item.clone();
+    edited.name = "不應套用".into();
+    assert!(manager.upsert(&edited).is_err());
+    assert_eq!(manager.get_jobs().unwrap(), original, "儲存失敗不可變更記憶體");
+    assert!(manager.delete(item.id).is_err());
+    assert_eq!(manager.get_jobs().unwrap(), original);
+    assert!(manager.run_now(item.id).is_err());
+    assert_eq!(manager.get_jobs().unwrap(), original, "不可卡在執行中");
+    assert_eq!(runner.call_count(), 0);
+    store.fail.store(false, Ordering::SeqCst);
+    manager.run_now(item.id).unwrap();
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1));
+    manager.shutdown();
+}
+
+#[test]
+fn regression_manual_shutdown_cancels_fake_cli() {
+    let directory = TempDir::new();
+    let store = job_store(directory.join("jobs.json"));
+    let settings = shared_settings();
+    let output = directory.join("不應完成.json");
+    let ready = directory.join("已啟動.txt");
+    let mut profile = fake_profile(&output, 5000, 0);
+    profile.additional_arguments.push_str(&format!(" --fake-ready-marker \"{}\"", ready.display()));
+    settings.lock().unwrap().cli_profiles.insert(CliKind::Codex, profile);
+    let manager = manager_with(
+        &store,
+        Arc::new(ProcessCliRunner::new(AppDataPaths::new(Some(&directory.text())))),
+        &settings,
+        None,
+        None,
+    );
+    let item = job("關閉取消", &directory, &[CliKind::Codex]);
+    manager.upsert(&item).unwrap();
+    manager.run_now(item.id).unwrap();
+    assert!(wait_until(Duration::from_secs(3), || ready.is_file()), "假 CLI 必須實際啟動才測取消");
+    let before = Instant::now();
+    manager.shutdown();
+    assert!(before.elapsed() < Duration::from_secs(2), "關閉必須取消手動執行");
+    assert!(!output.exists());
+    let saved = store.load().unwrap();
+    assert_eq!(saved[0].last_results[0].error, "執行已取消。");
+}
+
+#[test]
+fn regression_exhausted_without_reset_never_auto_calls() {
+    let directory = TempDir::new();
+    let store = job_store(directory.join("jobs.json"));
+    let now = local_wall_clock(2026, 10, 23, 10, 0, 0);
+    let reader = Arc::new(FakeCliUsageReader::default());
+    reader.set(available(
+        CliKind::Codex,
+        vec![CliUsageWindow::new("每週", 100, Some(Span::days(7)), None, false)],
+        now,
+    ));
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now)]).unwrap();
+    let runner = Arc::new(CountingCliRunner::default());
+    let manager =
+        manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(FakeClock::new(now)));
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) > 0));
+    manager.shutdown();
+    assert_eq!(runner.call_count(), 0, "缺少重置時間不表示額度可用");
+}
+
+#[test]
+fn regression_empty_arguments_and_extreme_spans() {
+    assert_eq!(
+        tokenizer::parse(Some("--tools \"\" --name \"a b\" \"\"")).unwrap(),
+        strings(&["--tools", "", "--name", "a b", ""])
+    );
+    assert!(time::parse_span("9223372036854775807.00:00:00").is_none());
+    let malformed = serde_json::json!({"result": {"rateLimits": {"primary": {
+        "usedPercent": 0, "windowDurationMins": i64::MAX, "resetsAt": i64::MAX
+    }}}});
+    let snapshot = usage::parse_codex_rate_limits(&malformed.to_string(), &time::now()).unwrap();
+    assert_eq!(snapshot.windows[0].duration, None);
+}
+
+#[test]
+fn regression_precanceled_process_never_spawns() {
+    let directory = TempDir::new();
+    let output = directory.join("不應啟動.json");
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let result = process::execute(
+        env!("CARGO_BIN_EXE_aiwake-fake-cli"),
+        &["--fake-cli-output", &output.to_string_lossy()],
+        &directory.text(),
+        Duration::from_secs(5),
+        &cancel,
+        None,
+    );
+    assert!(matches!(result, Err(CoreError::Canceled)));
+    assert!(!output.exists(), "預先取消不可先啟動再終止");
+}
+
+#[test]
+fn regression_output_flood_remains_cancelable_and_bounded() {
+    let directory = TempDir::new();
+    let start = Instant::now();
+    let result = process::execute(
+        env!("CARGO_BIN_EXE_aiwake-fake-cli"),
+        &["--fake-output-chunks", "100000"],
+        &directory.text(),
+        Duration::from_millis(100),
+        &CancelToken::new(),
+        Some(&|_, _| std::thread::sleep(Duration::from_millis(2))),
+    )
+    .unwrap();
+    assert!(result.timed_out);
+    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(result.standard_output.chars().count() < process::MAX_CAPTURED_CHARACTERS + 100);
+    assert!(result.standard_output.contains("其餘內容已捨棄"));
+}
+
+#[test]
+fn regression_automatic_save_failure_does_not_publish_running() {
+    let directory = TempDir::new();
+    let now = local_wall_clock(2026, 10, 23, 10, 0, 0);
+    let store = Arc::new(FailingJobStore::default());
+    store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now)]).unwrap();
+    let reader = Arc::new(FakeCliUsageReader::default());
+    ready_usage(&reader, CliKind::Codex, now);
+    let runner = Arc::new(CountingCliRunner::default());
+    let manager = ScheduleManager::new(
+        store.clone(),
+        runner.clone(),
+        AppSettings::default,
+        Some(reader),
+        Some(FakeClock::new(now)),
+    );
+    let failed = Arc::new(AtomicBool::new(false));
+    let seen = failed.clone();
+    manager.on_background_error(move |_| {
+        seen.store(true, Ordering::SeqCst);
+    });
+    store.fail.store(true, Ordering::SeqCst);
+    manager.initialize().unwrap();
+    assert!(wait_until(Duration::from_secs(3), || failed.load(Ordering::SeqCst)));
+    assert_eq!(manager.get_jobs().unwrap()[0].status, ScheduleStatus::Pending);
+    assert_eq!(runner.call_count(), 0);
+    manager.shutdown();
+}
+
+#[test]
+fn regression_duplicate_manual_targets_run_once() {
+    let directory = TempDir::new();
+    let store = job_store(directory.join("jobs.json"));
+    let runner = Arc::new(CountingCliRunner::default());
+    let manager = manager_with(&store, runner.clone(), &shared_settings(), None, None);
+    let item = job("重複目標", &directory, &[CliKind::Codex, CliKind::Codex]);
+    manager.upsert(&item).unwrap();
+    manager.run_now(item.id).unwrap();
+    assert!(wait_until(Duration::from_secs(3), || manager.get_jobs().unwrap()[0].status != ScheduleStatus::Running));
+    assert_eq!(runner.call_count(), 1, "同筆排程的重複 CLI 也須去重");
+    assert_eq!(store.load().unwrap()[0].targets, vec![CliKind::Codex]);
+}
+
+#[test]
+fn regression_log_retention_stays_bounded_during_long_session() {
+    let directory = TempDir::new();
+    let paths = AppDataPaths::new(Some(&directory.text()));
+    paths.ensure_created().unwrap();
+    let debug_path = paths.logs_directory().join("debug-20261023.log");
+    std::fs::write(&debug_path, "保留除錯紀錄").unwrap();
+    let writer = aiwake_core::log_writer::CliLogWriter::new(paths.clone());
+    let start = local_wall_clock(2026, 10, 23, 10, 0, 0);
+    let execution = process::ProcessExecution {
+        exit_code: 0,
+        standard_output: String::new(),
+        standard_error: String::new(),
+        timed_out: false,
+        used_shell: false,
+    };
+    let mut latest = String::new();
+    for index in 0..240 {
+        latest = writer.write_run_log(CliKind::Codex, &(start + Span::seconds(index)), "測試", &[], &execution, "");
+    }
+    let count = std::fs::read_dir(paths.logs_directory()).unwrap().count();
+    assert!(count <= 233, "長時間常駐不可無限累積，實際 {count} 個");
+    assert!(Path::new(&latest).is_file());
+    assert_eq!(std::fs::read_to_string(debug_path).unwrap(), "保留除錯紀錄");
+}
+
 fn job(name: &str, directory: &TempDir, targets: &[CliKind]) -> ScheduledJob {
     ScheduledJob {
         name: name.to_string(),
@@ -857,17 +1296,17 @@ fn cli_usage_reader() {
     let claude_login = login::create_start_info(CliKind::Claude, "C:\\my tools\\claude.exe", "").unwrap();
     assert!(claude_login.file_name == "cmd.exe" && !claude_login.create_no_window, "登入必須開啟看得見的主控台。");
     assert_eq!(
-        claude_login.arguments, "/d /s /c \"\"C:\\my tools\\claude.exe\" auth login || pause\"",
+        claude_login.arguments, "/e:ON /v:OFF /d /s /c \"\"C:\\my tools\\claude.exe\" \"auth\" \"login\" || pause\"",
         "Claude 登入指令應為 auth login，失敗時暫停。"
     );
     assert_eq!(
         login::create_start_info(CliKind::Codex, "codex.exe", "").unwrap().arguments,
-        "/d /s /c \"codex.exe login || pause\"",
+        "/e:ON /v:OFF /d /s /c \"\"codex.exe\" \"login\" || pause\"",
         "Codex 登入指令應為 login。"
     );
     assert_eq!(
         login::create_start_info(CliKind::AntigravityClaude, "agy.exe", "").unwrap().arguments,
-        "/d /s /c \"agy.exe || pause\"",
+        "/e:ON /v:OFF /d /s /c \"\"agy.exe\" || pause\"",
         "agy 沒有 login 子命令，應直接進互動模式。"
     );
 }
@@ -1220,42 +1659,6 @@ fn cli_runner_safe_arguments() {
     assert!(
         error_mode & process::SEM_NOGPFAULTERRORBOX != 0,
         "應設定 SEM_NOGPFAULTERRORBOX，子程序當掉才不會彈出錯誤報告對話框。"
-    );
-
-    // cmd.exe 的引號規則：空白與引號要包起來，結尾反斜線要加倍。
-    let shell = |executable: &str, arguments: &[&str]| process::build_command_shell_arguments(executable, arguments);
-    assert_eq!(
-        shell("C:\\tools\\run.cmd", &[]),
-        "/d /s /c \"C:\\tools\\run.cmd\"",
-        "沒有特殊字元的路徑不應被多加引號。"
-    );
-    assert_eq!(
-        shell("C:\\my tools\\run.cmd", &["早安 & whoami"]),
-        "/d /s /c \"\"C:\\my tools\\run.cmd\" \"早安 & whoami\"\"",
-        "含空白的路徑與參數都必須各自加引號。"
-    );
-    assert_eq!(
-        shell("run.cmd", &["say \"hi\""]),
-        "/d /s /c \"run.cmd \"say \\\"hi\\\"\"\"",
-        "參數內的雙引號必須以反斜線跳脫。"
-    );
-    assert_eq!(
-        shell("run.cmd", &["C:\\path with space\\"]),
-        "/d /s /c \"run.cmd \"C:\\path with space\\\\\"\"",
-        "結尾反斜線必須加倍，否則會把收尾引號跳脫掉。"
-    );
-    assert_eq!(shell("run.cmd", &[""]), "/d /s /c \"run.cmd \"\"\"", "空字串參數必須保留為一對引號。");
-    // 迴歸測試：a&b 沒有空白也沒有引號，只依 argv 規則不會加引號，
-    // 但 cmd 會把它切成兩個命令並嘗試執行 b。
-    assert_eq!(
-        shell("run.cmd", &["a&b"]),
-        "/d /s /c \"run.cmd \"a&b\"\"",
-        "含 cmd 運算子的參數即使沒有空白也必須加引號。"
-    );
-    assert_eq!(
-        shell("run.cmd", &["a|b", "c>d", "e^f"]),
-        "/d /s /c \"run.cmd \"a|b\" \"c>d\" \"e^f\"\"",
-        "其餘 cmd 運算子同樣必須加引號。"
     );
 }
 

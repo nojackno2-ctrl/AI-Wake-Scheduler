@@ -226,6 +226,22 @@ fn egui_editor_settings_fake_cli_and_rendering() {
     harness.set_size(egui::vec2(800.0, 1000.0));
     harness.run_steps(3);
     shot(&mut harness, "06-compact");
+    // 最小支援尺寸下仍須能開啟與取消設定，操作列不能落在視窗外。
+    harness.set_size(egui::vec2(700.0, 620.0));
+    harness.run_steps(3);
+    input(&mut harness, "排程名稱", "最小視窗排程");
+    assert_eq!(harness.state().editor.name, "最小視窗排程");
+    // 矮內容區需要較長的捲動動畫，先讓儲存按鈕停穩再點擊。
+    harness.get_by_label("儲存修改").scroll_to_me();
+    harness.run_steps(20);
+    click(&mut harness, "儲存修改");
+    shot(&mut harness, "07-minimum");
+    assert_eq!(load_jobs(&root)[0].name, "最小視窗排程", "狀態：{}", harness.state().status);
+    click(&mut harness, "⚙ 設定");
+    assert!(harness.state().settings_sheet.is_some());
+    shot(&mut harness, "08-minimum-settings");
+    click(&mut harness, "取消");
+    assert!(harness.state().settings_sheet.is_none());
     // 檢視結果與刪除仍經過正式的畫面操作。
     harness.set_size(egui::vec2(1600.0, 1150.0));
     harness.run_steps(3);

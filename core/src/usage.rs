@@ -414,7 +414,9 @@ impl CliUsageReader {
         let observed_at = time::now();
 
         if let (Some(cached), Some(cached_at)) = (&state.cached_snapshot, &state.cached_at) {
-            if observed_at - *cached_at < Span::seconds(CLAUDE_CACHE_SECONDS) {
+            if observed_at - *cached_at < Span::seconds(CLAUDE_CACHE_SECONDS)
+                && !snapshot_crossed_reset(cached, &observed_at)
+            {
                 return Ok(refresh_claude_snapshot(
                     cached,
                     &observed_at,
@@ -533,6 +535,9 @@ impl UsageReader for CliUsageReader {
         working_directory: &str,
         cancel: &CancelToken,
     ) -> CoreResult<CliUsageSnapshot> {
+        if cancel.is_canceled() {
+            return Err(CoreError::Canceled);
+        }
         let result = match kind {
             CliKind::Codex => read_codex(profile, working_directory, cancel),
             CliKind::Antigravity | CliKind::AntigravityArgon | CliKind::AntigravityClaude => {
@@ -575,6 +580,9 @@ fn send_cancellable(
     cancel: &CancelToken,
     send: impl FnOnce() -> Result<HttpResponse, String> + Send + 'static,
 ) -> CoreResult<Result<HttpResponse, String>> {
+    if cancel.is_canceled() {
+        return Err(CoreError::Canceled);
+    }
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = sender.send(send());
@@ -1055,19 +1063,34 @@ fn create_claude_rate_limited_snapshot(
     );
     match &state.cached_snapshot {
         None => unavailable(CliKind::Claude, message, *observed_at),
-        Some(cached) => refresh_claude_snapshot(cached, observed_at, &format!("{message}目前沿用最近一次成功資料。")),
+        Some(cached) => {
+            let mut snapshot =
+                refresh_claude_snapshot(cached, observed_at, &format!("{message}目前沿用最近一次成功資料。"));
+            // 舊資料可供顯示，但查詢失敗時不能授權自動喚醒。
+            snapshot.availability = CliUsageAvailability::Unavailable;
+            snapshot
+        }
     }
 }
 
-/// 以新的觀測時間更新快取的 Claude 快照；倒數已結束的視窗不再視為倒數中。
+fn snapshot_crossed_reset(snapshot: &CliUsageSnapshot, now: &Moment) -> bool {
+    snapshot
+        .windows
+        .iter()
+        .any(|window| window.resets_at.is_some_and(|reset| snapshot.observed_at < reset && reset <= *now))
+}
+
+/// 重新評估快取的 Claude 倒數；保留真正觀測時間，跨過重置後須重新查詢。
 pub fn refresh_claude_snapshot(snapshot: &CliUsageSnapshot, observed_at: &Moment, message: &str) -> CliUsageSnapshot {
     let mut refreshed = snapshot.clone();
+    if snapshot_crossed_reset(snapshot, observed_at) {
+        refreshed.availability = CliUsageAvailability::Unavailable;
+    }
     for window in &mut refreshed.windows {
         window.is_active_countdown =
             window.is_active_countdown && window.resets_at.is_some_and(|resets_at| resets_at > *observed_at);
     }
     refreshed.message = message.to_string();
-    refreshed.observed_at = *observed_at;
     refreshed
 }
 
@@ -1075,7 +1098,9 @@ fn resolve_claude_retry_after(response: &HttpResponse, observed_at: &Moment) -> 
     if let Some(value) = response.retry_after.as_deref().map(str::trim) {
         if let Ok(seconds) = value.parse::<i64>() {
             if seconds > 0 {
-                return *observed_at + Span::seconds(seconds);
+                if let Some(retry) = Span::try_seconds(seconds).and_then(|span| observed_at.checked_add_signed(span)) {
+                    return retry;
+                }
             }
         } else if let Ok(date) = chrono::DateTime::parse_from_rfc2822(value) {
             if date > *observed_at {
@@ -1312,7 +1337,11 @@ fn add_window(
         return;
     };
 
-    let duration = window.get("windowDurationMins").and_then(Value::as_i64).map(Span::minutes);
+    let duration = window
+        .get("windowDurationMins")
+        .and_then(Value::as_i64)
+        .and_then(Span::try_minutes)
+        .filter(|span| *span > Span::zero());
     // 協定若回傳無效時間，仍可顯示剩餘百分比。
     let resets_at = window.get("resetsAt").and_then(Value::as_i64).and_then(time::from_unix_seconds);
 
@@ -1321,7 +1350,10 @@ fn add_window(
     // 未開始的視窗其重置時間會隨讀取時間滑動（約為 現在 + 視窗長度），已開始者固定；
     // 因此重置時間明顯早於「現在 + 視窗長度」即視為倒數中。
     let window_started = match (resets_at, duration) {
-        (Some(reset), Some(duration)) => reset + duration_slack() < *observed_at + duration,
+        (Some(reset), Some(duration)) => reset
+            .checked_add_signed(duration_slack())
+            .zip(observed_at.checked_add_signed(duration))
+            .is_some_and(|(reset, end)| reset < end),
         _ => false,
     };
     let is_active_countdown =
@@ -1340,4 +1372,33 @@ fn unavailable(kind: CliKind, message: impl Into<String>, observed_at: Moment) -
 
 fn login_required(kind: CliKind, message: impl Into<String>, observed_at: Moment) -> CliUsageSnapshot {
     CliUsageSnapshot { requires_login: true, ..unavailable(kind, message, observed_at) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regression_claude_cached_reset_and_rate_limit_cannot_authorize_wakeup() {
+        let observed = time::local_wall_clock(2026, 10, 23, 10, 0, 0);
+        let reset = observed + Span::seconds(10);
+        let cached = CliUsageSnapshot::new(
+            CliKind::Claude,
+            CliUsageAvailability::Available,
+            vec![CliUsageWindow::new("5 小時", 50, Some(Span::hours(5)), Some(reset), true)],
+            "成功",
+            observed,
+        );
+        let active = refresh_claude_snapshot(&cached, &(reset - Span::seconds(1)), "快取");
+        assert_eq!(active.availability, CliUsageAvailability::Available);
+        assert_eq!(active.observed_at, observed, "快取不可偽造觀測時間");
+        let expired = refresh_claude_snapshot(&cached, &reset, "快取已過期");
+        assert_eq!(expired.availability, CliUsageAvailability::Unavailable);
+        let state = ClaudeState { cached_snapshot: Some(cached), ..ClaudeState::default() };
+        let limited = create_claude_rate_limited_snapshot(&state, &reset, &(reset + Span::minutes(5)));
+        assert_eq!(limited.availability, CliUsageAvailability::Unavailable);
+        assert!(!limited.windows.is_empty(), "保留歷史資料供診斷");
+        let response = HttpResponse { status: 429, body: String::new(), retry_after: Some(i64::MAX.to_string()) };
+        assert_eq!(resolve_claude_retry_after(&response, &observed), observed + Span::minutes(5));
+    }
 }

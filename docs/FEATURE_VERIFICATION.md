@@ -1,6 +1,52 @@
 # 功能驗證紀錄
 
-本檔記錄純 Rust 架構（Cargo workspace：`core/` 核心函式庫、`app/` 原生 Win32 桌面程式）的驗證結果。2026-10-16 以前以 C#／WinForms 實作的驗證紀錄保留在文末「歷史紀錄」，其中的 `dotnet build`、WinForms 測試及自包含 publish 已不適用於現行程式碼。
+本檔記錄純 Rust 架構（Cargo workspace：`core/` 核心函式庫、`app/` eframe/egui 桌面程式與 Win32 系統匣）的驗證結果。2026-10-16 以前以 C#／WinForms 實作的驗證紀錄保留在文末「歷史紀錄」，其中的 `dotnet build`、WinForms 測試及自包含 publish 已不適用於現行程式碼。
+
+## 2026-10-23 Codex：核心與 egui 重構後檢查
+
+- 起點：`main / 1bc7b80`，工作樹乾淨。檢查 core 全部模組與 app 的排程操作、設定、額度、終端機、背景工作、系統匣及 Windows 共用函式；同步檢查 Visual Studio、建置／安裝腳本與文件。
+- 可重現問題與修正：
+  - 儲存失敗仍發布使用者編輯、刪除或準備執行的 Running 狀態：改為在鎖內建立候選資料，持久化成功才發布；偵測與重置快取也只在成功修改後清除。設定採相同順序。已實際執行的完成結果則保留於記憶體並重試持久化，詳見下方複核補強。
+  - 手動執行不受關閉取消控制：共用管理器停止訊號；程序啟動前檢查取消，程序等待錯誤路徑也終止並回收直接子程序。
+  - 同筆排程重複目標導致手動平行呼叫兩次：載入與儲存時保留順序去重；原測試實際重現 2 次，修正後 1 次。
+  - 已用盡額度缺少有效重置時間仍放行：持續阻擋，直到讀到可用額度。Claude HTTP 429 與跨越重置的快取不再授權喚醒，保留真正觀測時間，跨重置直接重新查詢。
+  - 子程序輸出無界佇列及無界收尾：改為 64 個片段的背壓佇列與有限收尾；管線提前關閉時避免忙碌迴圈。egui 最多排隊 256 個輸出片段，每次 tick 最多處理 256 個事件；保留開始與完成事件的順序，過量畫面片段提供略過提示。
+  - 日誌只在啟動時清理一次：隔離測試寫入 240 筆後原有 241 個檔案；改為首次及每 32 次寫入清理，執行日誌約保留 200–231 筆，除錯日誌另依既有天數政策保留。
+  - 額外參數的空引號遭丟棄：保留空字串參數。極端時間長度、Codex 視窗長度與 Retry-After 改用可失敗的換算，避免溢位 panic。
+- 回歸證據：首批 5 項測試在修正前全數失敗；重複目標與日誌保留測試亦先重現失敗。最終新增 18 項測試，並擴充既有 UI 測試，以失敗儲存替身、可控時鐘、記憶體執行器、假 CLI 與暫存目錄驗證。
+- 最終本機驗證：依序 `cargo check --workspace --locked`、`cargo test --workspace --locked`、`cargo build --workspace --locked` 通過；61 項成功（app 17、UI 2、core 單元 1／整合 41），4 項選用測試預設略過。`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`git diff --check` 與 Visual Studio Debug 方案建置通過。
+- 邊界：未送出真實模型訊息、未變更正式安裝與正式資料、未執行全天掛機或資源用量基準測試。程序樹仍使用 Windows 快照清理，未驗證持續衍生孫程序的競態；安裝 QA 與真實唯讀 CLI 查詢另列下方。未發布版本。
+
+### 2026-10-23 Codex：主代理複核補強
+
+- 批次執行：`.cmd`／`.bat` 改用 `Command::new(executable).args(...)`，交由 [Rust 1.99 的批次專用跳脫](https://github.com/rust-lang/rust/blob/1.99.0/library/std/src/sys/args/windows.rs) 處理；移除一般執行路徑的自訂 `raw_arg`。節省 Token 附加提示改為單行，保留使用者訊息；批次參數含 CR/LF 時回報明確錯誤，原生 `.exe` 保留多行內容。
+- 主控台：登入／更新仍需 `|| pause`，因此保留受限制的 shell helper；所有值加引號、使用 `/e:ON /v:OFF /d /s /c`，明確拒絕路徑或參數中的雙引號、百分比、CR/LF 與 NUL。這項輸入限制僅適用登入／更新主控台。
+- 完成存檔：執行結果與完成時間不再因存檔失敗回復成 `Running`；發布正確完成狀態、通知 UI、回報背景錯誤並保留待寫入標記。排程迴圈每秒重試，恢復後先持久化再繼續掃描；儲存錯誤不再永久終止排程執行緒，也不再以第二次空結果收尾覆寫實際結果。
+- 設定補償：UI 改用可注入啟動設定替身的套用入口。設定存檔失敗會還原原啟動偏好；補償失敗則合併回報原始存檔錯誤與補償錯誤，記憶體設定仍保留原值。隔離模式不呼叫真實啟動設定。
+- 實際回歸：`regression_batch_arguments_round_trip_without_injection` 以 `.cmd`／`.bat` 轉呼叫假原生 CLI，讀回 JSON 驗證雙引號＋`&` 注入載荷、已定義的 `%AIWAKE_FAKE_VAR%` 與 `!AIWAKE_FAKE_VAR!`、`^`、空白、空參數、尾端反斜線、中文，以及各 CLI 預設節省 Token 參數；額外命令標記檔均未建立。`regression_batch_rejects_multiline_but_native_preserves_it` 驗證 CR、LF、CRLF；主控台測試實際執行含特殊字元路徑並驗證不安全輸入被拒絕。
+- 持久化回歸：可切換失敗 store 與受控 runner 在完成當下故意失敗，確認至少三次儲存嘗試仍保留相同完成結果；恢復儲存後無須新操作即可寫回，並確認下一刻度自動排程再次執行。設定測試注入啟動替身，覆蓋補償成功、補償失敗、首次啟動設定失敗、恢復後成功、未變更與隔離分支，均未操作真實 Run key。
+- 取消回歸：`regression_manual_shutdown_cancels_fake_cli` 等待假 CLI 寫出 ready marker 後才 shutdown，驗證兩秒內完成取消、結果為「執行已取消。」且未產生完成輸出。
+- 已執行：`cargo check -p aiwake-core -p aiwake-app --locked --offline`、`cargo test -p aiwake-core --test core_tests --locked --offline regression_ -- --test-threads=1`（13 通過）、`cargo test -p aiwake-app --lib --locked --offline host::tests::`（3 通過）、分別以 `--exact` 執行 `cli_runner_safe_arguments`／`cli_command_builder`／`cli_usage_reader`（各 1 通過）、`cargo build -p aiwake-core -p aiwake-app --locked --offline`；`rustc -vV` 確認 1.99.0／`x86_64-pc-windows-msvc`，無 MSVC 連結錯誤。
+- 格式檢查：`cargo fmt --all -- --check` 通過。
+- UI 裁切：700×620 視窗編輯名稱後按儲存，原先會先被裁切外的排程卡片點擊判定覆寫成舊值；改用 `container_contains_pointer()`。回歸實際操作最小視窗的文字輸入、儲存、設定開啟與取消，讀回 JSON 名稱確認成功；8 張 wgpu 擷圖位於 `target/audit-ui-shots`，已檢視儀表、最小視窗與設定。
+- 驗證修正：fmt 揪出主代理 UI 修正的換行；Clippy 揪出測試模組應置底與條件內等待的空迴圈樣式，已整理並重跑完整 check／test／build 與 Clippy 通過。
+
+### 本機、打包與檢查範圍
+
+| 範圍 | 本輪證據 |
+| --- | --- |
+| 核心排程、時間、資料模型與儲存 | 可控時鐘、跨日／時段邊界、重置／冷卻／去重、遷移及失敗持久化回歸 |
+| CLI 目錄、定位、參數、程序、登入、更新、額度與 HTTP | 原生／批次假 CLI 往返與取消、額度解析／快取、五目標真實唯讀查詢及三 CLI 版本檢查 |
+| 路徑、Win32 輔助、錯誤、日誌、匯出與假 CLI | 現行原始碼複核、日誌／匯出／容量回歸、真實版本探針與隔離執行 |
+| app 組裝、編輯器、設定、儀表、終端、主題、控制項、呈現 | 單元測試、egui 真實操作／wgpu 擷圖、最小尺寸存檔與設定回歸 |
+| 原生對話框、系統匣、啟動與程式入口 | 原始碼複核、隔離 Debug／Release 視窗生命週期；Run key 設定補償以替身測試 |
+| Visual Studio、建置／安裝與文件 | MSBuild Debug 通過，4 份 PowerShell 語法與專案 XML 檢查，Release 建置、五階段安裝 QA，README 預設模型與參數限制同步 |
+
+- 真實唯讀：`cargo test -p aiwake-core --test core_tests --locked executable_locator_resolution -- --ignored --exact --nocapture` 與 `cli_update_check_real` 均通過。五個目標皆可讀取實際額度；AGY Gemini／Claude-GPT 每週用盡，未呼叫模型，也未更新任何 CLI。
+- Release：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./build-release.ps1 -SkipTests -OutputDirectory dist/audit-20261023` 通過。執行檔 9,852,416 bytes，版本 2.2.0，SHA256 `14f027b7714fe85f11c884a17f32e1796e542fdb79fbc3f65e1c833331a804e0`；隔離最小化啟動、系統匣還原、關閉縮回與正常結束（exit 0）通過。
+- 安裝 QA：`build-installer.ps1 -SkipTests -VerificationBuild -OutputDirectory dist/audit-20261023/qa` 通過；`tests/Verify-Installer.ps1` 的 Install／UpgradeKeepStartup／UpgradeDisableStartup／UpgradeEnableStartup／Uninstall 全通過，每階段確認正式設定、排程與啟動值不變。清理前已確認建置目錄在工作區內且不是連結，並備份既有 publish／生命週期證據至 `dist/audit-20261023/previous-*`。
+- 探針除錯：Release 臨時 PowerShell 探針先因 `IntPtr.Zero` 布林轉換與未等待視窗初始化而誤判；改為明確比較零指標、等待隱藏狀態後，完整生命週期通過。這是探針修正，未據此改動產品。
+- 遠端基準：起點 `1bc7b80` 的 CI 有四時區成功，Pacific 工作為 hosted runner lost communication，未取得失敗測試日誌；不據此宣稱該時區測試失敗或成功。本輪提交的五時區結果待遠端執行。
 
 ## 現行驗證指令
 

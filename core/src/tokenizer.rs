@@ -11,14 +11,17 @@ pub fn parse(command_line: Option<&str>) -> CoreResult<Vec<String>> {
     let mut current = String::with_capacity(command_line.len());
     let mut in_quotes = false;
     let mut backslashes = 0usize;
+    let mut started = false;
 
     for character in command_line.chars() {
         if character == '\\' {
+            started = true;
             backslashes += 1;
             continue;
         }
 
         if character == '"' {
+            started = true;
             current.extend(std::iter::repeat_n('\\', backslashes / 2));
             if backslashes % 2 == 1 {
                 current.push('"');
@@ -33,10 +36,12 @@ pub fn parse(command_line: Option<&str>) -> CoreResult<Vec<String>> {
         backslashes = 0;
 
         if character.is_whitespace() && !in_quotes {
-            if !current.is_empty() {
+            if started {
                 arguments.push(std::mem::take(&mut current));
+                started = false;
             }
         } else {
+            started = true;
             current.push(character);
         }
     }
@@ -46,7 +51,7 @@ pub fn parse(command_line: Option<&str>) -> CoreResult<Vec<String>> {
         return Err(CoreError::Format("額外參數含有未結束的雙引號。".to_string()));
     }
 
-    if !current.is_empty() {
+    if started {
         arguments.push(current);
     }
     Ok(arguments)

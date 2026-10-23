@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::models::CliKind;
 use crate::paths::AppDataPaths;
@@ -12,12 +12,12 @@ const MAX_RETAINED_LOG_FILES: usize = 200;
 /// 與執行邏輯分離，讓 CLI 執行器只處理「執行什麼」。
 pub struct CliLogWriter {
     paths: AppDataPaths,
-    pruned: AtomicBool,
+    writes: AtomicUsize,
 }
 
 impl CliLogWriter {
     pub fn new(paths: AppDataPaths) -> Self {
-        Self { paths, pruned: AtomicBool::new(false) }
+        Self { paths, writes: AtomicUsize::new(0) }
     }
 
     pub fn write_run_log(
@@ -60,7 +60,7 @@ impl CliLogWriter {
         if self.paths.ensure_created().is_err() {
             return String::new();
         }
-        self.prune_once();
+        self.prune_periodically();
         let log_path = self.paths.logs_directory().join(file_name);
         match std::fs::write(&log_path, body) {
             Ok(()) => log_path.to_string_lossy().into_owned(),
@@ -68,9 +68,9 @@ impl CliLogWriter {
         }
     }
 
-    /// 每個程式生命週期只清一次，避免每次執行都掃整個日誌目錄。
-    fn prune_once(&self) {
-        if self.pruned.swap(true, Ordering::SeqCst) {
+    /// 首次與每 32 次寫入清理，避免常駐期間無限累積或每次寫入都掃描目錄。
+    fn prune_periodically(&self) {
+        if !self.writes.fetch_add(1, Ordering::Relaxed).is_multiple_of(32) {
             return;
         }
 
@@ -79,18 +79,21 @@ impl CliLogWriter {
         };
         let mut files: Vec<_> = entries
             .flatten()
+            // 除錯日誌有獨立的保留天數，不應被執行日誌清理捨棄。
+            .filter(|entry| !entry.file_name().to_string_lossy().starts_with("debug-"))
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("log")))
             .filter_map(|entry| {
                 let modified = entry.metadata().ok()?.modified().ok()?;
                 Some((modified, entry.path()))
             })
             .collect();
-        if files.len() <= MAX_RETAINED_LOG_FILES {
+        if files.len() < MAX_RETAINED_LOG_FILES {
             return;
         }
 
         files.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-        for (_, path) in files.into_iter().skip(MAX_RETAINED_LOG_FILES) {
+        // 預留即將寫入的一筆；兩次清理間最多多出 31 筆。
+        for (_, path) in files.into_iter().skip(MAX_RETAINED_LOG_FILES - 1) {
             // 個別檔案刪不掉（被佔用等）就跳過
             let _ = std::fs::remove_file(path);
         }

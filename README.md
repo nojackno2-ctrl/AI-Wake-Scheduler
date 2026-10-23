@@ -22,8 +22,8 @@
   - 禁用 Claude 所有 Tool 呼叫（`--tools ""`）。
   - 啟用 Codex 唯讀沙箱（`--sandbox read-only`）。
   - 隔離於空白專用工作區（`%LOCALAPPDATA%\AI倒數喚醒\workspace`），避免掃描本機龐大原始碼目錄。
-  - 自動附加限制指令（「只回覆上面這句，不要使用工具」），將 Token 消耗降至極限。
-- 🛡️ **安全無注入設計**：透過安全結構化傳遞參數，杜絕 Shell 注入與跳脫字元問題。
+  - 自動附加限制指令（「只回 OK，不要使用工具或說明」），減少輸出 Token。
+- 🛡️ **結構化參數傳遞**：原生執行檔與批次檔的參數交由 Rust 標準函式庫處理，並測試特殊字元往返與命令注入防護。`.cmd`／`.bat` 僅接受單行參數；原生 `.exe` 支援多行訊息。
 - 🔍 **無損安全檢查**：提供「檢查全部 CLI」功能，僅執行 `--version` 探針檢查，絕不送出 AI 訊息或消耗對話額度。
 - 🪟 **輕量背景常駐與開機自啟**：純 Rust 與 egui GPU 儀表板，關閉主視窗時可自動縮至系統匣（System Tray）持續倒數；支援登入 Windows 自動啟動。
 - 📦 **零外部執行階段相依**：編譯為原生單一執行檔，不需要安裝 .NET Runtime、WebView 或額外 UI 執行階段；使用系統顯示驅動程式提供的 GPU 後端。GPU 版本體積與記憶體需求較舊 Win32 介面增加。
@@ -39,9 +39,9 @@
 | **Antigravity (Argon)** | `agy` | `agy --model gemini-4-argon --effort low --disable-slash-commands --print <提示>` | 獨立的 Gemini 4 Argon 每週額度池，單獨勾選、單獨倒數；旗標同樣置於 `--print` 前 |
 | **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-5-5-low --disable-slash-commands --print <提示>` | 明確選擇 Claude 額度池；完整模型 ID 已包含 Low 思考程度，因此不另傳 `--effort` |
 | **OpenAI Codex** | `codex` | `codex exec --model gpt-6-luna --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
-| **Anthropic Claude** | `claude` | `claude --print --model claude-haiku-4-5-20251001 --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
+| **Anthropic Claude** | `claude` | `claude --print --model claude-haiku-5-5 --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
 
-預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 4.5；AGY Claude 池使用 Sonnet 5.5 Low；AGY Argon 池使用 Gemini 4 Argon Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
+預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 5.5；AGY Claude 池使用 Sonnet 5.5 Low；AGY Argon 池使用 Gemini 4 Argon Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
 
 > [!TIP]
 > Google Antigravity 內部將額度切分為 **Gemini Models**、**Claude and GPT models** 與 **Gemini 4 Argon** 三個獨立計數器，本工具各以一個目標對應：Gemini 與 Claude / GPT 各有 5 小時與每週視窗，Argon 只有每週視窗。三個目標可分別勾選、分別倒數；Argon 喚醒會消耗它自己的每週額度。

@@ -22,7 +22,7 @@ use aiwake_core::{
 use eframe::egui::{self, Color32, FontId, RichText, Stroke};
 use std::collections::{HashMap, HashSet};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver, Sender},
     Arc,
 };
@@ -122,6 +122,19 @@ enum Event {
     Login(CliKind, Result<(), String>),
     Updates(Vec<CliUpdateStatus>, bool),
 }
+
+fn send_activity(sender: &Sender<Event>, pending: &AtomicUsize, dropped: &AtomicUsize, event: &CliActivityEvent) {
+    let output = matches!(event.kind, aiwake_core::CliActivityKind::Output | aiwake_core::CliActivityKind::ErrorOutput);
+    if output
+        && pending.try_update(Ordering::Relaxed, Ordering::Relaxed, |count| (count < 256).then_some(count + 1)).is_err()
+    {
+        dropped.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    if sender.send(Event::Activity(event.clone())).is_err() && output {
+        pending.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 pub struct Dashboard {
     pub host: Arc<AppHost>,
     pub editor: ScheduleEditor,
@@ -139,6 +152,8 @@ pub struct Dashboard {
     last_update: Instant,
     sender: Sender<Event>,
     receiver: Receiver<Event>,
+    pending_output: Arc<AtomicUsize>,
+    dropped_output: Arc<AtomicUsize>,
     usage_cancel: Option<CancelToken>,
     usage_generation: u64,
     sheet_generation: u64,
@@ -164,10 +179,14 @@ impl Dashboard {
     /// 隔離測試仍使用真正排程器與 CLI runner，但不查詢本機帳號額度。
     pub fn new(host: Arc<AppHost>, background: bool, ctx: &egui::Context) -> Self {
         let (sender, receiver) = mpsc::channel();
+        let pending_output = Arc::new(AtomicUsize::new(0));
+        let pending = pending_output.clone();
+        let dropped_output = Arc::new(AtomicUsize::new(0));
+        let dropped = dropped_output.clone();
         let events = sender.clone();
         let repaint = ctx.clone();
         host.manager.on_activity_logged(move |event| {
-            let _ = events.send(Event::Activity(event.clone()));
+            send_activity(&events, &pending, &dropped, event);
             repaint.request_repaint();
         });
         let events = sender.clone();
@@ -199,6 +218,8 @@ impl Dashboard {
             last_update: Instant::now(),
             sender,
             receiver,
+            pending_output,
+            dropped_output,
             usage_cancel: None,
             usage_generation: 0,
             sheet_generation: 0,
@@ -269,9 +290,23 @@ impl Dashboard {
         }
     }
     pub fn tick(&mut self, ctx: &egui::Context) {
-        while let Ok(event) = self.receiver.try_recv() {
+        let dropped = self.dropped_output.swap(0, Ordering::Relaxed);
+        if dropped > 0 {
+            self.status = format!("輸出過快，已略過 {dropped} 個畫面輸出片段；請查看執行日誌。");
+        }
+        // 每幀處理有上限，避免持續輸出阻塞繪圖與輸入。
+        for _ in 0..256 {
+            let Ok(event) = self.receiver.try_recv() else { break };
             match event {
-                Event::Activity(event) => self.terminal.push(event),
+                Event::Activity(event) => {
+                    if matches!(
+                        event.kind,
+                        aiwake_core::CliActivityKind::Output | aiwake_core::CliActivityKind::ErrorOutput
+                    ) {
+                        self.pending_output.fetch_sub(1, Ordering::Relaxed);
+                    }
+                    self.terminal.push(event);
+                }
                 Event::Jobs => self.reload_jobs(),
                 Event::Error(error) => self.status = error,
                 Event::Usage(generation, snapshots) if generation == self.usage_generation => {
@@ -479,14 +514,10 @@ impl Dashboard {
             sheet.probe_text = error;
             return;
         }
-        let current = self.host.settings();
         let draft = sheet.draft.clone();
-        let result = (|| {
-            if !self.host.is_isolated && draft.start_with_windows != current.start_with_windows {
-                startup::set_enabled(draft.start_with_windows)?;
-            }
-            self.host.replace_settings(draft.clone()).map_err(|e| e.message().to_string())
-        })();
+        let startup: Option<&dyn Fn(bool) -> Result<(), String>> =
+            if self.host.is_isolated { None } else { Some(&startup::set_enabled) };
+        let result = self.host.apply_settings_with_startup(draft.clone(), startup);
         match result {
             Ok(()) => {
                 self.cancel_settings();
@@ -851,10 +882,8 @@ impl Dashboard {
                         );
                     })
                     .response;
-                if ui.input(|i| {
-                    i.pointer.primary_clicked() && i.pointer.interact_pos().is_some_and(|p| response.rect.contains(p))
-                }) && !toggled
-                {
+                // 容器點擊須尊重捲動裁切與上層視窗，避免隱藏卡片覆蓋編輯器操作。
+                if response.container_contains_pointer() && ui.input(|i| i.pointer.primary_clicked()) && !toggled {
                     self.editor = ScheduleEditor::from_job(&job);
                 }
                 if toggled {
@@ -1355,6 +1384,44 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn regression_output_queue_is_bounded_and_preserves_lifecycle_order() {
+        use aiwake_core::CliActivityKind;
+        let (sender, receiver) = mpsc::channel();
+        let pending = AtomicUsize::new(0);
+        let dropped = AtomicUsize::new(0);
+        let mut event = CliActivityEvent {
+            cli: CliKind::Codex,
+            job_name: "測試".into(),
+            kind: CliActivityKind::Started,
+            text: "測試".into(),
+            timestamp: time::now(),
+        };
+        send_activity(&sender, &pending, &dropped, &event);
+        event.kind = CliActivityKind::Output;
+        for _ in 0..1000 {
+            send_activity(&sender, &pending, &dropped, &event);
+        }
+        event.kind = CliActivityKind::Completed;
+        send_activity(&sender, &pending, &dropped, &event);
+        let events: Vec<_> = receiver
+            .try_iter()
+            .filter_map(|event| match event {
+                Event::Activity(event) => Some(event.kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events.len(), 258);
+        assert_eq!(events.first(), Some(&CliActivityKind::Started));
+        assert_eq!(events.last(), Some(&CliActivityKind::Completed));
+        assert_eq!(pending.load(Ordering::Relaxed), 256);
+        assert_eq!(dropped.load(Ordering::Relaxed), 744);
+        drop(receiver);
+        pending.store(0, Ordering::Relaxed);
+        event.kind = CliActivityKind::Output;
+        send_activity(&sender, &pending, &dropped, &event);
+        assert_eq!(pending.load(Ordering::Relaxed), 0);
+    }
     #[test]
     fn time_parser_rejects_seconds_and_keeps_end_of_day() {
         assert_eq!(parse_time("24:00", true), Some(1440));

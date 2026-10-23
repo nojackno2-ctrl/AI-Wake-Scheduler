@@ -50,39 +50,25 @@ pub fn get_current_error_mode() -> u32 {
     win::get_error_mode()
 }
 
-/// 組出 `cmd.exe /d /s /c "..."` 的參數字串。
-///
-/// `/d` 跳過 AutoRun 登錄項，`/s` 讓 cmd 只剝掉最外層的一對引號、
-/// 中間的內容原封不動交給批次檔，這樣每個參數只要各自照 argv 規則加引號即可。
-pub fn build_command_shell_arguments<S: AsRef<str>>(executable: &str, arguments: &[S]) -> String {
-    let mut builder = String::from("/d /s /c \"");
-    builder.push_str(&quote_argument(executable));
+/// 僅供登入／更新主控台使用；拒絕會改變 shell 語法的引號、展開與換行。
+/// 一般 CLI（含批次檔）必須使用 `build_command`，交由標準函式庫處理參數。
+pub fn build_command_shell_arguments<S: AsRef<str>>(executable: &str, arguments: &[S]) -> CoreResult<String> {
+    let mut builder = String::from("/e:ON /v:OFF /d /s /c \"");
+    builder.push_str(&quote_console_argument(executable)?);
     for argument in arguments {
         builder.push(' ');
-        builder.push_str(&quote_argument(argument.as_ref()));
+        builder.push_str(&quote_console_argument(argument.as_ref())?);
     }
     builder.push('"');
-    builder
+    Ok(builder)
 }
 
-/// cmd.exe 會當成運算子的字元。
-///
-/// argv 的引號規則只在意空白與雙引號，但這串參數要先經過 cmd 的剖析，
-/// 沒有空白的 `a&b` 一樣會被切成兩個命令，所以必須一併納入判斷。
-/// 注意 `%` 的展開發生在引號處理之前，加引號救不了，這是 cmd 的固有限制。
-const COMMAND_SHELL_META_CHARACTERS: &str = "&|<>^()!,;=";
-
-/// 依 Windows argv 規則替單一參數加引號。
-/// 反斜線只有在緊接著引號時才需要加倍，其餘情況維持原樣。
-fn quote_argument(value: &str) -> String {
-    if value.is_empty() {
-        return "\"\"".to_string();
-    }
-
-    let needs_quotes =
-        value.chars().any(|c| c.is_whitespace() || c == '"' || COMMAND_SHELL_META_CHARACTERS.contains(c));
-    if !needs_quotes {
-        return value.to_string();
+/// 所有值均加引號；百分比展開無法以此方式保護，因此明確拒絕。
+fn quote_console_argument(value: &str) -> CoreResult<String> {
+    if value.contains(['"', '%', '\r', '\n', '\0']) {
+        return Err(CoreError::InvalidArgument(
+            "登入／更新主控台的路徑與參數不可含雙引號、百分比、換行或 NUL 字元。".to_string(),
+        ));
     }
 
     let mut builder = String::with_capacity(value.len() + 8);
@@ -94,13 +80,6 @@ fn quote_argument(value: &str) -> String {
             continue;
         }
 
-        if character == '"' {
-            builder.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
-            builder.push('"');
-            backslashes = 0;
-            continue;
-        }
-
         builder.extend(std::iter::repeat_n('\\', backslashes));
         backslashes = 0;
         builder.push(character);
@@ -109,7 +88,7 @@ fn quote_argument(value: &str) -> String {
     // 結尾的反斜線會和收尾引號黏在一起，必須加倍才不會把引號跳脫掉。
     builder.extend(std::iter::repeat_n('\\', backslashes * 2));
     builder.push('"');
-    builder
+    Ok(builder)
 }
 
 pub fn is_shell_script(executable: &str) -> bool {
@@ -119,19 +98,11 @@ pub fn is_shell_script(executable: &str) -> bool {
 
 /// 建立不開視窗的子程序命令。
 ///
-/// .cmd / .bat 不能直接當成可執行檔啟動，必須經由 cmd.exe；
-/// cmd.exe 的引號規則和 argv 不同，只能自己組整串命令列。
+/// .cmd / .bat 由 Rust 標準函式庫選用批次檔專用跳脫與 cmd.exe 設定。
 pub fn build_command<S: AsRef<str>>(executable: &str, arguments: &[S], working_directory: &str) -> (Command, bool) {
     let shell_script = is_shell_script(executable);
-    let mut command = if shell_script {
-        let mut command = Command::new(std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string()));
-        command.raw_arg(build_command_shell_arguments(executable, arguments));
-        command
-    } else {
-        let mut command = Command::new(executable);
-        command.args(arguments.iter().map(|argument| argument.as_ref()));
-        command
-    };
+    let mut command = Command::new(executable);
+    command.args(arguments.iter().map(|argument| argument.as_ref()));
 
     if !working_directory.is_empty() {
         command.current_dir(working_directory);
@@ -195,7 +166,7 @@ impl Utf8Chunker {
     }
 }
 
-fn spawn_reader(stream: impl Read + Send + 'static, is_error: bool, sender: mpsc::Sender<StreamEvent>) {
+fn spawn_reader(stream: impl Read + Send + 'static, is_error: bool, sender: mpsc::SyncSender<StreamEvent>) {
     std::thread::spawn(move || {
         let mut stream = stream;
         let mut buffer = [0u8; 4096];
@@ -269,6 +240,14 @@ pub fn execute<S: AsRef<str>>(
     cancel: &CancelToken,
     on_output: Option<OutputCallback<'_>>,
 ) -> CoreResult<ProcessExecution> {
+    if cancel.is_canceled() {
+        return Err(CoreError::Canceled);
+    }
+    if is_shell_script(executable) && arguments.iter().any(|argument| argument.as_ref().contains(['\r', '\n'])) {
+        return Err(CoreError::InvalidArgument(
+            "批次檔（.cmd／.bat）不支援含 CR/LF 的多行參數；請改用單行參數或原生 .exe。".to_string(),
+        ));
+    }
     let (mut command, shell_script) = build_command(executable, arguments, working_directory);
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
 
@@ -276,7 +255,8 @@ pub fn execute<S: AsRef<str>>(
     let process_id = child.id();
 
     // 必須持續讀到 EOF，否則子程序寫滿管線時會卡住。
-    let (sender, receiver) = mpsc::channel();
+    // 慢速回呼透過管線背壓限制記憶體，不丟失正常輸出。
+    let (sender, receiver) = mpsc::sync_channel(64);
     if let Some(stdout) = child.stdout.take() {
         spawn_reader(stdout, false, sender.clone());
     }
@@ -309,6 +289,15 @@ pub fn execute<S: AsRef<str>>(
     };
 
     loop {
+        if open_streams <= 0 && exit_status.is_none() {
+            // 子程序先關閉管線後仍可能繼續運作，避免斷線佇列造成忙碌迴圈。
+            if cancel.wait(Duration::from_millis(15)) {
+                win::kill_process_tree(process_id);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CoreError::Canceled);
+            }
+        }
         match receiver.recv_timeout(Duration::from_millis(15)) {
             Ok(event) => handle(event, &mut open_streams),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -318,6 +307,7 @@ pub fn execute<S: AsRef<str>>(
         if exit_status.is_none() {
             if cancel.is_canceled() {
                 win::kill_process_tree(process_id);
+                let _ = child.kill();
                 let _ = child.wait();
                 return Err(CoreError::Canceled);
             }
@@ -331,11 +321,17 @@ pub fn execute<S: AsRef<str>>(
                     if Instant::now() >= deadline {
                         timed_out = true;
                         win::kill_process_tree(process_id);
+                        let _ = child.kill();
                         exit_status = child.wait().ok();
                         drain_deadline = Some(Instant::now() + Duration::from_secs(2));
                     }
                 }
-                Err(error) => return Err(CoreError::Io(error.to_string())),
+                Err(error) => {
+                    win::kill_process_tree(process_id);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(CoreError::Io(error.to_string()));
+                }
             }
         }
 
@@ -345,8 +341,12 @@ pub fn execute<S: AsRef<str>>(
     }
 
     // 收尾：把已經在佇列中的片段取完。
-    while let Ok(event) = receiver.try_recv() {
-        handle(event, &mut open_streams);
+    // 只收取當下最多一個佇列容量，避免孫程序持續輸出使收尾永不結束。
+    for _ in 0..64 {
+        match receiver.try_recv() {
+            Ok(event) => handle(event, &mut open_streams),
+            Err(_) => break,
+        }
     }
     drop(handle);
 

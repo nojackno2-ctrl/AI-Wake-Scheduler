@@ -6,6 +6,21 @@ fn value_after<'a>(arguments: &'a [String], flag: &str) -> Option<&'a String> {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(marker) = value_after(&arguments, "--fake-ready-marker") {
+        std::fs::write(marker, std::process::id().to_string()).expect("寫入隔離測試啟動標記");
+    }
+
+    if let Some(chunks) = value_after(&arguments, "--fake-output-chunks").and_then(|value| value.parse::<usize>().ok())
+    {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        let chunk = "測試輸出".repeat(256);
+        for _ in 0..chunks {
+            if stdout.write_all(chunk.as_bytes()).is_err() {
+                break;
+            }
+        }
+    }
 
     if let Some(delay) = value_after(&arguments, "--fake-delay-ms").and_then(|value| value.parse::<u64>().ok()) {
         std::thread::sleep(std::time::Duration::from_millis(delay));

@@ -116,7 +116,7 @@ pub fn build(
 /// 節省 Token 模式的提示詞：保留使用者訊息，但明確要求最短回覆且不使用工具，
 /// 把輸出 Token（單價最高的部分）壓到只剩幾個字。
 pub fn build_minimal_reply_prompt(message: &str) -> String {
-    format!("{message}\r\n只回「OK」，不要使用工具或說明。")
+    format!("{message} 只回「OK」，不要使用工具或說明。")
 }
 
 fn append_effort_arguments(arguments: &mut Vec<String>, kind: CliKind, effort: ThinkingEffort) {

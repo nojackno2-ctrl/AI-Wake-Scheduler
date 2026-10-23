@@ -95,6 +95,8 @@ struct Inner {
 
     /// 排程清單；鎖同時保護資料檔寫入的先後順序。
     jobs: Mutex<Vec<ScheduledJob>>,
+    /// 僅在 jobs 鎖內讀寫；已執行的結果即使存檔失敗仍須保留並重試。
+    persistence_pending: AtomicBool,
     last_quota_wakeup_by_cli: Mutex<HashMap<CliKind, Moment>>,
     last_quota_probe_at: Mutex<HashMap<(Guid, CliKind), Moment>>,
     known_reset_at: Mutex<HashMap<(Guid, CliKind), Moment>>,
@@ -132,6 +134,7 @@ impl ScheduleManager {
                 settings_provider: Box::new(settings_provider),
                 clock: clock.unwrap_or_else(|| Arc::new(SystemClock)),
                 jobs: Mutex::new(Vec::new()),
+                persistence_pending: AtomicBool::new(false),
                 last_quota_wakeup_by_cli: Mutex::new(HashMap::new()),
                 last_quota_probe_at: Mutex::new(HashMap::new()),
                 known_reset_at: Mutex::new(HashMap::new()),
@@ -176,6 +179,8 @@ impl ScheduleManager {
             if !(0..=SCHEDULE_REVISION).contains(&job.schedule_revision) {
                 return Err(CoreError::InvalidData("不支援此排程資料版本。".to_string()));
             }
+            let mut seen = HashSet::new();
+            job.targets.retain(|target| seen.insert(*target));
             // 舊週期只供資料相容；一律沿用開始時間並採每日時段偵測。
             let initial_time = initial_time_of(job);
             job.recurrence = ScheduleRecurrence::Interval;
@@ -251,9 +256,12 @@ impl ScheduleManager {
         inner.ensure_not_disposed()?;
         validate_job(job)?;
         {
-            let mut jobs = lock(&inner.jobs);
+            let mut current = lock(&inner.jobs);
+            let mut jobs = current.clone();
             let now = inner.now();
             let mut saved = job.snapshot();
+            let mut seen = HashSet::new();
+            saved.targets.retain(|target| seen.insert(*target));
             // 舊週期欄位只保留相容標記。
             let initial_time = initial_time_of(&saved);
             saved.recurrence = ScheduleRecurrence::Interval;
@@ -267,8 +275,6 @@ impl ScheduleManager {
                 saved.probe_interval_minutes,
                 true,
             )?;
-            lock(&inner.last_quota_probe_at).retain(|(id, _), _| *id != saved.id);
-            lock(&inner.known_reset_at).retain(|(id, _), _| *id != saved.id);
             saved.status = if saved.enabled { ScheduleStatus::Pending } else { ScheduleStatus::Disabled };
             saved.started_at = None;
             saved.finished_at = None;
@@ -288,6 +294,9 @@ impl ScheduleManager {
             }
 
             inner.job_store.save(&jobs)?;
+            *current = jobs;
+            lock(&inner.last_quota_probe_at).retain(|(id, _), _| *id != job.id);
+            lock(&inner.known_reset_at).retain(|(id, _), _| *id != job.id);
         }
 
         inner.raise_jobs_changed();
@@ -299,17 +308,19 @@ impl ScheduleManager {
         let inner = &self.inner;
         inner.ensure_not_disposed()?;
         {
-            let mut jobs = lock(&inner.jobs);
+            let mut current = lock(&inner.jobs);
+            let mut jobs = current.clone();
             if jobs.iter().any(|job| job.id == id && job.status == ScheduleStatus::Running) {
                 return Err(CoreError::InvalidOperation("排程正在執行，暫時不能刪除。".to_string()));
             }
             if let Some(job) = jobs.iter().find(|job| job.id == id) {
                 debug_log::write("排程", format!("刪除「{}」", job.name));
             }
-            lock(&inner.last_quota_probe_at).retain(|(job_id, _), _| *job_id != id);
-            lock(&inner.known_reset_at).retain(|(job_id, _), _| *job_id != id);
             jobs.retain(|job| job.id != id);
             inner.job_store.save(&jobs)?;
+            *current = jobs;
+            lock(&inner.last_quota_probe_at).retain(|(job_id, _), _| *job_id != id);
+            lock(&inner.known_reset_at).retain(|(job_id, _), _| *job_id != id);
         }
 
         inner.raise_jobs_changed();
@@ -321,7 +332,8 @@ impl ScheduleManager {
         let inner = &self.inner;
         inner.ensure_not_disposed()?;
         let execution = {
-            let mut jobs = lock(&inner.jobs);
+            let mut current = lock(&inner.jobs);
+            let mut jobs = current.clone();
             let job = jobs
                 .iter_mut()
                 .find(|item| item.id == id)
@@ -341,6 +353,7 @@ impl ScheduleManager {
             job.last_results = Vec::new();
             let execution = job.snapshot();
             inner.job_store.save(&jobs)?;
+            *current = jobs;
             active.extend(execution.targets.iter().copied());
             execution
         };
@@ -354,7 +367,7 @@ impl ScheduleManager {
         );
         inner.raise_jobs_changed();
         let targets = execution.targets.clone();
-        inner.start_execution(execution, targets, CancelToken::none(), false);
+        inner.start_execution(execution, targets, inner.stop.clone(), false);
         Ok(())
     }
 
@@ -403,15 +416,29 @@ impl Inner {
     /// （上限 `MAX_IDLE_WAIT_SECONDS`），而不是固定每秒喚醒。
     fn run_scheduler_loop(self: Arc<Self>) {
         while !self.stop.is_canceled() {
+            if let Err(error) = self.retry_pending_persistence() {
+                self.raise_background_error(&error);
+                self.wait_for_next_round(Span::seconds(1));
+                continue;
+            }
             match self.scan_and_start_due_jobs() {
                 Ok(next_delay) => self.wait_for_next_round(next_delay),
                 Err(CoreError::Canceled) if self.stop.is_canceled() => break,
                 Err(error) => {
                     self.raise_background_error(&error);
-                    break;
+                    self.wait_for_next_round(Span::seconds(1));
                 }
             }
         }
+    }
+
+    fn retry_pending_persistence(&self) -> CoreResult<()> {
+        let jobs = lock(&self.jobs);
+        if self.persistence_pending.load(Ordering::SeqCst) {
+            self.job_store.save(&jobs)?;
+            self.persistence_pending.store(false, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// 等待下一輪掃描，期間若有排程異動會被 `signal_scheduler` 立即喚醒。
@@ -594,6 +621,8 @@ impl Inner {
                                 Some("額度無法確認，不呼叫".to_string())
                             } else if let Some(reset) = exhausted_until(Some(&value), &observed) {
                                 Some(format!("額度已用盡，至 {} 重置前不呼叫", local_text(&reset)))
+                            } else if value.windows.iter().any(|window| window.used_percent >= 100) {
+                                Some("額度已用盡且尚未確認重置，不呼叫".to_string())
                             } else if is_counting_down(Some(&value), &observed) {
                                 Some("倒數中，不呼叫".to_string())
                             } else {
@@ -611,8 +640,12 @@ impl Inner {
                     }
                 }
             }
+            if targets.is_empty() {
+                continue;
+            }
             let execution = {
-                let mut jobs = lock(&self.jobs);
+                let mut current = lock(&self.jobs);
+                let mut jobs = current.clone();
                 let mut active = lock(&self.active_targets);
                 let now = self.now();
                 let stored = jobs.iter_mut().find(|stored| stored.id == job.id && **stored == job);
@@ -626,6 +659,7 @@ impl Inner {
                         stored.started_at = Some(now);
                         let execution = stored.clone();
                         self.job_store.save(&jobs)?;
+                        *current = jobs;
                         active.extend(targets.iter().copied());
                         Some(execution)
                     } else {
@@ -646,7 +680,8 @@ impl Inner {
         let mut delay = max_idle_wait();
         let mut changed = false;
         {
-            let mut jobs = lock(&self.jobs);
+            let mut current = lock(&self.jobs);
+            let mut jobs = current.clone();
             for job in jobs.iter_mut().filter(|job| job.enabled && job.status == ScheduleStatus::Pending) {
                 let next = self.next_job_schedule_time(job, &now)?;
                 if job.scheduled_at != next {
@@ -657,6 +692,7 @@ impl Inner {
             }
             if changed {
                 self.job_store.save(&jobs)?;
+                *current = jobs;
             }
         }
         if changed {
@@ -707,9 +743,9 @@ impl Inner {
                     let options = RunOptions { timeout, token_saver_mode: settings.token_saver_mode, automatic };
                     let (job, cancel) = (&job, &cancel);
                     scope.spawn(move || {
-                        if automatic
-                            && (cancel.is_canceled()
-                                || !calculator::in_detection_window(
+                        if cancel.is_canceled()
+                            || (automatic
+                                && !calculator::in_detection_window(
                                     initial_time_of(job),
                                     job.end_time_of_day,
                                     &self.now(),
@@ -732,11 +768,12 @@ impl Inner {
 
         let completed = match results {
             Some(results) => self.complete_job(job.id, Some(&results)),
-            None => Err(CoreError::InvalidOperation("CLI 執行過程發生未預期的錯誤。".to_string())),
+            None => {
+                self.raise_background_error(&CoreError::InvalidOperation("CLI 執行過程發生未預期的錯誤。".to_string()));
+                self.complete_job(job.id, None)
+            }
         };
         if let Err(error) = completed {
-            // 忽略次要的清理錯誤
-            let _ = self.complete_job(job.id, None);
             self.raise_background_error(&error);
             return;
         }
@@ -787,9 +824,9 @@ impl Inner {
             activity(if is_error { CliActivityKind::ErrorOutput } else { CliActivityKind::Output }, text.to_string());
         };
         // 活動事件可能由 UI 或其他監聽者處理一段時間，真正呼叫前再次確認。
-        if options.automatic
-            && (cancel.is_canceled()
-                || !calculator::in_detection_window(initial_time_of(job), job.end_time_of_day, &self.now()))
+        if cancel.is_canceled()
+            || (options.automatic
+                && !calculator::in_detection_window(initial_time_of(job), job.end_time_of_day, &self.now()))
         {
             debug_log::write("偵測", format!("{} 已離開偵測時段，不啟動 CLI", target.short_name()));
             return None;
@@ -831,8 +868,9 @@ impl Inner {
     /// 收尾一次執行：寫回結果並排到下一次讀取倒數（或下一次自動喚醒）的時點。
     /// `results` 為 None 代表執行過程發生錯誤。
     fn complete_job(&self, job_id: Guid, results: Option<&[CliRunResult]>) -> CoreResult<()> {
-        {
-            let mut jobs = lock(&self.jobs);
+        let persistence = {
+            let mut current = lock(&self.jobs);
+            let mut jobs = current.clone();
             let Some(stored) = jobs.iter_mut().find(|item| item.id == job_id) else {
                 return Ok(());
             };
@@ -862,12 +900,16 @@ impl Inner {
             }
 
             debug_log::write("執行", format!("完成 {}", describe_job(stored)));
-            self.job_store.save(&jobs)?;
-        }
+            let persistence = self.job_store.save(&jobs);
+            self.persistence_pending.store(persistence.is_err(), Ordering::SeqCst);
+            // CLI 已實際完成，不能因磁碟故障回復成永遠 Running。
+            *current = jobs;
+            persistence
+        };
 
         self.raise_jobs_changed();
         self.signal_scheduler();
-        Ok(())
+        persistence
     }
 
     fn raise_jobs_changed(&self) {

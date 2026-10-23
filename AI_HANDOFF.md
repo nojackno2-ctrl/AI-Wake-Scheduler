@@ -1,5 +1,15 @@
 # AI HANDOFF
 
+## 2026-10-23 Codex：完整程式檢查與最佳化（進行中）
+
+- 目標：檢查核心排程／並行／資料保存／CLI 程序及 egui 介面，修正可重現問題並驗證；起始 main／1bc7b80 工作樹乾淨。
+- 基準佐證：`rustc -vV` 為 1.99.0、x86_64-pc-windows-msvc；依序 `cargo check --workspace --locked`、`cargo test --workspace --locked`、`cargo build --workspace --locked` 通過，共 43 測試通過（app 13、UI 2、core 28），4 項真實 CLI 選用測試略過。
+- `MSBuild AI倒數喚醒.sln /t:Build /p:Configuration=Debug /p:Platform=x64` 通過。使用 agent-delegation-tools 委派 Codex 審查與實作，主代理複核及驗證；委派不可操作 Git 或交接檔。
+- 已修正：儲存失敗狀態、手動關閉取消、重複目標去重、用盡額度與 Claude 過期／429 快取、輸出背壓、日誌保留、解析溢位；批次檔雙引號＋`&` 注入改由標準函式庫處理，實際參數往返／標記檔回歸通過；完成存檔失敗保留結果並重試、設定存檔失敗補償啟動偏好。
+- 主代理最終驗證：依序 check／test／build 通過，共 61 測試通過（app 17、UI 2、core 42），4 項選用略過；fmt、Clippy `-D warnings` 通過。fmt 換行、Clippy 測試模組順序與條件內 wait 空迴圈樣式均已修正並複驗全套通過。Release 建置成功：dist/audit-20261023/AI倒數喚醒.exe（9,852,416 bytes），SHA256 14f027b7714fe85f11c884a17f32e1796e542fdb79fbc3f65e1c833331a804e0。
+- 真實唯讀驗證：`cargo test -p aiwake-core --test core_tests --locked executable_locator_resolution -- --ignored --exact --nocapture` 通過，五個 CLI 目標的版本探針與帳號額度皆可讀；`cli_update_check_real` 亦通過，僅提示版本，未更新 CLI。
+- UI／安裝回歸已解決：700×620 編輯／存檔先重現舊值覆蓋，改用 container_contains_pointer 後成功；8 張擷圖已檢視。Release 隔離生命週期四步通過；臨時探針誤判零指標／初始化已修正。QA 建置與 Verify-Installer 五階段全 PASS，正式設定、排程、啟動值逐步確認不變；清理前驗證路徑及備份既有產物。待提交／推送與遠端五時區 CI；未操作正式安裝、正式資料或真實模型。
+
 ## 2026-10-23 Antigravity + Claude Opus 5.5：以 eframe/egui 重構現代 GPU 圖形化介面（完成）
 
 - 使用者要求：「我覺得介面還是很醜，我要圖形化的介面」並指定「呼叫 Claude opus 5.5 來討論怎麼設計介面」。開始時 `main` 工作樹乾淨。
