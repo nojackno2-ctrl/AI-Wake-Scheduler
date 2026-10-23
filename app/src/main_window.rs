@@ -914,9 +914,9 @@ impl Dashboard {
         let (badge, name, brand) = theme::brand(kind, colors.dark);
         let snapshot = self.snapshots.get(&kind).cloned();
         let group = snapshot.as_ref().map(|s| board::build_group(catalog::get(kind), s));
-        let primary = group
-            .as_ref()
-            .and_then(|g| g.rows.iter().find(|r| r.duration.is_some_and(|d| d <= Span::hours(6))).or(g.rows.first()));
+        let (primary_index, weekly_index) = group.as_ref().map_or((None, None), |g| board::primary_and_weekly(&g.rows));
+        let primary = primary_index.and_then(|i| group.as_ref()?.rows.get(i));
+        let weekly = weekly_index.and_then(|i| group.as_ref()?.rows.get(i));
         theme::card(colors).inner_margin(12).show(ui, |ui| {
             ui.vertical(|ui| {
                 let inner_width = (width - 26.0).max(96.0);
@@ -985,6 +985,15 @@ impl Dashboard {
                     value = "登入".into();
                     countdown = "需要授權".into();
                 }
+                if let Some(row) = primary {
+                    ui.painter().text(
+                        center - egui::vec2(0.0, 24.0),
+                        egui::Align2::CENTER_CENTER,
+                        &row.label,
+                        FontId::proportional(9.5),
+                        colors.muted,
+                    );
+                }
                 ui.painter().text(
                     center - egui::vec2(0.0, 6.0),
                     egui::Align2::CENTER_CENTER,
@@ -1000,9 +1009,38 @@ impl Dashboard {
                     if exhausted { theme::DANGER } else { colors.secondary },
                 );
                 response.on_hover_text(group.as_ref().map(|g| g.message.as_str()).unwrap_or("等待額度讀取"));
+                // 每週額度固定在圓環下方第一列，沒有資料時也保留位置讓各卡片對齊。
+                ui.horizontal(|ui| {
+                    ui.small("每週");
+                    let (percent, text, danger) = match weekly {
+                        Some(row) => (
+                            row.percent_text.clone(),
+                            match row.resets_at.filter(|_| row.is_counting_down) {
+                                Some(reset) => board::format_countdown((reset - now).max(Span::zero())),
+                                None => "未倒數".into(),
+                            },
+                            row.remaining_percent == 0,
+                        ),
+                        None => ("—".into(), "—".into(), false),
+                    };
+                    ui.small(percent);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(text).font(FontId::monospace(10.0)).color(if danger {
+                            theme::DANGER
+                        } else {
+                            colors.secondary
+                        }));
+                    });
+                });
+                ui.add(
+                    egui::ProgressBar::new(weekly.map_or(0.0, |row| row.remaining_percent as f32 / 100.0))
+                        .desired_width(inner_width)
+                        .desired_height(5.0)
+                        .fill(brand),
+                );
                 if let Some(group) = &group {
                     for row in &group.rows {
-                        if primary.is_some_and(|p| std::ptr::eq(p, row)) {
+                        if [primary, weekly].iter().flatten().any(|p| std::ptr::eq(*p, row)) {
                             continue;
                         }
                         ui.horizontal(|ui| {

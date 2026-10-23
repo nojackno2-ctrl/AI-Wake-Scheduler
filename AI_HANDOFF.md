@@ -1,5 +1,12 @@
 # AI HANDOFF
 
+## 2026-10-23 Claude：額度卡片顯示每週倒數（完成）
+
+- 使用者需求：每週倒數也要顯示、位置統一；沒有 5 小時倒數時圓環改顯示每週額度。
+- 變更：`board.rs` 新增 `primary_and_weekly`（5 小時視窗倒數中才佔圓環，否則改用每週列；每週以 7 天週期或「每週」標籤判定）；`main_window.rs` 額度卡在圓環上方標示目前視窗名稱，圓環下方固定一列「每週 xx% ／倒數」加進度條，無資料時顯示「—」保留位置；其餘視窗列排除圓環與每週列。
+- 驗證：`cargo test --workspace` 全數通過（含新增 `weekly_takes_the_dial_without_five_hour_countdown`），`cargo clippy --workspace` 無警告。
+- 未驗證：未實際啟動程式目視檢查卡片排版。
+
 ## 2026-10-23 Claude：修正 Claude 5 小時倒數讀取不到（完成）
 
 - 使用者回報「讀取不到 claude 的倒數」。

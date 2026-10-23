@@ -134,6 +134,24 @@ fn build_rows(descriptor: &CliDescriptor, snapshot: &CliUsageSnapshot) -> Vec<Bo
         .collect()
 }
 
+/// 選出圓環要顯示的列與固定位置的每週列：5 小時視窗倒數中時圓環顯示 5 小時，
+/// 否則改顯示每週額度。
+pub fn primary_and_weekly(rows: &[BoardRow]) -> (Option<usize>, Option<usize>) {
+    let weekly = rows.iter().position(is_weekly);
+    let short = rows.iter().position(|row| row.duration.is_some_and(|d| d <= Span::hours(6)));
+    let primary = match short {
+        Some(index) if rows[index].is_counting_down => Some(index),
+        _ => weekly.or(short).or((!rows.is_empty()).then_some(0)),
+    };
+    (primary, weekly)
+}
+
+fn is_weekly(row: &BoardRow) -> bool {
+    row.duration
+        .filter(|d| *d > Span::zero())
+        .map_or(row.label == "每週", |d| (d.num_seconds() as f64 / 86_400.0 - 7.0).abs() < 0.05)
+}
+
 /// 由額度視窗的週期長度推出短標籤，這是各 CLI 之間最一致的說法。
 pub fn duration_label(duration: Option<Span>) -> Option<String> {
     let value = duration.filter(|value| *value > Span::zero())?;
@@ -248,6 +266,27 @@ mod tests {
         assert_eq!(labels, ["5 小時", "7 天", "Opus 7 天"]);
         assert_eq!(group.rows[0].percent_text, "57%");
         assert!(group.rows[0].is_counting_down && !group.rows[2].is_counting_down);
+        assert_eq!(primary_and_weekly(&group.rows), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn weekly_takes_the_dial_without_five_hour_countdown() {
+        let now = local_wall_clock(2026, 10, 7, 9, 0, 0);
+        let row = |label: &str, duration: Option<Span>, counting: bool| BoardRow {
+            label: label.into(),
+            remaining_percent: 50,
+            percent_text: "50%".into(),
+            resets_at: Some(now + Span::hours(1)),
+            is_counting_down: counting,
+            duration,
+        };
+        let idle = [row("5 小時", Some(Span::hours(5)), false), row("每週", Some(Span::days(7)), true)];
+        assert_eq!(primary_and_weekly(&idle), (Some(1), Some(1)));
+        let named = [row("每週", None, true), row("5 小時", Some(Span::hours(5)), true)];
+        assert_eq!(primary_and_weekly(&named), (Some(1), Some(0)));
+        let short_only = [row("5 小時", Some(Span::hours(5)), false)];
+        assert_eq!(primary_and_weekly(&short_only), (Some(0), None));
+        assert_eq!(primary_and_weekly(&[]), (None, None));
     }
 
     #[test]
