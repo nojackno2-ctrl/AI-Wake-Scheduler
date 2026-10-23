@@ -18,9 +18,11 @@ test = false
 [dependencies]
 aiwake-core = { path = "../core" }
 chrono.workspace = true
+eframe.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Storage_Xps",
@@ -38,6 +40,9 @@ windows = { workspace = true, features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+egui_kittest.workspace = true
 
 [build-dependencies]
 winresource = "0.1"

@@ -1,5 +1,23 @@
 # AI HANDOFF
 
+## 2026-10-23 Antigravity + Claude Opus 5.5：以 eframe/egui 重構現代 GPU 圖形化介面（完成）
+
+- 使用者要求：「我覺得介面還是很醜，我要圖形化的介面」並指定「呼叫 Claude opus 5.5 來討論怎麼設計介面」。開始時 `main` 工作樹乾淨。
+- 設計討論與使用者確認決策：
+  1. **框架選型**：改用 `eframe` / `egui` `0.37.0`（`wgpu` DX12 後端，讀取系統內建 `msjh.ttc`、`msjhbd.ttc`、`consola.ttf`、`seguisym.ttf`，維持單一執行檔與零額外執行階段依賴），外圍保留單一實例 Mutex、`AppHost`、`tray.rs` 與原生 COM 檔案對話框。
+  2. **主題風格**：預設採用「深色科技感主題（Dark Mode，`#0B1020` 背景／`#151C2E` 卡片／`#22D3EE` 青色強調）」，並在頂部導覽列提供 `☀ 淺色 / ☾ 深色` 一鍵切換（淺色模式下終端機仍維持深色底）。
+  3. **5 大 CLI 圓環儀表板（Ring Gauge Cards）**：雙環設計——外環（粗）顯示 5h 主要額度剩餘 %，內環（細）顯示重置倒數進度，底部附每週額度細長條與「重新登入」按鈕，卡片上方搭配品牌色圓形徽章（`Ge` `#3B82F6` / `Ar` `#B58500` / `AC` `#C04FD0` / `Cx` `#10A37F` / `CC` `#E2683C`）。
+  4. **排程卡片、24h 時間軸、控制項與設定抽屜**：
+     - 左欄改為圖形化排程卡片（含狀態呼吸燈、右上角 Toggle 滑動開關點擊立即生效並存檔、24 小時視覺化偵測時段條＋已知重置時間菱形標記、CLI 徽章列）。
+     - 中下排程編輯器採用圓角現代輸入框、可拖曳把手的 24 小時互動時間軸（5 分鐘吸附）、分段式檢測間隔選擇器（`5分`/`10分`/`15分`/`30分`/`60分`＋自訂數值）與點擊式 CLI Pill/Chip 標籤。
+     - 設定頁改為主視窗右側滑出抽屜（`SettingsSheet`），免開獨立視窗，底部固定「儲存設定／檢查 CLI 連線／取消」操作列。
+- 變更：
+  - `Cargo.toml`、`app/Cargo.toml`、`Cargo.lock`：加入 `eframe = "0.37"` 與開發依賴 `egui_kittest = "0.37"`。
+  - `app/src/theme.rs`、`app/src/widgets.rs`、`app/src/terminal.rs`、`app/src/settings_window.rs`、`app/src/main_window.rs`、`app/src/board.rs`、`app/src/tray.rs`、`app/src/ui.rs`、`app/src/lib.rs`、`README.md`：完整實作 `eframe` / `egui` 圖形化控制中心、雙同心圓環儀表板、24h 互動時間軸、自繪 Toggle Switch、設定右側抽屜與隱藏式 `AiWakeTrayHost` 系統匣視窗。
+  - `app/tests/ui_smoke.rs`：新增 `egui_editor_settings_fake_cli_and_rendering`（透過 `egui_kittest` 驅動排程建立、卡片即時啟停存檔、編輯儲存、深淺色切換、設定模型／思考程度連動、假 CLI `--version` 探針與立即執行終端機輸出，並輸出 6 張 `wgpu` 渲染截圖人工檢視確認無破版或字元缺漏）與 `native_wgpu_window_close_restore_and_minimized`（驗證真實 `ai-wake-scheduler.exe` 關閉縮到系統匣、還原、直接結束及 `--minimized` 隱藏啟動）。
+- 驗證：依序執行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（app 單元測試 13、`ui_smoke` 整合測試 2、core 測試 28，共 43 項通過，4 項 opt-in 忽略）、`cargo build --workspace --locked` 與 `git diff --check` 全部通過。
+- 限制：未重新打包正式安裝版或發布新版本。
+
 ## 2026-10-23 Antigravity：取消強制更新 CLI 阻擋呼叫，改回提示通知（完成）
 
 - 使用者要求：「取消強制更新CLI的設定，改成提示就好」。開始時 `main` 工作樹乾淨。

@@ -1,322 +1,128 @@
-//! 全應用程式共用的字型、色彩與按鈕外觀。
+//! 固定字級、Windows 中文字型與深淺色主題。
+use aiwake_core::CliKind;
+use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, TextStyle};
 
-use std::sync::OnceLock;
-
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{GetSysColor, SYS_COLOR_INDEX};
-use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
-use windows::Win32::UI::Controls::DRAWITEMSTRUCT;
-use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
-use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetWindowLongPtrW, SystemParametersInfoW, GWLP_USERDATA, SPI_GETHIGHCONTRAST,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WM_MOUSEMOVE,
-};
-
-use crate::w32::{self, rgb, Font, WM_MOUSELEAVE};
-
-const FAMILY_NAME: &str = "Microsoft JhengHei UI";
-const MONO_FAMILY_NAME: &str = "Consolas";
-
-/// 單一冷色中性色盤，僅以藍色作為互動重點。紅、綠只表達語意狀態。
-/// 高對比模式下改用系統色彩。
+#[derive(Clone, Copy)]
 pub struct Palette {
-    pub high_contrast: bool,
-    pub canvas: COLORREF,
-    pub panel: COLORREF,
-    pub panel_subtle: COLORREF,
-    pub divider: COLORREF,
-    pub primary_text: COLORREF,
-    pub secondary_text: COLORREF,
-    pub selected: COLORREF,
-    pub banner: COLORREF,
-    pub banner_text: COLORREF,
-    pub banner_subtitle: COLORREF,
-    pub accent: COLORREF,
-    pub accent_hover: COLORREF,
-    pub accent_pressed: COLORREF,
-    pub success: COLORREF,
-    pub danger: COLORREF,
-    pub danger_subtle: COLORREF,
-    /// 額度水位介於安全與危險之間時的提醒色。
-    pub caution: COLORREF,
-    /// 額度長條的底槽色。
-    pub meter_track: COLORREF,
-    pub control_text: COLORREF,
-    pub disabled_text: COLORREF,
+    pub canvas: Color32,
+    pub surface: Color32,
+    pub elevated: Color32,
+    pub input: Color32,
+    pub border: Color32,
+    pub text: Color32,
+    pub secondary: Color32,
+    pub muted: Color32,
+    pub accent: Color32,
+    pub track: Color32,
+    pub dark: bool,
 }
-
-fn system_color(index: i32) -> COLORREF {
-    COLORREF(unsafe { GetSysColor(SYS_COLOR_INDEX(index)) })
-}
-
-fn is_high_contrast() -> bool {
-    let mut info = HIGHCONTRASTW { cbSize: std::mem::size_of::<HIGHCONTRASTW>() as u32, ..Default::default() };
-    unsafe {
-        SystemParametersInfoW(
-            SPI_GETHIGHCONTRAST,
-            info.cbSize,
-            Some(&mut info as *mut _ as *mut _),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-        )
-        .is_ok()
-            && info.dwFlags.contains(HCF_HIGHCONTRASTON)
-    }
-}
-
-pub fn palette() -> &'static Palette {
-    static PALETTE: OnceLock<Palette> = OnceLock::new();
-    PALETTE.get_or_init(|| {
-        const COLOR_WINDOW: i32 = 5;
-        const COLOR_WINDOWTEXT: i32 = 8;
-        const COLOR_HIGHLIGHT: i32 = 13;
-        const COLOR_HIGHLIGHTTEXT: i32 = 14;
-        const COLOR_BTNFACE: i32 = 15;
-        const COLOR_BTNSHADOW: i32 = 16;
-        const COLOR_GRAYTEXT: i32 = 17;
-
-        if is_high_contrast() {
-            let window_text = system_color(COLOR_WINDOWTEXT);
-            Palette {
-                high_contrast: true,
-                canvas: system_color(COLOR_BTNFACE),
-                panel: system_color(COLOR_WINDOW),
-                panel_subtle: system_color(COLOR_BTNFACE),
-                divider: window_text,
-                primary_text: window_text,
-                secondary_text: system_color(COLOR_GRAYTEXT),
-                selected: system_color(COLOR_HIGHLIGHT),
-                banner: system_color(COLOR_HIGHLIGHT),
-                banner_text: system_color(COLOR_HIGHLIGHTTEXT),
-                banner_subtitle: system_color(COLOR_HIGHLIGHTTEXT),
-                accent: system_color(COLOR_HIGHLIGHT),
-                accent_hover: system_color(COLOR_HIGHLIGHT),
-                accent_pressed: system_color(COLOR_HIGHLIGHT),
-                success: window_text,
-                danger: window_text,
-                danger_subtle: system_color(COLOR_WINDOW),
-                caution: window_text,
-                meter_track: system_color(COLOR_BTNSHADOW),
-                control_text: window_text,
-                disabled_text: system_color(COLOR_GRAYTEXT),
+pub const GOOD: Color32 = Color32::from_rgb(0x34, 0xD3, 0x99);
+pub const WARN: Color32 = Color32::from_rgb(0xFB, 0xBF, 0x24);
+pub const DANGER: Color32 = Color32::from_rgb(0xF8, 0x71, 0x71);
+pub const TERMINAL: Color32 = Color32::from_rgb(0x0B, 0x10, 0x20);
+impl Palette {
+    pub fn new(dark: bool) -> Self {
+        let c = Color32::from_rgb;
+        if dark {
+            Self {
+                canvas: c(11, 16, 32),
+                surface: c(21, 28, 46),
+                elevated: c(28, 37, 64),
+                input: c(15, 22, 38),
+                border: c(36, 48, 77),
+                text: c(230, 235, 245),
+                secondary: c(154, 166, 191),
+                muted: c(107, 120, 148),
+                accent: c(34, 211, 238),
+                track: c(34, 44, 69),
+                dark,
             }
         } else {
-            Palette {
-                high_contrast: false,
-                canvas: rgb(245, 247, 250),
-                panel: rgb(255, 255, 255),
-                panel_subtle: rgb(238, 243, 248),
-                divider: rgb(207, 216, 228),
-                primary_text: rgb(28, 39, 57),
-                secondary_text: rgb(76, 91, 112),
-                selected: rgb(218, 235, 250),
-                banner: rgb(23, 37, 61),
-                banner_text: rgb(255, 255, 255),
-                banner_subtitle: rgb(195, 207, 224),
-                accent: rgb(15, 108, 189),
-                accent_hover: rgb(12, 90, 158),
-                accent_pressed: rgb(10, 74, 130),
-                success: rgb(22, 101, 72),
-                danger: rgb(176, 45, 45),
-                danger_subtle: rgb(252, 235, 235),
-                caution: rgb(173, 108, 12),
-                meter_track: rgb(226, 232, 240),
-                control_text: rgb(28, 39, 57),
-                disabled_text: rgb(150, 160, 174),
+            Self {
+                canvas: c(243, 246, 251),
+                surface: Color32::WHITE,
+                elevated: c(232, 240, 249),
+                input: c(248, 250, 252),
+                border: c(226, 232, 240),
+                text: c(15, 23, 42),
+                secondary: c(71, 85, 105),
+                muted: c(100, 116, 139),
+                accent: c(14, 116, 144),
+                track: c(229, 234, 242),
+                dark,
             }
         }
-    })
-}
-
-/// 依 DPI 建立的一組字型；DPI 改變時整組重建。
-pub struct Fonts {
-    pub dpi: i32,
-    pub body: Font,
-    pub caption: Font,
-    pub section_title: Font,
-    pub header_title: Font,
-    pub table_header: Font,
-    /// 倒數專用的等寬字型：每秒重畫時數字不會左右跳動。
-    pub mono: Font,
-}
-
-impl Fonts {
-    pub fn new(dpi: i32) -> Self {
-        Self {
-            dpi,
-            body: Font::new(FAMILY_NAME, 9.5, false, dpi),
-            caption: Font::new(FAMILY_NAME, 8.5, false, dpi),
-            section_title: Font::new(FAMILY_NAME, 12.5, true, dpi),
-            header_title: Font::new(FAMILY_NAME, 20.0, true, dpi),
-            table_header: Font::new(FAMILY_NAME, 9.5, true, dpi),
-            mono: Font::new(MONO_FAMILY_NAME, 9.5, false, dpi),
-        }
-    }
-
-    pub fn scale(&self, value: i32) -> i32 {
-        w32::scale(value, self.dpi)
     }
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ButtonVariant {
-    Primary = 0,
-    Secondary = 1,
-    Danger = 2,
-}
-
-const BS_OWNERDRAW: u32 = 0x0B;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_TABSTOP: u32 = 0x0001_0000;
-const HOVER_FLAG: isize = 0x100;
-const ODS_SELECTED: u32 = 0x0001;
-const ODS_DISABLED: u32 = 0x0004;
-const ODS_FOCUS: u32 = 0x0010;
-const ODS_NOFOCUSRECT: u32 = 0x0200;
-
-/// 建立自繪的平面按鈕。外觀由父視窗在 WM_DRAWITEM 呼叫 `draw_button` 繪製。
-pub fn create_button(parent: HWND, id: i32, text: &str, variant: ButtonVariant) -> HWND {
-    let button = w32::create_window(
-        0,
-        "BUTTON",
-        text,
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-        w32::rect(0, 0, 10, 10),
-        Some(parent),
-        id,
-        std::ptr::null(),
-    );
-    unsafe {
-        // BUTTON 類別不使用 GWLP_USERDATA，拿來記錄樣式與滑鼠停留狀態。
-        SetWindowLongPtrW(button, GWLP_USERDATA, variant as isize);
-        let _ = SetWindowSubclass(button, Some(button_subclass), 1, 0);
-    }
-    button
-}
-
-/// 按鈕依文字內容決定的寬度（含左右留白與最小寬度）。
-pub fn button_width(fonts: &Fonts, text: &str) -> i32 {
-    (fonts.body.measure(text).0 + fonts.scale(26)).max(fonts.scale(86))
-}
-
-pub fn button_height(fonts: &Fonts) -> i32 {
-    (fonts.body.height() + fonts.scale(12)).max(fonts.scale(36))
-}
-
-unsafe extern "system" fn button_subclass(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-    _id: usize,
-    _data: usize,
-) -> LRESULT {
-    match message {
-        WM_MOUSEMOVE => {
-            let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            if data & HOVER_FLAG == 0 {
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, data | HOVER_FLAG);
-                let mut track = TRACKMOUSEEVENT {
-                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-                    dwFlags: TME_LEAVE,
-                    hwndTrack: hwnd,
-                    dwHoverTime: 0,
-                };
-                let _ = TrackMouseEvent(&mut track);
-                w32::invalidate(hwnd);
-            }
-        }
-        WM_MOUSELEAVE => {
-            let data = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, data & !HOVER_FLAG);
-            w32::invalidate(hwnd);
-        }
-        _ => {}
-    }
-    DefSubclassProc(hwnd, message, wparam, lparam)
-}
-
-/// 繪製自繪按鈕；`background` 是按鈕所在容器的底色（用來填圓角外的角落）。
-pub fn draw_button(item: &DRAWITEMSTRUCT, fonts: &Fonts, background: COLORREF) {
-    let colors = palette();
-    let data = unsafe { GetWindowLongPtrW(item.hwndItem, GWLP_USERDATA) };
-    let hovered = data & HOVER_FLAG != 0;
-    let pressed = item.itemState.0 & ODS_SELECTED != 0;
-    let disabled = item.itemState.0 & ODS_DISABLED != 0;
-    let variant = match data & 0xff {
-        0 => ButtonVariant::Primary,
-        2 => ButtonVariant::Danger,
-        _ => ButtonVariant::Secondary,
+pub fn brand(kind: CliKind, dark: bool) -> (&'static str, &'static str, Color32) {
+    let (badge, name, dark_rgb, light_rgb) = match kind {
+        CliKind::Antigravity => ("Ge", "AGY Gemini", [59, 130, 246], [47, 111, 219]),
+        CliKind::AntigravityArgon => ("Ar", "AGY Argon", [181, 133, 0], [154, 110, 0]),
+        CliKind::AntigravityClaude => ("AC", "AGY Claude/GPT", [192, 79, 208], [166, 61, 184]),
+        CliKind::Codex => ("Cx", "OpenAI Codex", [16, 163, 127], [11, 132, 102]),
+        CliKind::Claude => ("CC", "Claude Code", [226, 104, 60], [201, 84, 42]),
     };
-
-    let (mut fill, mut text, mut border) = if colors.high_contrast {
-        let face = if hovered || pressed { colors.selected } else { colors.canvas };
-        (face, if hovered || pressed { colors.banner_text } else { colors.control_text }, colors.control_text)
-    } else {
-        match variant {
-            ButtonVariant::Primary => {
-                let face = if pressed {
-                    colors.accent_pressed
-                } else if hovered {
-                    colors.accent_hover
-                } else {
-                    colors.accent
-                };
-                (face, rgb(255, 255, 255), face)
-            }
-            ButtonVariant::Danger => {
-                let face = if pressed {
-                    rgb(247, 218, 218)
-                } else if hovered {
-                    colors.danger_subtle
-                } else {
-                    colors.panel
-                };
-                (face, colors.danger, rgb(224, 170, 170))
-            }
-            ButtonVariant::Secondary => {
-                let face = if pressed {
-                    rgb(220, 228, 238)
-                } else if hovered {
-                    colors.panel_subtle
-                } else {
-                    colors.panel
-                };
-                (face, colors.primary_text, colors.divider)
+    let [r, g, b] = if dark { dark_rgb } else { light_rgb };
+    (badge, name, Color32::from_rgb(r, g, b))
+}
+pub fn fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    for (name, path, family) in [
+        ("正黑體", "C:/Windows/Fonts/msjh.ttc", FontFamily::Proportional),
+        ("正黑體粗體", "C:/Windows/Fonts/msjhbd.ttc", FontFamily::Name("粗體".into())),
+        ("Consolas", "C:/Windows/Fonts/consola.ttf", FontFamily::Monospace),
+        ("符號", "C:/Windows/Fonts/seguisym.ttf", FontFamily::Proportional),
+    ] {
+        if let Ok(bytes) = std::fs::read(path) {
+            fonts.font_data.insert(name.into(), FontData::from_owned(bytes).into());
+            let list = fonts.families.entry(family).or_default();
+            if name == "符號" {
+                list.insert(1.min(list.len()), name.into());
+            } else {
+                list.insert(0, name.into());
             }
         }
-    };
-    if disabled && !colors.high_contrast {
-        fill = colors.panel_subtle;
-        text = colors.disabled_text;
-        border = colors.divider;
     }
-
-    let bounds = item.rcItem;
-    let radius = fonts.scale(6);
-    w32::fill(item.hDC, &bounds, background);
-    w32::fill_round(item.hDC, &bounds, radius, border);
-    let inner = windows::Win32::Foundation::RECT {
-        left: bounds.left + 1,
-        top: bounds.top + 1,
-        right: bounds.right - 1,
-        bottom: bounds.bottom - 1,
-    };
-    w32::fill_round(item.hDC, &inner, radius, fill);
-
-    let label = w32::get_text(item.hwndItem);
-    w32::draw_text(item.hDC, &fonts.body, &label, &bounds, text, w32::DT_LINE | w32::DT_CENTER);
-
-    if item.itemState.0 & ODS_FOCUS != 0 && item.itemState.0 & ODS_NOFOCUSRECT == 0 {
-        let focus = windows::Win32::Foundation::RECT {
-            left: bounds.left + 3,
-            top: bounds.top + 3,
-            right: bounds.right - 3,
-            bottom: bounds.bottom - 3,
-        };
-        unsafe {
-            let _ = windows::Win32::Graphics::Gdi::DrawFocusRect(item.hDC, &focus);
-        }
+    let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    fonts.families.entry(FontFamily::Monospace).or_default().extend(fallback.clone());
+    fonts.families.entry(FontFamily::Name("粗體".into())).or_default().extend(fallback);
+    ctx.set_fonts(fonts);
+}
+pub fn apply(ctx: &egui::Context, dark: bool) {
+    let colors = Palette::new(dark);
+    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+    let mut style = (*ctx.style_of(if dark { egui::Theme::Dark } else { egui::Theme::Light })).clone();
+    style.visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    style.visuals.panel_fill = colors.canvas;
+    style.visuals.window_fill = colors.surface;
+    style.visuals.extreme_bg_color = colors.input;
+    style.visuals.faint_bg_color = colors.surface;
+    style.visuals.override_text_color = Some(colors.text);
+    style.visuals.selection.bg_fill = colors.accent.gamma_multiply(0.3);
+    style.visuals.selection.stroke = Stroke::new(1.0, colors.accent);
+    for widget in [&mut style.visuals.widgets.inactive, &mut style.visuals.widgets.noninteractive] {
+        widget.bg_fill = colors.surface;
+        widget.weak_bg_fill = colors.surface;
+        widget.bg_stroke = Stroke::new(1.0, colors.border);
+        widget.corner_radius = 8.into();
+        widget.fg_stroke = Stroke::new(1.0, colors.text);
     }
+    style.visuals.widgets.hovered.bg_fill = colors.elevated;
+    style.visuals.widgets.hovered.weak_bg_fill = colors.elevated;
+    style.visuals.widgets.hovered.corner_radius = 8.into();
+    style.visuals.widgets.active.bg_stroke = Stroke::new(1.0, colors.accent);
+    style.visuals.widgets.active.corner_radius = 8.into();
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.spacing.interact_size.y = 28.0;
+    style.text_styles.insert(TextStyle::Body, FontId::proportional(14.0));
+    style.text_styles.insert(TextStyle::Button, FontId::proportional(14.0));
+    style.text_styles.insert(TextStyle::Small, FontId::proportional(12.0));
+    style.text_styles.insert(TextStyle::Heading, FontId::proportional(21.0));
+    style.text_styles.insert(TextStyle::Monospace, FontId::monospace(13.0));
+    ctx.set_style_of(if dark { egui::Theme::Dark } else { egui::Theme::Light }, style);
+    ctx.options_mut(|options| options.zoom_with_keyboard = false);
+}
+pub fn card(colors: Palette) -> egui::Frame {
+    egui::Frame::new().fill(colors.surface).stroke(Stroke::new(1.0, colors.border)).corner_radius(13).inner_margin(16)
 }

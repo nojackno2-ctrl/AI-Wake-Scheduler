@@ -1,4 +1,4 @@
-//! AI 倒數喚醒桌面程式：以原生 Win32 控制項實作的主視窗、設定對話框與系統匣。
+//! AI 倒數喚醒桌面程式：egui GPU 儀表板與原生 Windows 系統匣。
 
 pub mod board;
 pub mod host;
@@ -11,6 +11,7 @@ pub mod theme;
 pub mod tray;
 pub mod ui;
 pub mod w32;
+pub mod widgets;
 
 use std::sync::Arc;
 
@@ -18,10 +19,6 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Controls::{
-    InitCommonControlsEx, ICC_DATE_CLASSES, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES, ICC_UPDOWN_CLASS,
-    INITCOMMONCONTROLSEX,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
     LoadIconW, LoadImageW, HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED,
 };
@@ -79,17 +76,21 @@ pub fn run() -> i32 {
 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let controls = INITCOMMONCONTROLSEX {
-            dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_LISTVIEW_CLASSES | ICC_DATE_CLASSES | ICC_UPDOWN_CLASS | ICC_STANDARD_CLASSES,
-        };
-        let _ = InitCommonControlsEx(&controls);
     }
 
     let startup_migration_error = if verify_ui { None } else { startup::migrate_legacy_if_needed() };
     let root_directory = verify_ui.then(|| {
-        std::env::temp_dir()
-            .join(format!("AiWakeScheduler-QA-{}", aiwake_core::Guid::new().simple()))
+        // 測試可預先建立隔離設定；只接受暫存目錄直屬的 QA 資料夾。
+        let supplied = std::env::var_os("AIWAKE_VERIFY_ROOT")
+            .and_then(|path| std::path::PathBuf::from(path).canonicalize().ok())
+            .filter(|path| {
+                path.parent() == std::env::temp_dir().canonicalize().ok().as_deref()
+                    && path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("AiWakeScheduler-QA-"))
+            });
+        supplied
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("AiWakeScheduler-QA-{}", aiwake_core::Guid::new().simple()))
+            })
             .to_string_lossy()
             .into_owned()
     });
@@ -107,22 +108,19 @@ pub fn run() -> i32 {
         }
     };
 
-    let title_suffix = if verify_ui { "（功能驗證）" } else { "" };
-    let Some(window) = main_window::create(Arc::clone(&host), application_icon(), is_minimized, title_suffix) else {
-        w32::message_box(None, "程式無法啟動：無法建立主視窗。", APP_TITLE, w32::MB_OK | w32::MB_ICONERROR);
-        return 1;
-    };
-
     if let Some(error) = startup_migration_error {
         w32::message_box(
-            Some(window),
+            None,
             &format!("開機啟動設定未完成遷移：{error}"),
             APP_TITLE,
             w32::MB_OK | w32::MB_ICONWARNING,
         );
     }
-
-    ui::pump_until(|| false);
+    let result = main_window::run(Arc::clone(&host), application_icon(), is_minimized, verify_ui);
     host.manager.shutdown();
+    if let Err(error) = result {
+        w32::message_box(None, &format!("GPU 介面無法啟動：{error}"), APP_TITLE, w32::MB_OK | w32::MB_ICONERROR);
+        return 1;
+    }
     0
 }

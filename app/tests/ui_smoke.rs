@@ -1,568 +1,334 @@
-//! 端對端 UI 測試：啟動真正的執行檔（`--verify-ui` 隔離模式），
-//! 以視窗訊息操作控制項，並以隔離資料目錄中的 JSON 驗證結果。
-//!
-//! 設定環境變數 `AIWAKE_UI_SHOTS` 為資料夾路徑時，會在各階段把視窗畫面存成 BMP 供人工檢視。
-
+//! 真正的 egui 操作、隔離假 CLI 與原生系統匣生命週期驗證。
+//! AIWAKE_UI_SHOTS 指定資料夾時，透過 wgpu 輸出 PNG 供人工檢視。
+use aiwake_app::{host::AppHost, main_window::Dashboard, theme, tray::shell};
+use aiwake_core::{
+    catalog, AppSettings, CliKind, CliUsageAvailability, CliUsageSnapshot, CliUsageWindow, DataStore, Guid,
+    JsonFileStore, ScheduledJob, Span, ThinkingEffort,
+};
+use eframe::egui;
+use egui_kittest::{kittest::Queryable, Harness};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use aiwake_app::{main_window as main, settings_window as settings, w32};
-use aiwake_core::{
-    catalog, AppSettings, CliKind, DataStore, JsonFileStore, ScheduleRecurrence, ScheduleStatus, ScheduledJob,
-    ThinkingEffort,
-};
 use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, RECT};
-use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, HGDIOBJ,
-};
-use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetDlgItem, GetWindowRect, GetWindowThreadProcessId, IsWindow, IsWindowVisible,
-    SetWindowPos, SWP_NOMOVE, SWP_NOZORDER, WM_CLOSE, WM_COMMAND, WM_GETFONT, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT,
-    WM_VSCROLL,
+    EnumWindows, GetClassNameW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, WM_CLOSE, WM_COMMAND,
 };
 
-const BM_GETCHECK: u32 = 0x00F0;
-const BM_SETCHECK: u32 = 0x00F1;
-const CB_GETCOUNT: u32 = 0x0146;
-const CB_SETCURSEL: u32 = 0x014E;
-const LVM_GETITEMCOUNT: u32 = 0x1004;
-const BN_CLICKED: usize = 0;
-const CBN_EDITCHANGE: usize = 5;
+fn qa_directory() -> PathBuf {
+    let root = std::env::temp_dir().join(format!("AiWakeScheduler-QA-{}", Guid::new().simple()));
+    std::fs::create_dir_all(&root).expect("建立隔離資料夾");
+    root
+}
+fn load_jobs(root: &Path) -> Vec<ScheduledJob> {
+    JsonFileStore::new(root.join("schedules.json"), Vec::new).load().expect("讀取排程")
+}
+fn click(harness: &mut Harness<'_, Dashboard>, label: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    harness.run_steps(2);
+    harness.get_by_label(label).click();
+    harness.run_steps(3);
+}
+fn input(harness: &mut Harness<'_, Dashboard>, label: &str, text: &str) {
+    harness.get_by_label(label).scroll_to_me();
+    harness.run_steps(2);
+    harness.get_by_label(label).set_text_value_accesskit(text);
+    harness.run_steps(3);
+}
+fn shot(harness: &mut Harness<'_, Dashboard>, name: &str) {
+    if let Some(directory) = std::env::var_os("AIWAKE_UI_SHOTS") {
+        let directory = PathBuf::from(directory);
+        std::fs::create_dir_all(&directory).expect("建立截圖資料夾");
+        harness.render().expect("wgpu 畫面渲染").save(directory.join(format!("{name}.png"))).expect("儲存截圖");
+    }
+}
+fn pump_until(harness: &mut Harness<'_, Dashboard>, description: &str, condition: impl Fn(&Dashboard) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(25);
+    loop {
+        harness.run_steps(2);
+        if condition(harness.state()) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "等待逾時：{description}，狀態：{}", harness.state().status);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+}
+#[test]
+fn egui_editor_settings_fake_cli_and_rendering() {
+    let root = qa_directory();
+    let host = Arc::new(AppHost::create(Some(&root.to_string_lossy())).expect("隔離 AppHost"));
+    let app = Dashboard::new(host.clone(), false, &egui::Context::default());
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1600.0, 1150.0))
+        .allow_missing_glyphs()
+        .with_context_setup(theme::fonts)
+        .build_ui_state(|ui, app: &mut Dashboard| app.draw(ui), app);
+    harness.run_steps(3);
+    assert_eq!(harness.state().editor.name, "AI 倒數喚醒");
+    assert_eq!(harness.state().editor.message, "早安");
+    assert_eq!(harness.state().editor.end, "24:00");
+    assert_eq!(harness.state().editor.interval, 10);
+    assert_eq!(harness.state().editor.targets, catalog::kinds());
+    assert!(harness.state().editor.enabled);
+    assert!(host
+        .paths
+        .root_directory()
+        .file_name()
+        .expect("QA 名稱")
+        .to_string_lossy()
+        .starts_with("AiWakeScheduler-QA-"));
+    shot(&mut harness, "01-default-dark");
+    input(&mut harness, "排程名稱", "測試排程");
+    // 選用離目前時間 3 小時後的整點一小時時段，涵蓋所有整點刻度且避免測試期間自動觸發真正 CLI。
+    let start_hour = (aiwake_core::time::local_time_of_day(&aiwake_core::time::now()).num_hours() + 3).rem_euclid(24);
+    let start = format!("{start_hour:02}:00");
+    let end = format!("{:02}:00", (start_hour + 1).min(24));
+    input(&mut harness, "開始時間 (HH:MM)", &start);
+    input(&mut harness, "結束時間 (HH:MM，支援 24:00)", &end);
+    click(&mut harness, "建立排程");
+    assert_eq!(load_jobs(&root).len(), 1, "{}", harness.state().status);
+    click(&mut harness, "啟停 測試排程");
+    assert!(!load_jobs(&root)[0].enabled, "卡片停用必須立即寫檔");
+    click(&mut harness, "啟停 測試排程");
+    assert!(load_jobs(&root)[0].enabled);
+    click(&mut harness, "啟停 測試排程");
+    input(&mut harness, "結束時間 (HH:MM，支援 24:00)", "24:00");
+    click(&mut harness, "✓ Ge AGY Gemini");
+    click(&mut harness, "15分");
+    click(&mut harness, "儲存修改");
+    assert_eq!(load_jobs(&root)[0].targets.len(), 4);
+    assert_eq!(load_jobs(&root)[0].end_time_of_day, Span::days(1));
+    assert_eq!(load_jobs(&root)[0].probe_interval_minutes, 15);
+    click(&mut harness, "＋ 新增");
+    assert!(harness.state().editor.id.is_none());
+    assert_eq!(harness.state().editor.targets.len(), 5);
+    assert_eq!(harness.state().editor.interval, 10);
+    click(&mut harness, "測試排程");
+    assert_eq!(harness.state().editor.targets.len(), 4);
+    assert_eq!(harness.state().editor.interval, 15);
+    click(&mut harness, "☀ 淺色");
+    assert!(!harness.state().dark);
+    shot(&mut harness, "02-light");
+    click(&mut harness, "⚙ 設定");
+    assert_eq!(
+        harness.state().settings_sheet.as_ref().expect("設定抽屜").draft.profile(CliKind::Codex).model,
+        "gpt-6-luna"
+    );
+    // 在畫面中輸入自訂模型並切換推薦模型，驗證相同的連動路徑。
+    {
+        let sheet = harness.state_mut().settings_sheet.as_mut().expect("設定抽屜");
+        let profile = sheet.draft.cli_profiles.get_mut(&CliKind::Codex).expect("Codex");
+        profile.model = "gpt-6.1-sol".into();
+        profile.thinking_effort = ThinkingEffort::Ultra;
+    }
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().settings_sheet.as_ref().expect("設定抽屜").draft.profile(CliKind::Codex).thinking_effort,
+        ThinkingEffort::Ultra
+    );
+    harness
+        .state_mut()
+        .settings_sheet
+        .as_mut()
+        .expect("設定抽屜")
+        .draft
+        .cli_profiles
+        .get_mut(&CliKind::Codex)
+        .expect("Codex")
+        .model = "gpt-6-luna".into();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().settings_sheet.as_ref().expect("設定抽屜").draft.profile(CliKind::Codex).thinking_effort,
+        ThinkingEffort::Max
+    );
+    harness
+        .state_mut()
+        .settings_sheet
+        .as_mut()
+        .expect("設定抽屜")
+        .draft
+        .cli_profiles
+        .get_mut(&CliKind::Antigravity)
+        .expect("AGY")
+        .model = "gemini-3.8-flash-high".into();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().settings_sheet.as_ref().expect("設定抽屜").draft.profile(CliKind::Antigravity).thinking_effort,
+        ThinkingEffort::Default
+    );
+    click(&mut harness, "取消");
+    assert!(!root.join("settings.json").exists());
+    assert_eq!(host.settings().profile(CliKind::Codex).thinking_effort, ThinkingEffort::Default);
+    let fake = root.join("fake-cli.cmd");
+    std::fs::write(&fake,format!("@echo off\r\nif \"%~1\"==\"--version\" (\r\n echo PROBED>>\"{}\"\r\n echo fake-cli 1.2.3\r\n exit /b 0\r\n)\r\necho FAKE-CLI-OK\r\nexit /b 0\r\n",root.join("fake-cli-probed.txt").display())).expect("假 CLI");
+    click(&mut harness, "⚙ 設定");
+    {
+        let sheet = harness.state_mut().settings_sheet.as_mut().expect("設定抽屜");
+        for profile in sheet.draft.cli_profiles.values_mut() {
+            profile.executable = fake.to_string_lossy().into_owned();
+        }
+    }
+    harness.run_steps(2);
+    click(&mut harness, "檢查 CLI 連線");
+    pump_until(&mut harness, "CLI 探針", |app| {
+        app.settings_sheet
+            .as_ref()
+            .is_some_and(|sheet| !sheet.probing && !sheet.probe_text.is_empty() && sheet.probe_text != "檢查中…")
+    });
+    assert!(root.join("fake-cli-probed.txt").exists());
+    assert!(harness.state().settings_sheet.as_ref().expect("設定抽屜").probe_text.contains('✓'));
+    shot(&mut harness, "03-settings");
+    click(&mut harness, "儲存設定");
+    let saved: AppSettings =
+        JsonFileStore::new(root.join("settings.json"), AppSettings::default).load().expect("設定 JSON");
+    assert_eq!(saved.profile(CliKind::Codex).executable, fake.to_string_lossy());
+    click(&mut harness, "清除目標");
+    click(&mut harness, "○ Cx OpenAI Codex");
+    click(&mut harness, "儲存修改");
+    click(&mut harness, "▶ 立即執行");
+    click(&mut harness, "確認");
+    pump_until(&mut harness, "假 CLI 執行", |app| {
+        app.terminal.text().contains("FAKE-CLI-OK") && app.jobs.iter().any(|job| !job.last_results.is_empty())
+    });
+    let job = &load_jobs(&root)[0];
+    assert!(job.last_results[0].succeeded);
+    assert!(Path::new(&job.last_results[0].log_path).is_file());
+    assert!(harness.state().terminal.text().contains("Codex 開始執行"));
+    assert!(harness.state().terminal.lines.iter().any(|event| event.kind == aiwake_core::CliActivityKind::Completed));
+    shot(&mut harness, "04-fake-cli-terminal");
+    // 使用已知額度資料驗證五個儀表的渲染與窄版重排。
+    for (index, kind) in catalog::kinds().into_iter().enumerate() {
+        harness.state_mut().snapshots.insert(
+            kind,
+            CliUsageSnapshot::new(
+                kind,
+                CliUsageAvailability::Available,
+                vec![
+                    CliUsageWindow::new(
+                        "5h",
+                        index as i32 * 22,
+                        Some(Span::hours(5)),
+                        Some(aiwake_core::time::now() + Span::hours(2)),
+                        true,
+                    ),
+                    CliUsageWindow::new("7d", 40, Some(Span::days(7)), None, false),
+                ],
+                "測試額度",
+                aiwake_core::time::now(),
+            ),
+        );
+    }
+    click(&mut harness, "☾ 深色");
+    harness.run_steps(2);
+    shot(&mut harness, "05-ring-dashboard");
+    harness.set_size(egui::vec2(800.0, 1000.0));
+    harness.run_steps(3);
+    shot(&mut harness, "06-compact");
+    // 檢視結果與刪除仍經過正式的畫面操作。
+    harness.set_size(egui::vec2(1600.0, 1150.0));
+    harness.run_steps(3);
+    click(&mut harness, "刪除");
+    click(&mut harness, "確認");
+    assert!(load_jobs(&root).is_empty());
+}
 
-/// 測試結束（包含失敗）時確保受測程式不會殘留在系統匣。
 struct App {
     child: Child,
 }
-
 impl Drop for App {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
-
-fn wait_for<T>(what: &str, timeout: Duration, mut probe: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + timeout;
+fn wait_for<T>(description: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(value) = probe() {
             return value;
         }
-        assert!(Instant::now() < deadline, "等待逾時：{what}");
+        assert!(Instant::now() < deadline, "等待逾時：{description}");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
-
-fn wait_until(what: &str, timeout: Duration, condition: impl Fn() -> bool) {
-    wait_for(what, timeout, || condition().then_some(()));
-}
-
-fn class_of(hwnd: HWND) -> String {
-    let mut buffer = [0u16; 128];
-    let length = unsafe { GetClassNameW(hwnd, &mut buffer) };
-    String::from_utf16_lossy(&buffer[..length.max(0) as usize])
-}
-
-/// 指定行程中符合類別名稱的最上層視窗。
-fn top_window(process_id: u32, class: &str) -> Option<HWND> {
+fn window(pid: u32, tray: bool) -> Option<HWND> {
     struct Search {
-        process_id: u32,
-        found: Vec<HWND>,
+        pid: u32,
+        tray: bool,
+        found: Option<HWND>,
     }
-    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let search = &mut *(lparam.0 as *mut Search);
-        let mut owner = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut owner));
-        if owner == search.process_id {
-            search.found.push(hwnd);
+    unsafe extern "system" fn visit(hwnd: HWND, param: LPARAM) -> BOOL {
+        let search = &mut *(param.0 as *mut Search);
+        let mut pid = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == search.pid {
+            let mut class = [0u16; 128];
+            let length = GetClassNameW(hwnd, &mut class);
+            let class = String::from_utf16_lossy(&class[..length.max(0) as usize]);
+            let matches = if search.tray {
+                class == shell::WINDOW_CLASS
+            } else {
+                aiwake_app::w32::get_text(hwnd).contains("（功能驗證）")
+            };
+            if matches {
+                search.found = Some(hwnd);
+                return BOOL(0);
+            }
         }
         BOOL(1)
     }
-
-    let mut search = Search { process_id, found: Vec::new() };
+    let mut search = Search { pid, tray, found: None };
     unsafe {
-        let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut _ as isize));
+        let _ = EnumWindows(Some(visit), LPARAM((&mut search as *mut Search) as isize));
     }
-    search.found.into_iter().find(|hwnd| class_of(*hwnd) == class)
+    search.found
 }
-
-fn child_of_class(parent: HWND, class: &str) -> HWND {
-    let class = w32::wide(class);
+fn post(hwnd: HWND, message: u32, command: usize) {
     unsafe {
-        windows::Win32::UI::WindowsAndMessaging::FindWindowExW(
-            Some(parent),
-            None,
-            windows::core::PCWSTR(class.as_ptr()),
-            windows::core::PCWSTR::null(),
-        )
-        .expect("找不到子視窗")
+        PostMessageW(Some(hwnd), message, WPARAM(command), LPARAM(0)).expect("視窗訊息");
     }
 }
-
-fn control(parent: HWND, id: i32) -> HWND {
-    unsafe { GetDlgItem(Some(parent), id) }.unwrap_or_else(|_| panic!("找不到控制項 {id}"))
-}
-
-/// 跨行程讀取控制項文字（WM_GETTEXT 會由系統代為封送）。
-fn text_of(hwnd: HWND) -> String {
-    let length = w32::send(hwnd, WM_GETTEXTLENGTH, 0, 0).max(0) as usize;
-    let mut buffer = vec![0u16; length + 1];
-    let copied = w32::send(hwnd, WM_GETTEXT, buffer.len(), buffer.as_mut_ptr() as isize).max(0) as usize;
-    String::from_utf16_lossy(&buffer[..copied.min(length)])
-}
-
-fn set_text(hwnd: HWND, text: &str) {
-    let text = w32::wide(text);
-    w32::send(hwnd, WM_SETTEXT, 0, text.as_ptr() as isize);
-}
-
-fn is_checked(hwnd: HWND) -> bool {
-    w32::send(hwnd, BM_GETCHECK, 0, 0) == 1
-}
-
-fn set_checked(hwnd: HWND, checked: bool) {
-    w32::send(hwnd, BM_SETCHECK, checked as usize, 0);
-}
-
-/// 以非同步方式送出控制項通知，避免受測程式顯示對話框時把測試卡住。
-fn notify(parent: HWND, id: i32, code: usize) {
-    let target = control(parent, id);
-    assert!(w32::post(parent, WM_COMMAND, (code << 16) | id as usize, target.0 as isize), "無法送出通知");
-}
-
-/// 受測程式目前顯示中的訊息方塊。
-fn message_box(process_id: u32) -> Option<HWND> {
-    top_window(process_id, "#32770").filter(|hwnd| is_visible(*hwnd))
-}
-
-fn is_enabled(hwnd: HWND) -> bool {
-    unsafe { windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(hwnd) }.as_bool()
-}
-
-fn is_visible(hwnd: HWND) -> bool {
-    unsafe { IsWindowVisible(hwnd).as_bool() }
-}
-
-/// 把視窗畫面存成 BMP（僅在設定 AIWAKE_UI_SHOTS 時）。
-fn screenshot(hwnd: HWND, name: &str) {
-    let Ok(directory) = std::env::var("AIWAKE_UI_SHOTS") else {
-        return;
-    };
-    // 等待非同步的重繪完成。
-    std::thread::sleep(Duration::from_millis(400));
-    unsafe {
-        let mut bounds = RECT::default();
-        let _ = GetWindowRect(hwnd, &mut bounds);
-        let (width, height) = (w32::width_of(&bounds), w32::height_of(&bounds));
-        if width <= 0 || height <= 0 {
-            return;
-        }
-
-        let screen = GetDC(None);
-        let memory = CreateCompatibleDC(Some(screen));
-        let bitmap = CreateCompatibleBitmap(screen, width, height);
-        let previous = SelectObject(memory, HGDIOBJ(bitmap.0));
-        let _ = PrintWindow(hwnd, memory, PRINT_WINDOW_FLAGS(2));
-        SelectObject(memory, previous);
-
-        let mut info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width,
-                biHeight: -height,
-                biPlanes: 1,
-                biBitCount: 32,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut pixels = vec![0u8; (width * height * 4) as usize];
-        GetDIBits(memory, bitmap, 0, height as u32, Some(pixels.as_mut_ptr() as *mut _), &mut info, DIB_RGB_COLORS);
-        let _ = DeleteObject(HGDIOBJ(bitmap.0));
-        let _ = DeleteDC(memory);
-        ReleaseDC(None, screen);
-
-        let mut file = Vec::with_capacity(54 + pixels.len());
-        file.extend_from_slice(b"BM");
-        file.extend_from_slice(&(54 + pixels.len() as u32).to_le_bytes());
-        file.extend_from_slice(&[0; 4]);
-        file.extend_from_slice(&54u32.to_le_bytes());
-        file.extend_from_slice(&40u32.to_le_bytes());
-        file.extend_from_slice(&width.to_le_bytes());
-        file.extend_from_slice(&(-height).to_le_bytes());
-        file.extend_from_slice(&1u16.to_le_bytes());
-        file.extend_from_slice(&32u16.to_le_bytes());
-        file.extend_from_slice(&[0; 24]);
-        file.extend_from_slice(&pixels);
-        let _ = std::fs::create_dir_all(&directory);
-        std::fs::write(Path::new(&directory).join(format!("{name}.bmp")), file).unwrap();
-    }
-}
-
-fn load_jobs(data_directory: &Path) -> Vec<ScheduledJob> {
-    JsonFileStore::<Vec<ScheduledJob>>::new(data_directory.join("schedules.json"), Vec::new).load().unwrap()
-}
-
 #[test]
-fn main_window_editor_settings_and_tray() {
+fn native_wgpu_window_close_restore_and_minimized() {
+    for minimize_to_tray in [true, false] {
+        let root = qa_directory();
+        let settings = AppSettings { minimize_to_tray, ..AppSettings::default() };
+        JsonFileStore::new(root.join("settings.json"), AppSettings::default).save(&settings).expect("隔離設定");
+        let mut app = App {
+            child: Command::new(env!("CARGO_BIN_EXE_ai-wake-scheduler"))
+                .arg("--verify-ui")
+                .env("AIWAKE_VERIFY_ROOT", &root)
+                .spawn()
+                .expect("真實 eframe 執行檔"),
+        };
+        let hwnd = wait_for("eframe 主視窗", || window(app.child.id(), false));
+        wait_for("視窗顯示", || unsafe { IsWindowVisible(hwnd).as_bool() }.then_some(()));
+        let tray = wait_for("系統匣外殼", || window(app.child.id(), true));
+        post(hwnd, WM_CLOSE, 0);
+        if minimize_to_tray {
+            wait_for("關閉縮到系統匣", || (!unsafe { IsWindowVisible(hwnd).as_bool() }).then_some(()));
+            assert!(app.child.try_wait().expect("行程狀態").is_none());
+            post(tray, WM_COMMAND, shell::OPEN);
+            wait_for("系統匣還原", || unsafe { IsWindowVisible(hwnd).as_bool() }.then_some(()));
+            post(tray, WM_COMMAND, shell::EXIT);
+        }
+        let status = wait_for("正常結束", || app.child.try_wait().expect("行程狀態"));
+        assert!(status.success());
+    }
     let mut app = App {
         child: Command::new(env!("CARGO_BIN_EXE_ai-wake-scheduler"))
-            .arg("--verify-ui")
+            .args(["--verify-ui", "--minimized"])
             .spawn()
-            .expect("無法啟動受測程式"),
+            .expect("縮到系統匣啟動"),
     };
-    let process_id = app.child.id();
-    let long = Duration::from_secs(60);
-    let short = Duration::from_secs(10);
-
-    let window = wait_for("主視窗出現", long, || {
-        top_window(process_id, main::WINDOW_CLASS).filter(|hwnd| is_visible(*hwnd))
-    });
-    assert!(text_of(window).contains("功能驗證"), "隔離模式應在標題標示功能驗證。");
-    assert_eq!(
-        text_of(window),
-        format!("AI 倒數喚醒 v{}（功能驗證）", env!("CARGO_PKG_VERSION")),
-        "主視窗應顯示目前套件版本。"
-    );
-    let editor = child_of_class(window, "AiWakeEditorPanel");
-    let list = control(window, main::ID_LIST);
-    let save_button = control(editor, main::ID_SAVE);
-    let refresh_button = control(editor, main::ID_REFRESH_USAGE);
-
-    // ── 編輯器預設值 ──
-    assert_eq!(text_of(control(editor, main::ID_NAME)), "AI 倒數喚醒");
-    assert_eq!(text_of(control(editor, main::ID_MESSAGE)), "早安");
-    assert_eq!(text_of(control(editor, main::ID_END_TIME)), "24:00");
-    assert_eq!(text_of(control(editor, main::ID_PROBE_INTERVAL)), "10");
-    assert_eq!(text_of(save_button), "建立排程");
-    for index in 0..CliKind::ALL.len() as i32 {
-        assert!(is_checked(control(editor, main::ID_TARGET_BASE + index)), "新排程預設應勾選全部 CLI。");
-    }
-    assert!(is_checked(control(editor, main::ID_ENABLED)), "新排程預設應啟用。");
-    assert_eq!(w32::send(list, LVM_GETITEMCOUNT, 0, 0), 0, "隔離資料目錄一開始不應有排程。");
-
-    // 隔離資料目錄：工作目錄預設為資料目錄下的 workspace。
-    let workspace = PathBuf::from(text_of(control(editor, main::ID_WORKING_DIRECTORY)));
-    let data_directory = workspace.parent().expect("工作目錄應位於資料目錄之下").to_path_buf();
-    assert!(
-        data_directory.file_name().unwrap().to_string_lossy().starts_with("AiWakeScheduler-QA-"),
-        "功能驗證模式必須使用隔離的資料目錄：{}",
-        data_directory.display()
-    );
-    assert!(workspace.is_dir(), "工作目錄應已建立。");
-
-    // 啟動時的額度讀取結束後，按鈕會恢復可用。
-    wait_until("啟動時的額度讀取完成", long, || text_of(refresh_button) == "重新讀取倒數");
-    screenshot(window, "01-main");
-
-    // ── 版面與視窗縮放驗證：終端機在最右欄、縮放不改字型大小、控制項不裁切 ──
-    let rect_of = |hwnd: HWND| {
-        let mut rect = RECT::default();
-        unsafe {
-            let _ = GetWindowRect(hwnd, &mut rect);
-        }
-        rect
-    };
-    let terminal_box = control(window, main::ID_TERMINAL_OUTPUT);
-    let check_layout = |label: &str| {
-        let win_rc = rect_of(window);
-        let list_rc = rect_of(list);
-        let editor_rc = rect_of(editor);
-        let term_rc = rect_of(terminal_box);
-        assert!(
-            list_rc.right <= editor_rc.left && editor_rc.right <= term_rc.left,
-            "{label}：版面應維持左清單、中編輯器、最右終端輸出（list={list_rc:?}, editor={editor_rc:?}, terminal={term_rc:?}）"
-        );
-        assert!(
-            term_rc.right <= win_rc.right && term_rc.bottom <= win_rc.bottom,
-            "{label}：終端輸出不得超出視窗邊界（terminal={term_rc:?}, window={win_rc:?}）"
-        );
-        for id in [
-            main::ID_NAME,
-            main::ID_MESSAGE,
-            main::ID_TIME,
-            main::ID_END_TIME,
-            main::ID_PROBE_INTERVAL,
-            main::ID_WORKING_DIRECTORY,
-            main::ID_BROWSE,
-            main::ID_SAVE,
-            main::ID_REFRESH_USAGE,
-            main::ID_SETTINGS,
-        ] {
-            let ctrl_rc = rect_of(control(editor, id));
-            assert!(
-                ctrl_rc.left >= editor_rc.left && ctrl_rc.right <= editor_rc.right,
-                "{label}：控制項 {id} 水平方向不應被裁切（ctrl={ctrl_rc:?}, editor={editor_rc:?}）"
-            );
-            assert!(
-                w32::width_of(&ctrl_rc) >= 40 && w32::height_of(&ctrl_rc) >= 20,
-                "{label}：控制項 {id} 尺寸過小（ctrl={ctrl_rc:?}）"
-            );
-        }
-    };
-    let initial_win_rc = rect_of(window);
-    let font_before = w32::send(control(editor, main::ID_NAME), WM_GETFONT, 0, 0);
-    let term_font_before = w32::send(terminal_box, WM_GETFONT, 0, 0);
-    check_layout("預設視窗大小");
-
-    unsafe {
-        let _ = SetWindowPos(
-            window,
-            None,
-            0,
-            0,
-            w32::width_of(&initial_win_rc) + 320,
-            w32::height_of(&initial_win_rc) + 120,
-            SWP_NOMOVE | SWP_NOZORDER,
-        );
-    }
-    std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(
-        w32::send(control(editor, main::ID_NAME), WM_GETFONT, 0, 0),
-        font_before,
-        "放大視窗時不得改變控制項字體大小"
-    );
-    assert_eq!(w32::send(terminal_box, WM_GETFONT, 0, 0), term_font_before, "放大視窗時不得改變終端字體大小");
-    check_layout("放大視窗 (1860x1040)");
-    screenshot(window, "01b-main-wide");
-
-    unsafe {
-        let _ = SetWindowPos(
-            window,
-            None,
-            0,
-            0,
-            w32::width_of(&initial_win_rc) * 72 / 100,
-            w32::height_of(&initial_win_rc) * 75 / 100,
-            SWP_NOMOVE | SWP_NOZORDER,
-        );
-    }
-    std::thread::sleep(Duration::from_millis(150));
-    assert_eq!(
-        w32::send(control(editor, main::ID_NAME), WM_GETFONT, 0, 0),
-        font_before,
-        "縮小視窗時不得改變控制項字體大小"
-    );
-    check_layout("縮小視窗 (1120x680)");
-    screenshot(window, "01c-main-compact");
-
-    unsafe {
-        let _ = SetWindowPos(
-            window,
-            None,
-            0,
-            0,
-            w32::width_of(&initial_win_rc),
-            w32::height_of(&initial_win_rc),
-            SWP_NOMOVE | SWP_NOZORDER,
-        );
-    }
-    std::thread::sleep(Duration::from_millis(150));
-
-    // ── 建立排程（先取消啟用，避免真的送出訊息）──
-    set_checked(control(editor, main::ID_ENABLED), false);
-    set_text(control(editor, main::ID_END_TIME), "23:30");
-    set_text(control(editor, main::ID_PROBE_INTERVAL), "5");
-    set_text(control(editor, main::ID_NAME), "測試排程");
-    notify(editor, main::ID_SAVE, BN_CLICKED);
-    wait_until("排程出現在清單", short, || w32::send(list, LVM_GETITEMCOUNT, 0, 0) == 1);
-    wait_until("儲存按鈕改為儲存修改", short, || text_of(save_button) == "儲存修改");
-
-    let created = load_jobs(&data_directory);
-    assert_eq!(created.len(), 1, "資料檔應有一筆排程。");
-    assert_eq!(created[0].name, "測試排程");
-    assert_eq!(created[0].recurrence, ScheduleRecurrence::Interval, "舊資料週期僅作相容用途。");
-    assert_eq!(created[0].end_time_of_day, aiwake_core::Span::hours(23) + aiwake_core::Span::minutes(30));
-    assert!(created[0].initial_time_of_day.is_some(), "排程應保存開始時間。");
-    assert_eq!(created[0].probe_interval_minutes, 5);
-    assert!(!created[0].enabled && created[0].status == ScheduleStatus::Disabled, "取消啟用的排程應為已停用。");
-    assert_eq!(created[0].targets, catalog::kinds(), "新排程預設應依畫面順序包含全部 CLI。");
-    assert_eq!(created[0].message, "早安");
-
-    // ── 修改同一筆排程 ──
-    set_checked(control(editor, main::ID_TARGET_BASE), false);
-    notify(editor, main::ID_SAVE, BN_CLICKED);
-    wait_until("修改寫入資料檔", short, || {
-        let jobs = load_jobs(&data_directory);
-        jobs.len() == 1 && jobs[0].targets.len() == catalog::kinds().len() - 1
-    });
-    let modified = load_jobs(&data_directory);
-    assert_eq!(modified[0].id, created[0].id, "儲存修改不應建立新排程。");
-    assert_eq!(modified[0].targets, &catalog::kinds()[1..], "取消勾選的 CLI 不應保留在目標中。");
-    assert!(!modified[0].enabled, "修改後仍應維持停用。");
-    assert_eq!(modified[0].end_time_of_day, created[0].end_time_of_day, "修改其他欄位應保留結束時間。");
-    assert_eq!(modified[0].probe_interval_minutes, 5);
-    // 新增清空後，再用清單原生鍵盤選取既有排程，確認結束時間還原。
-    notify(window, main::ID_NEW, BN_CLICKED);
-    wait_until("新增還原結束時間", short, || text_of(control(editor, main::ID_END_TIME)) == "24:00");
-    assert_eq!(text_of(control(editor, main::ID_PROBE_INTERVAL)), "10");
-    w32::send(list, 0x0100, 0x24, 0);
-    wait_until("重新選取還原結束時間", short, || text_of(control(editor, main::ID_END_TIME)) == "23:30");
-    assert_eq!(text_of(control(editor, main::ID_PROBE_INTERVAL)), "5");
-    w32::send(editor, WM_VSCROLL, 7, 0);
-    screenshot(window, "02-editor-bottom");
-    w32::send(editor, WM_VSCROLL, 6, 0);
-
-    // ── 關閉主視窗：預設縮到系統匣，程式繼續執行 ──
-    w32::post(window, WM_CLOSE, 0, 0);
-    wait_until("主視窗縮到系統匣", short, || !is_visible(window));
-    assert!(app.child.try_wait().unwrap().is_none(), "縮到系統匣後程式應繼續執行。");
-    w32::post(window, WM_COMMAND, main::ID_TRAY_OPEN as usize, 0);
-    wait_until("由系統匣還原主視窗", short, || is_visible(window));
-
-    // ── 設定對話框 ──
-    notify(editor, main::ID_SETTINGS, BN_CLICKED);
-    let dialog = wait_for("設定對話框出現", short, || {
-        top_window(process_id, settings::WINDOW_CLASS).filter(|hwnd| is_visible(*hwnd))
-    });
-    let content = child_of_class(dialog, "AiWakeSettingsContent");
-    let codex = catalog::kinds().iter().position(|kind| *kind == CliKind::Codex).unwrap() as i32;
-    let agy = catalog::kinds().iter().position(|kind| *kind == CliKind::Antigravity).unwrap() as i32;
-    let model = control(content, settings::ID_MODEL_BASE + codex);
-    let effort = control(content, settings::ID_EFFORT_BASE + codex);
-    let effort_count = |combo: HWND| w32::send(combo, CB_GETCOUNT, 0, 0);
-    assert_eq!(text_of(model), "gpt-6-luna", "Codex 預設應為低價喚醒模型。");
-    assert_eq!(text_of(control(content, settings::ID_PATH_BASE + codex)), "codex");
-    assert!(is_checked(control(content, settings::ID_TRAY)) && is_checked(control(content, settings::ID_TOKEN_SAVER)));
-    assert_eq!(text_of(control(content, settings::ID_TIMEOUT)), "3");
-    assert_eq!(text_of(control(content, settings::ID_QUOTA_REFRESH)), "10");
-
-    // 模型切換時，思考程度選單要跟著該模型支援的範圍調整。
-    set_text(model, "gpt-6.1-sol");
-    notify(content, settings::ID_MODEL_BASE + codex, CBN_EDITCHANGE);
-    wait_until("Sol 提供 Ultra", short, || effort_count(effort) == 7);
-    w32::send(effort, CB_SETCURSEL, 6, 0);
-    assert!(text_of(effort).contains("Ultra"), "Sol 應可選擇 Ultra。");
-    set_text(model, "gpt-6-luna");
-    notify(content, settings::ID_MODEL_BASE + codex, CBN_EDITCHANGE);
-    wait_until("Luna 不提供 Ultra", short, || effort_count(effort) == 6);
-    assert!(text_of(effort).contains("Max"), "由 Sol Ultra 切到 Luna 應降為 Max，實際：{}", text_of(effort));
-
-    set_text(control(content, settings::ID_MODEL_BASE + agy), "gemini-3.8-flash-high");
-    notify(content, settings::ID_MODEL_BASE + agy, CBN_EDITCHANGE);
-    wait_until("完整模型 ID 只保留預設程度", short, || {
-        effort_count(control(content, settings::ID_EFFORT_BASE + agy)) == 1
-    });
-    screenshot(dialog, "03-settings");
-
-    // 取消：不應改動任何設定。
-    set_checked(control(content, settings::ID_TOKEN_SAVER), false);
-    notify(dialog, settings::ID_CANCEL, BN_CLICKED);
-    wait_until("取消後對話框關閉", short, || !unsafe { IsWindow(Some(dialog)) }.as_bool());
-    assert!(!data_directory.join("settings.json").exists(), "取消設定不應寫入設定檔。");
-
-    // 儲存：寫入隔離的設定檔。
-    notify(editor, main::ID_SETTINGS, BN_CLICKED);
-    let dialog = wait_for("設定對話框再次出現", short, || {
-        top_window(process_id, settings::WINDOW_CLASS).filter(|hwnd| is_visible(*hwnd))
-    });
-    let content = child_of_class(dialog, "AiWakeSettingsContent");
-    assert!(is_checked(control(content, settings::ID_TOKEN_SAVER)), "先前取消的變更不應殘留。");
-    let model = control(content, settings::ID_MODEL_BASE + codex);
-    let effort = control(content, settings::ID_EFFORT_BASE + codex);
-    set_text(model, "gpt-6.1-sol");
-    notify(content, settings::ID_MODEL_BASE + codex, CBN_EDITCHANGE);
-    wait_until("Sol 提供 Ultra", short, || effort_count(effort) == 7);
-    w32::send(effort, CB_SETCURSEL, 6, 0);
-    set_text(model, "gpt-6-luna");
-    notify(content, settings::ID_MODEL_BASE + codex, CBN_EDITCHANGE);
-    wait_until("Luna 不提供 Ultra", short, || effort_count(effort) == 6);
-    set_checked(control(content, settings::ID_TRAY), false);
-    set_text(control(content, settings::ID_TIMEOUT), "7");
-    // 把每個 CLI 都指向假的批次檔，之後的「立即執行」才不會呼叫真正的 CLI。
-    let fake_cli = data_directory.join("fake-cli.cmd");
-    let probe_marker = data_directory.join("fake-cli-probed.txt");
-    std::fs::write(
-        &fake_cli,
-        "@echo off
-echo PROBED >> \"%~dp0fake-cli-probed.txt\"
-echo FAKE-CLI-OK
-",
-    )
-    .unwrap();
-    for index in 0..CliKind::ALL.len() as i32 {
-        set_text(control(content, settings::ID_PATH_BASE + index), &fake_cli.to_string_lossy());
-    }
-
-    // 連線檢查：對輸入框中的（假）CLI 執行 --version，結束後按鈕恢復可用。
-    let probe = control(content, settings::ID_PROBE);
-    notify(content, settings::ID_PROBE, BN_CLICKED);
-    wait_until("連線檢查完成", long, || probe_marker.is_file() && is_enabled(probe));
-    screenshot(dialog, "03b-settings-probed");
-
-    notify(dialog, settings::ID_OK, BN_CLICKED);
-    wait_until("儲存後對話框關閉", short, || !unsafe { IsWindow(Some(dialog)) }.as_bool());
-
-    let settings_path = data_directory.join("settings.json");
-    wait_until("設定檔寫入", short, || settings_path.is_file());
-    let saved = JsonFileStore::<AppSettings>::new(settings_path, AppSettings::create_default).load().unwrap();
-    assert_eq!(saved.cli_profiles[&CliKind::Codex].model, "gpt-6-luna");
-    assert_eq!(saved.cli_profiles[&CliKind::Codex].thinking_effort, ThinkingEffort::Max);
-    assert!(!saved.minimize_to_tray && saved.token_saver_mode, "只有勾選狀態被更改的選項應改變。");
-    assert_eq!(saved.execution_timeout_minutes, 7);
-    assert!(!saved.start_with_windows, "隔離模式不得啟用正式的開機啟動。");
-    assert!(saved.cli_profiles.values().all(|profile| Path::new(&profile.executable) == fake_cli));
-
-    // ── 立即執行：確認對話框 → 平行執行 → 終端機輸出 → 結果 ──
-    wait_until("設定儲存後的額度讀取完成", long, || text_of(refresh_button) == "重新讀取倒數");
-    notify(window, main::ID_RUN_NOW, BN_CLICKED);
-    let confirm = wait_for("立即執行的確認對話框", short, || message_box(process_id));
-    let question = text_of(control(confirm, 0xFFFF));
-    assert!(question.contains("Codex CLI") && question.contains("早安"), "確認訊息應列出目標與訊息：{question}");
-    assert!(!question.contains("Antigravity (Gemini)"), "已取消勾選的 CLI 不應出現在確認訊息：{question}");
-    w32::post(confirm, WM_COMMAND, 6, 0);
-
-    // 第一個目標（Gemini）已取消勾選，其餘目標都要執行。
-    let expected_runs = catalog::kinds().len() - 1;
-    wait_until("其餘假 CLI 執行完成", long, || {
-        let jobs = load_jobs(&data_directory);
-        jobs[0].status == ScheduleStatus::Pending && jobs[0].last_results.len() == expected_runs
-    });
-    let finished = load_jobs(&data_directory).remove(0);
-    assert!(finished.enabled, "立即執行會啟用排程。");
-    for result in &finished.last_results {
-        assert!(result.succeeded && result.exit_code == Some(0), "{} 應成功：{}", result.cli, result.error);
-        assert!(Path::new(&result.log_path).is_file(), "每次執行都應留下日誌。");
-    }
-    let terminal = control(window, main::ID_TERMINAL_OUTPUT);
-    wait_until("終端機顯示執行過程", short, || {
-        let output = text_of(terminal);
-        output.matches("✓").count() == expected_runs && output.contains("FAKE-CLI-OK")
-    });
-    let output = text_of(terminal);
-    assert!(output.contains("▶ Codex 開始執行，訊息：早安"), "終端機應顯示開始事件：{output}");
-    screenshot(window, "04-after-run");
-
-    notify(window, main::ID_SHOW_RESULT, BN_CLICKED);
-    let results = wait_for("執行結果對話框", short, || message_box(process_id));
-    let summary = text_of(control(results, 0xFFFF));
-    assert!(summary.contains("Codex CLI：成功") && summary.contains("結束碼：0"), "結果摘要不正確：{summary}");
-    w32::post(results, WM_CLOSE, 0, 0);
-    wait_until("結果對話框關閉", short, || message_box(process_id).is_none());
-
-    notify(window, main::ID_TERMINAL_CLEAR, BN_CLICKED);
-    wait_until("終端機清除", short, || text_of(terminal).is_empty());
-
-    // ── 新增：回到空白編輯狀態 ──
-    notify(window, main::ID_NEW, BN_CLICKED);
-    wait_until("編輯器重設", short, || text_of(save_button) == "建立排程");
-    assert_eq!(text_of(control(editor, main::ID_NAME)), "AI 倒數喚醒");
-    assert_eq!(text_of(control(editor, main::ID_END_TIME)), "24:00", "新增應還原結束時間預設值。");
-    assert!(is_checked(control(editor, main::ID_TARGET_BASE)) && is_checked(control(editor, main::ID_ENABLED)));
-
-    // 沒有選取排程時，刪除不做任何事。
-    notify(window, main::ID_DELETE, BN_CLICKED);
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(message_box(process_id).is_none(), "沒有選取排程時不應跳出刪除確認。");
-
-    // ── 關閉縮到系統匣後，關閉主視窗就是結束程式 ──
-    screenshot(window, "05-main-final");
-    w32::post(window, WM_CLOSE, 0, 0);
-    let status = wait_for("程式結束", Duration::from_secs(20), || app.child.try_wait().unwrap());
-    assert!(status.success(), "程式應正常結束：{status:?}");
-
-    let _ = std::fs::remove_dir_all(&data_directory);
+    let tray = wait_for("最小化啟動系統匣", || window(app.child.id(), true));
+    let hwnd = wait_for("最小化主視窗", || window(app.child.id(), false));
+    wait_for("啟動時隱藏", || (!unsafe { IsWindowVisible(hwnd).as_bool() }).then_some(()));
+    assert!(app.child.try_wait().expect("行程狀態").is_none());
+    post(tray, WM_COMMAND, shell::OPEN);
+    wait_for("最小化啟動後還原", || unsafe { IsWindowVisible(hwnd).as_bool() }.then_some(()));
+    post(tray, WM_COMMAND, shell::EXIT);
+    assert!(wait_for("最小化啟動後退出", || app.child.try_wait().expect("行程狀態")).success());
 }
