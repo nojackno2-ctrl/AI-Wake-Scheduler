@@ -1,5 +1,16 @@
 # AI HANDOFF
 
+## 2026-10-23 Antigravity：讀取間隔改為僅在未讀到倒數時讀取，並記住下次倒數結束時間（完成）
+
+- 使用者要求：「讀取間格改成沒有讀取到倒數就讀取，然後會記住下一次倒數結束德時間」（經確認：倒數結束時間一到且在偵測時段內即立即重讀並喚醒，未倒數才依間隔重試；同時套用於排程偵測與主視窗額度看板並共用記住的倒數結束時間）。
+- 變更：
+  - `core/src/usage.rs`：新增 `active_reset_at(snapshot, now)`，統一取得指定 CLI 目前有效倒數的下次結束（重置）時間（優先取已用盡視窗最晚重置時間，否則取短週期／主要視窗有效倒數之重置時間）。
+  - `core/src/manager.rs`：在 `Inner` 恢復並升級 `known_reset_at: Mutex<HashMap<(Guid, CliKind), Moment>>`、`remember_reset`、`known_reset`（可引用 `UsageReader::latest_snapshot` 中已讀到的有效倒數，同時避免 UI 在重置時刻先刷新時洗掉排程尚未處理的重置事件）與 `next_job_schedule_time`。排程在偵測時段內：若目標 CLI 已讀到倒數且 `reset > now`，略過間隔刻度讀取並將下次排程時間對齊 `reset`；當 `now >= reset` 時不受整點間隔限制立即重讀並喚醒；僅在尚未讀到有效倒數時才依 `probe_interval_minutes` 整點刻度讀取。
+  - `app/src/main_window.rs`：新增 `sync_usage_snapshots_from_reader()` 即時同步排程背景讀取到的最新額度快照；背景自動重讀（`refresh_usage(false)`）改為僅查詢 `active_reset_at` 為 `None`（尚未讀到倒數或倒數已結束）的 CLI，保留仍在倒數中的 CLI 快照與結束時間；手動點擊「重新讀取倒數」（`refresh_usage(true)`）則重讀全部 CLI。同步更新 `EDITOR_NOTE` 與 `README.md`。
+  - `core/tests/core_tests.rs`：更新並強化 `schedule_manager_obeys_daily_boundaries_and_resets`、`schedule_manager_countdown_reset_skips_interval_and_wakes_at_reset` 與 `schedule_manager_reset_survives_ui_snapshot_refresh`，驗證讀到倒數後在間隔刻度不重複讀取、倒數結束時間一到立即重讀並呼叫。
+- 驗證：依序執行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（app 10、隔離 UI `ui_smoke` 1、core 29，共 40 項通過，4 項 opt-in 忽略）、`cargo build --workspace --locked` 與 `git diff --check` 全部通過。
+- 限制：未以真實 CLI 長時間掛機驗證，未重新打包正式安裝版或發布新版本。
+
 ## 2026-10-23 Antigravity：主視窗三欄版面重作、固定字體大小與全欄位自動調整不裁切（完成）
 
 - 使用者要求：「UI重作，終端輸出改到最右邊，然後視窗大小的調整不要改變字體的大小，所有的欄位要自動調整，不要被切到」。開始時 `main` 工作樹乾淨。

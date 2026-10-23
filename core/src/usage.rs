@@ -168,6 +168,22 @@ pub fn exhausted_until(snapshot: Option<&CliUsageSnapshot>, now: &Moment) -> Opt
         .max()
 }
 
+/// 取得指定 CLI 目前有效倒數的下次結束（重置）時間。
+/// 若有額度視窗已用盡，優先取最晚重置時間；否則若短週期（或主要）視窗正處於倒數中且重置時間在未來，傳回該重置時間。
+pub fn active_reset_at(snapshot: Option<&CliUsageSnapshot>, now: &Moment) -> Option<Moment> {
+    let snapshot = snapshot?;
+    if snapshot.availability != CliUsageAvailability::Available {
+        return None;
+    }
+    if let Some(reset) = exhausted_until(Some(snapshot), now) {
+        return Some(reset);
+    }
+    match snapshot.short_window_or_first() {
+        Some(window) if window.is_active_countdown => window.resets_at.filter(|resets_at| *resets_at > *now),
+        _ => None,
+    }
+}
+
 const QUERY_TIMEOUT: Duration = Duration::from_secs(15);
 const CLAUDE_USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";

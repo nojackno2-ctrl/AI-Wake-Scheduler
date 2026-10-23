@@ -21,7 +21,9 @@ use crate::models::{
 use crate::runner::CliRunner;
 use crate::store::DataStore;
 use crate::time::{self, CancelToken, Clock, Moment, Span, SystemClock};
-use crate::usage::{exhausted_until, is_counting_down, CliUsageAvailability, UsageReader};
+use crate::usage::{
+    active_reset_at, exhausted_until, is_counting_down, CliUsageAvailability, CliUsageSnapshot, UsageReader,
+};
 
 /// 閒置時最長的等待間隔。
 /// 排程器不每秒輪詢，而是直接睡到下一個到期時間；這個上限只是為了
@@ -95,6 +97,7 @@ struct Inner {
     jobs: Mutex<Vec<ScheduledJob>>,
     last_quota_wakeup_by_cli: Mutex<HashMap<CliKind, Moment>>,
     last_quota_probe_at: Mutex<HashMap<(Guid, CliKind), Moment>>,
+    known_reset_at: Mutex<HashMap<(Guid, CliKind), Moment>>,
     active_targets: Mutex<HashSet<CliKind>>,
 
     /// 排程異動時用來立刻喚醒背景迴圈，不必等到下一個間隔。
@@ -131,6 +134,7 @@ impl ScheduleManager {
                 jobs: Mutex::new(Vec::new()),
                 last_quota_wakeup_by_cli: Mutex::new(HashMap::new()),
                 last_quota_probe_at: Mutex::new(HashMap::new()),
+                known_reset_at: Mutex::new(HashMap::new()),
                 active_targets: Mutex::new(HashSet::new()),
                 wake_pending: Mutex::new(false),
                 wake_signal: Condvar::new(),
@@ -264,6 +268,7 @@ impl ScheduleManager {
                 true,
             )?;
             lock(&inner.last_quota_probe_at).retain(|(id, _), _| *id != saved.id);
+            lock(&inner.known_reset_at).retain(|(id, _), _| *id != saved.id);
             saved.status = if saved.enabled { ScheduleStatus::Pending } else { ScheduleStatus::Disabled };
             saved.started_at = None;
             saved.finished_at = None;
@@ -301,6 +306,8 @@ impl ScheduleManager {
             if let Some(job) = jobs.iter().find(|job| job.id == id) {
                 debug_log::write("排程", format!("刪除「{}」", job.name));
             }
+            lock(&inner.last_quota_probe_at).retain(|(job_id, _), _| *job_id != id);
+            lock(&inner.known_reset_at).retain(|(job_id, _), _| *job_id != id);
             jobs.retain(|job| job.id != id);
             inner.job_store.save(&jobs)?;
         }
@@ -339,12 +346,7 @@ impl ScheduleManager {
         };
 
         let now = inner.now();
-        {
-            let mut last_wakeup = lock(&inner.last_quota_wakeup_by_cli);
-            for target in &execution.targets {
-                last_wakeup.insert(*target, now);
-            }
-        }
+        inner.mark_wakeup(&execution.targets, now);
 
         debug_log::write(
             "執行",
@@ -436,8 +438,10 @@ impl Inner {
 
     fn mark_wakeup(&self, targets: &[CliKind], now: Moment) {
         let mut last_wakeup = lock(&self.last_quota_wakeup_by_cli);
+        let mut known = lock(&self.known_reset_at);
         for target in targets {
             last_wakeup.insert(*target, now);
+            known.retain(|(_, kind), _| kind != target);
         }
     }
 
@@ -446,7 +450,73 @@ impl Inner {
     }
 
     /// 排程自己的重置時間不受 UI 重新整理共用快照影響。
-    /// 所有啟用排程都先讀取真實倒數，絕不因排程逾時而盲目呼叫。
+    fn remember_reset(&self, id: Guid, kind: CliKind, value: &CliUsageSnapshot, now: &Moment) {
+        let mut known = lock(&self.known_reset_at);
+        if let Some(reset) = active_reset_at(Some(value), now) {
+            known.insert((id, kind), reset);
+        } else {
+            known.remove(&(id, kind));
+        }
+    }
+
+    fn known_reset(&self, reader: &dyn UsageReader, id: Guid, kind: CliKind, now: &Moment) -> Option<Moment> {
+        if let Some(reset) = lock(&self.known_reset_at).get(&(id, kind)).copied() {
+            return Some(reset);
+        }
+        let last_probe = lock(&self.last_quota_probe_at).get(&(id, kind)).copied();
+        let latest = reader.latest_snapshot(kind)?;
+        if last_probe.is_some_and(|last| last > latest.observed_at) {
+            return None;
+        }
+        let reset = active_reset_at(Some(&latest), now)?;
+        lock(&self.known_reset_at).insert((id, kind), reset);
+        Some(reset)
+    }
+
+    fn next_job_schedule_time(&self, job: &ScheduledJob, now: &Moment) -> CoreResult<Moment> {
+        let start = initial_time_of(job);
+        let end = job.end_time_of_day;
+        let next_aligned = calculator::next_aligned_detection(start, end, now, job.probe_interval_minutes, false)?;
+        let Some(reader) = &self.usage_reader else {
+            return Ok(next_aligned);
+        };
+        if job.targets.is_empty() {
+            return Ok(next_aligned);
+        }
+        let (begin, _) = calculator::detection_window(start, end, now)?;
+        let mut next: Option<Moment> = None;
+        for &kind in &job.targets {
+            let mut target_next = match self.known_reset(reader.as_ref(), job.id, kind, now) {
+                Some(reset) if reset > *now => {
+                    if calculator::in_detection_window(start, end, &reset) {
+                        reset
+                    } else {
+                        calculator::detection_window(start, end, &reset)?.0
+                    }
+                }
+                Some(_) if *now < begin => begin,
+                Some(_) => *now,
+                None => next_aligned,
+            };
+            if let Some(last) = self.in_wakeup_cooldown(kind, now) {
+                let cooldown_end = last + quota_wakeup_cooldown();
+                let allowed = if calculator::in_detection_window(start, end, &cooldown_end) {
+                    cooldown_end
+                } else {
+                    calculator::detection_window(start, end, &cooldown_end)?.0
+                };
+                target_next = target_next.max(allowed);
+            }
+            if lock(&self.active_targets).contains(&kind) {
+                target_next = target_next.max(*now + max_idle_wait());
+            }
+            next = Some(next.map_or(target_next, |current| current.min(target_next)));
+        }
+        Ok(next.unwrap_or(next_aligned))
+    }
+
+    /// 排程自己的重置時間不受 UI 重新整理共用快照影響。
+    /// 僅在沒有讀到倒數時依設定間隔讀取；已讀到倒數時記住下次倒數結束時間，倒數結束立即重讀並喚醒。
     fn scan_and_start_due_jobs(self: &Arc<Self>) -> CoreResult<Span> {
         let Some(reader) = &self.usage_reader else {
             return Ok(max_idle_wait());
@@ -459,9 +529,6 @@ impl Inner {
             }
             let now = self.now();
             if !calculator::in_detection_window(initial_time_of(&job), job.end_time_of_day, &now) {
-                continue;
-            }
-            if !calculator::aligned_minute(&now, job.probe_interval_minutes) {
                 continue;
             }
             let mut targets = Vec::new();
@@ -485,18 +552,39 @@ impl Inner {
                 }
                 let last = lock(&self.last_quota_probe_at).get(&(job.id, kind)).copied();
                 let slot = now - Span::seconds(now.second() as i64) - Span::nanoseconds(now.nanosecond() as i64);
-                if !calculator::aligned_minute(&now, job.probe_interval_minutes)
-                    || last.is_some_and(|last| last >= slot)
+                let known_reset = self.known_reset(reader.as_ref(), job.id, kind, &now);
+                if let Some(reset) = known_reset.filter(|reset| *reset > now) {
+                    if calculator::aligned_minute(&now, job.probe_interval_minutes)
+                        && last.is_none_or(|last| last < slot)
+                    {
+                        debug_log::write(
+                            "偵測",
+                            format!("{} 已記住倒數結束時間 {}，略過讀取", kind.short_name(), local_text(&reset)),
+                        );
+                    }
+                    continue;
+                }
+                let countdown_ended =
+                    known_reset.is_some_and(|reset| reset <= now && last.is_none_or(|last| last < reset));
+                if !countdown_ended
+                    && (!calculator::aligned_minute(&now, job.probe_interval_minutes)
+                        || last.is_some_and(|last| last >= slot))
                 {
                     continue;
                 }
                 let result = reader.read(kind, &settings.profile(kind), &job.working_directory, &self.stop);
                 let observed = self.now();
                 lock(&self.last_quota_probe_at).insert((job.id, kind), observed);
+                match &result {
+                    Ok(value) => self.remember_reset(job.id, kind, value, &observed),
+                    Err(_) => {
+                        lock(&self.known_reset_at).remove(&(job.id, kind));
+                    }
+                }
                 if !calculator::in_detection_window(initial_time_of(&job), job.end_time_of_day, &observed) {
                     break;
                 }
-                if !calculator::aligned_minute(&observed, job.probe_interval_minutes) {
+                if !countdown_ended && !calculator::aligned_minute(&observed, job.probe_interval_minutes) {
                     break;
                 }
                 match result {
@@ -560,13 +648,7 @@ impl Inner {
         {
             let mut jobs = lock(&self.jobs);
             for job in jobs.iter_mut().filter(|job| job.enabled && job.status == ScheduleStatus::Pending) {
-                let next = calculator::next_aligned_detection(
-                    initial_time_of(job),
-                    job.end_time_of_day,
-                    &now,
-                    job.probe_interval_minutes,
-                    false,
-                )?;
+                let next = self.next_job_schedule_time(job, &now)?;
                 if job.scheduled_at != next {
                     job.scheduled_at = next;
                     changed = true;
@@ -659,7 +741,7 @@ impl Inner {
             return;
         }
 
-        // 自動排程僅在設定刻度讀取；手動執行後才額外重新整理顯示。
+        // 自動排程依設定間隔在尚未讀到倒數時讀取；手動執行後立即重讀並記住新倒數。
         if automatic {
             return;
         }
@@ -669,9 +751,11 @@ impl Inner {
                 return;
             }
             for &target in &targets {
-                if usage_reader.read(target, &settings.profile(target), &job.working_directory, &cancel).is_err() {
+                let Ok(value) = usage_reader.read(target, &settings.profile(target), &job.working_directory, &cancel)
+                else {
                     return;
-                }
+                };
+                self.remember_reset(job.id, target, &value, &self.now());
             }
             self.raise_jobs_changed();
         }
@@ -767,13 +851,7 @@ impl Inner {
             }
 
             if stored.enabled {
-                stored.scheduled_at = calculator::next_aligned_detection(
-                    initial_time_of(stored),
-                    stored.end_time_of_day,
-                    &now,
-                    stored.probe_interval_minutes,
-                    false,
-                )?;
+                stored.scheduled_at = self.next_job_schedule_time(stored, &now)?;
                 stored.status = ScheduleStatus::Pending;
             } else {
                 stored.status = if results.is_some_and(|items| items.iter().all(|result| result.succeeded)) {

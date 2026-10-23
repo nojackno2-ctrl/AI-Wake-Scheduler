@@ -1355,8 +1355,12 @@ fn schedule_manager_obeys_daily_boundaries_and_resets() {
     reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), start + Span::hours(5), true)], start));
     clock.set(start + Span::minutes(10));
     wake_scheduler(&manager, &directory);
-    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) >= 2));
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 2));
     assert_eq!(runner.call_count(), 1, "倒數中不呼叫。");
+    clock.set(start + Span::minutes(20));
+    wake_scheduler(&manager, &directory);
+    sleep(100);
+    assert_eq!(reader.read_count(CliKind::Codex), 2, "已讀到倒數並記住結束時間後，倒數期間不再依間隔重複讀取。");
     let reset = start + Span::hours(5);
     ready_usage(&reader, CliKind::Codex, reset);
     clock.set(reset);
@@ -1373,32 +1377,32 @@ fn schedule_manager_obeys_daily_boundaries_and_resets() {
 }
 
 #[test]
-fn schedule_manager_countdown_reset_waits_for_aligned_probe() {
+fn schedule_manager_countdown_reset_skips_interval_and_wakes_at_reset() {
     let _serial = serial();
     let directory = TempDir::new();
     let store = job_store(directory.join("early-reset.json"));
     let now = local_wall_clock(2026, 10, 22, 8, 0, 0);
+    let reset = now + Span::minutes(13);
     let clock = FakeClock::new(now);
     let reader = Arc::new(FakeCliUsageReader::default());
-    reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), now + Span::minutes(3), true)], now));
+    reader.set(available(CliKind::Codex, vec![window("5h", 10, Span::hours(5), reset, true)], now));
     let runner = Arc::new(CountingCliRunner::default());
     store.save(&vec![timed_job(&directory, CliKind::Codex, hm(8, 0), hm(18, 0), now)]).unwrap();
     let manager = manager_with(&store, runner.clone(), &shared_settings(), Some(reader.clone()), Some(clock.clone()));
     manager.initialize().unwrap();
     assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 1));
     assert_eq!(runner.call_count(), 0);
-    clock.set(now + Span::minutes(1));
-    wake_scheduler(&manager, &directory);
-    sleep(100);
-    assert_eq!(reader.read_count(CliKind::Codex), 1, "未到重讀時刻時不可密集查詢。");
-    clock.set(now + Span::minutes(3));
-    wake_scheduler(&manager, &directory);
-    sleep(100);
-    assert_eq!(runner.call_count(), 0, "08:03 不是設定刻度，不可提前呼叫。");
+    assert!(wait_until(Duration::from_secs(3), || manager.get_jobs().unwrap()[0].scheduled_at == reset));
     clock.set(now + Span::minutes(10));
     wake_scheduler(&manager, &directory);
-    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "08:10 才檢查並呼叫。");
-    assert!(reader.read_count(CliKind::Codex) >= 2, "必須重讀確認，而非直接依舊快照呼叫。");
+    sleep(100);
+    assert_eq!(reader.read_count(CliKind::Codex), 1, "已記住 08:13 倒數結束時間，08:10 間隔刻度不可重複讀取。");
+    assert_eq!(runner.call_count(), 0);
+    ready_usage(&reader, CliKind::Codex, reset);
+    clock.set(reset);
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "08:13 倒數結束立即重讀並呼叫。");
+    assert_eq!(reader.read_count(CliKind::Codex), 2, "倒數結束時必須重讀確認。");
 }
 
 #[test]
@@ -1464,11 +1468,10 @@ fn schedule_manager_reset_survives_ui_snapshot_refresh() {
     reader.latest.lock().unwrap().insert(CliKind::Codex, refreshed);
     clock.set(reset);
     wake_scheduler(&manager, &directory);
-    sleep(100);
-    assert_eq!(runner.call_count(), 0, "UI 更新快照也不得在非刻度呼叫。");
-    clock.set(now + Span::minutes(10));
-    wake_scheduler(&manager, &directory);
-    assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "下一刻度重新檢查。");
+    assert!(
+        wait_until(Duration::from_secs(3), || runner.call_count() == 1),
+        "UI 先更新快照後，08:03 倒數結束仍應立即重讀並呼叫。"
+    );
     assert!(reader.read_count(CliKind::Codex) >= 2);
 }
 

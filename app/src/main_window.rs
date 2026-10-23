@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use aiwake_core::cli_update::{self, CliTool, CliUpdateStatus};
 use aiwake_core::time::{self, Moment, Span};
-use aiwake_core::usage::is_counting_down;
+use aiwake_core::usage::active_reset_at;
 use aiwake_core::{
     calculator, catalog, debug_log, locator, login, usage, CancelToken, CliKind, CliRunner, CliUsageAvailability,
     CliUsageSnapshot, CoreError, CoreResult, Guid, ScheduleRecurrence, ScheduleStatus, ScheduledJob, UsageReader,
@@ -120,7 +120,7 @@ const CDRF_NOTIFYITEMDRAW: isize = 0x20;
 
 const EMPTY_STATE_TEXT: &str = "目前沒有排程\r\n選擇下方的「新增」，建立每天自動喚醒。";
 const HEADER_SUBTITLE: &str = "每天從開始時間偵測至結束時間，沒有倒數就呼叫勾選的 CLI（預設訊息：早安）";
-const EDITOR_NOTE: &str = "檢查與呼叫共用整點刻度：間隔 5 分鐘為每小時 00、05、10…分；15 分鐘為 00、15、30、45 分。僅在開始至結束時段內檢查，未倒數且 CLI 版本通過才呼叫，其餘等下一刻度。結束可填 24:00，早於開始則跨午夜。節省 Token 模式停用工具與 MCP，並使用最低推理量。";
+const EDITOR_NOTE: &str = "僅在沒有讀到倒數時依設定間隔（每小時整點刻度，如 5 分鐘為 00、05、10…分）讀取；一旦讀到倒數即記住下次倒數結束時間，倒數期間不再重複讀取，並於倒數結束（且在偵測時段內）立即重讀與呼叫。結束可填 24:00，早於開始則跨午夜。節省 Token 模式停用工具與 MCP，並使用最低推理量。";
 /// 主區（排程清單＋編輯器）至少這麼寬時，清單與編輯器左右並排；否則上下堆疊。
 const WIDE_MAIN_WIDTH: i32 = 520;
 /// 編輯面板至少這麼寬時「排程內容」與「額度看板」左右並排；否則上下堆疊。
@@ -1362,9 +1362,36 @@ impl MainWindow {
 
     // ── 額度 ──────────────────────────────────────────────────────
 
-    /// 額度只在開啟主視窗或使用者要求時查詢一次；之後每秒只用已取得的
-    /// 重置時間更新本地倒數，不會持續啟動 CLI 或發出網路要求。
+    fn sync_usage_snapshots_from_reader(&self) {
+        let latest = self.host.usage_reader.latest_snapshots();
+        let mut snapshots = self.usage_snapshots.borrow_mut();
+        for (kind, snap) in latest {
+            if snapshots.get(&kind).is_none_or(|existing| snap.observed_at > existing.observed_at) {
+                snapshots.insert(kind, snap);
+            }
+        }
+    }
+
+    /// 讀取 CLI 額度與重置倒數。
+    /// `show_status` 為 true（手動按下「重新讀取倒數」或完成登入）時強制重讀所有 CLI；
+    /// 為 false（背景自動重讀）時只讀取尚未記住有效倒數的 CLI，已讀到倒數的 CLI 在倒數結束前不重複查詢。
     fn refresh_usage(&self, show_status: bool) {
+        self.sync_usage_snapshots_from_reader();
+        let now = time::now();
+        let kinds_to_read: Vec<CliKind> = {
+            let snapshots = self.usage_snapshots.borrow();
+            catalog::all()
+                .iter()
+                .map(|descriptor| descriptor.kind)
+                .filter(|kind| show_status || active_reset_at(snapshots.get(kind), &now).is_none())
+                .collect()
+        };
+        if kinds_to_read.is_empty() {
+            self.last_usage_refresh_time.set(Some(now));
+            self.update_usage_labels(&now);
+            return;
+        }
+
         let generation = self.usage_refresh_generation.get() + 1;
         self.usage_refresh_generation.set(generation);
         let cancel = CancelToken::new();
@@ -1385,12 +1412,12 @@ impl MainWindow {
         let queue = self.queue.clone();
         std::thread::spawn(move || {
             let results: Vec<CoreResult<CliUsageSnapshot>> = std::thread::scope(|scope| {
-                let handles: Vec<_> = catalog::all()
-                    .iter()
-                    .map(|descriptor| {
-                        let profile = settings.profile(descriptor.kind);
+                let handles: Vec<_> = kinds_to_read
+                    .into_iter()
+                    .map(|kind| {
+                        let profile = settings.profile(kind);
                         let (reader, cancel, working_directory) = (&reader, &cancel, &working_directory);
-                        scope.spawn(move || reader.read(descriptor.kind, &profile, working_directory, cancel))
+                        scope.spawn(move || reader.read(kind, &profile, working_directory, cancel))
                     })
                     .collect();
                 handles
@@ -1428,13 +1455,16 @@ impl MainWindow {
             }
         }
 
-        let available_count =
-            snapshots.iter().filter(|snapshot| snapshot.availability == CliUsageAvailability::Available).count();
-        {
+        let available_count = {
             let mut current = self.usage_snapshots.borrow_mut();
-            current.clear();
-            current.extend(snapshots.into_iter().map(|snapshot| (snapshot.cli, snapshot)));
-        }
+            if show_status {
+                current.clear();
+            }
+            for snapshot in snapshots {
+                current.insert(snapshot.cli, snapshot);
+            }
+            current.values().filter(|snapshot| snapshot.availability == CliUsageAvailability::Available).count()
+        };
         let now = time::now();
         self.last_usage_refresh_time.set(Some(now));
         self.update_usage_labels(&now);
@@ -2032,6 +2062,7 @@ impl MainWindow {
         }
 
         let now = time::now();
+        self.sync_usage_snapshots_from_reader();
         let countdowns: Vec<String> = self
             .jobs
             .borrow()
@@ -2052,7 +2083,7 @@ impl MainWindow {
         }
         self.update_usage_labels(&now);
 
-        // 1. 倒數結束時自動讀取：檢查是否有任何 CLI 的倒數時間已到
+        // 1. 倒數結束時自動讀取：檢查是否有任何已記住倒數的 CLI 到達重置時間
         let mut has_countdown_ended = false;
         {
             let snapshots = self.usage_snapshots.borrow();
@@ -2061,10 +2092,20 @@ impl MainWindow {
                 let ended = snapshots
                     .get(&descriptor.kind)
                     .filter(|snapshot| snapshot.availability == CliUsageAvailability::Available)
-                    .and_then(|snapshot| snapshot.short_window_or_first())
-                    .filter(|window| window.is_active_countdown)
-                    .and_then(|window| window.resets_at)
-                    .is_some_and(|resets_at| now >= resets_at);
+                    .is_some_and(|snapshot| {
+                        active_reset_at(Some(snapshot), &now).is_none()
+                            && (snapshot
+                                .short_window_or_first()
+                                .filter(|window| window.is_active_countdown)
+                                .and_then(|window| window.resets_at)
+                                .is_some_and(|resets_at| now >= resets_at)
+                                || snapshot
+                                    .windows
+                                    .iter()
+                                    .filter(|window| window.used_percent >= 100)
+                                    .filter_map(|window| window.resets_at)
+                                    .any(|resets_at| now >= resets_at))
+                    });
                 let recently_refreshed =
                     last_refresh.get(&descriptor.kind).is_some_and(|last| now - *last < Span::seconds(15));
                 if ended && !recently_refreshed {
@@ -2080,10 +2121,10 @@ impl MainWindow {
         }
 
         // 2. 沒抓到倒數（未在倒數中）時依設定間隔背景探測。
-        // 若所有 CLI 皆處於正常有效倒數中，則略過定時查詢，避免產生不必要的連線與 429。
+        // 已記住有效倒數結束時間的 CLI 會在 refresh_usage(false) 中直接略過，不重複查詢。
         let has_uncaptured_countdown = {
             let snapshots = self.usage_snapshots.borrow();
-            catalog::all().iter().any(|descriptor| !is_counting_down(snapshots.get(&descriptor.kind), &now))
+            catalog::all().iter().any(|descriptor| active_reset_at(snapshots.get(&descriptor.kind), &now).is_none())
         };
         let interval_minutes = self.host.settings().quota_auto_refresh_minutes;
         if has_uncaptured_countdown
