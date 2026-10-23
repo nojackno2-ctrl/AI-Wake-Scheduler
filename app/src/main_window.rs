@@ -15,7 +15,7 @@ use aiwake_core::{
     cli_update::{self, CliTool, CliUpdateStatus},
     locator, login,
     time::{self, Span},
-    usage::{active_reset_at, exhausted_until},
+    usage::active_reset_at,
     CancelToken, CliActivityEvent, CliKind, CliRunner, CliUsageSnapshot, Guid, ScheduleStatus, ScheduledJob,
     UsageReader,
 };
@@ -940,7 +940,8 @@ impl Dashboard {
                 ui.painter().circle_stroke(center, radius, Stroke::new(7.5, colors.track));
                 ui.painter().circle_stroke(center, radius - 10.5, Stroke::new(3.0, colors.track));
                 let now = time::now();
-                let exhausted = exhausted_until(snapshot.as_ref(), &now).is_some();
+                // 每週用盡由下方每週列標紅；圓環只反映自己顯示的視窗。
+                let exhausted = primary.is_some_and(|row| row.remaining_percent == 0);
                 let mut countdown = "尚未讀取".into();
                 let mut value = "—".into();
                 if let Some(row) = primary {
@@ -1039,21 +1040,6 @@ impl Dashboard {
                         .fill(brand),
                 );
                 if let Some(group) = &group {
-                    for row in &group.rows {
-                        if [primary, weekly].iter().flatten().any(|p| std::ptr::eq(*p, row)) {
-                            continue;
-                        }
-                        ui.horizontal(|ui| {
-                            ui.small(&row.label);
-                            ui.small(&row.percent_text);
-                        });
-                        ui.add(
-                            egui::ProgressBar::new(row.remaining_percent as f32 / 100.0)
-                                .desired_width(inner_width)
-                                .desired_height(5.0)
-                                .fill(brand),
-                        );
-                    }
                     if group.requires_login
                         && ui
                             .add_enabled(

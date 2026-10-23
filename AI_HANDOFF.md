@@ -6,6 +6,7 @@
 - 變更：`board.rs` 新增 `primary_and_weekly`（5 小時視窗倒數中才佔圓環，否則改用每週列；每週以 7 天週期或「每週」標籤判定）；`main_window.rs` 額度卡在圓環上方標示目前視窗名稱，圓環下方固定一列「每週 xx% ／倒數」加進度條，無資料時顯示「—」保留位置；其餘視窗列排除圓環與每週列。
 - 驗證：`cargo test --workspace` 全數通過（含新增 `weekly_takes_the_dial_without_five_hour_countdown`），`cargo clippy --workspace` 無警告。
 - 未驗證：未實際啟動程式目視檢查卡片排版。
+- 後續修正（使用者截圖回饋）：圓環固定顯示 5 小時視窗（未倒數也一樣），只有沒有 5 小時視窗時才改顯示每週；圓環「額度用盡」只看圓環本身的視窗，每週用盡由每週列標紅；卡片下方只保留每週列，其他視窗（如 Claude Opus 7 天）不再列出。fmt、clippy `--all-targets`、`cargo test --workspace` 通過；仍未目視檢查。
 
 ## 2026-10-23 Claude：修正 Claude 5 小時倒數讀取不到（完成）
 

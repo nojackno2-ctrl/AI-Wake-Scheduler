@@ -134,16 +134,12 @@ fn build_rows(descriptor: &CliDescriptor, snapshot: &CliUsageSnapshot) -> Vec<Bo
         .collect()
 }
 
-/// 選出圓環要顯示的列與固定位置的每週列：5 小時視窗倒數中時圓環顯示 5 小時，
-/// 否則改顯示每週額度。
+/// 選出圓環要顯示的列與固定位置的每週列：圓環固定顯示 5 小時視窗，
+/// 沒有 5 小時視窗時才改顯示每週額度。
 pub fn primary_and_weekly(rows: &[BoardRow]) -> (Option<usize>, Option<usize>) {
     let weekly = rows.iter().position(is_weekly);
     let short = rows.iter().position(|row| row.duration.is_some_and(|d| d <= Span::hours(6)));
-    let primary = match short {
-        Some(index) if rows[index].is_counting_down => Some(index),
-        _ => weekly.or(short).or((!rows.is_empty()).then_some(0)),
-    };
-    (primary, weekly)
+    (short.or(weekly).or((!rows.is_empty()).then_some(0)), weekly)
 }
 
 fn is_weekly(row: &BoardRow) -> bool {
@@ -270,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn weekly_takes_the_dial_without_five_hour_countdown() {
+    fn weekly_takes_the_dial_only_without_five_hour_window() {
         let now = local_wall_clock(2026, 10, 7, 9, 0, 0);
         let row = |label: &str, duration: Option<Span>, counting: bool| BoardRow {
             label: label.into(),
@@ -281,7 +277,9 @@ mod tests {
             duration,
         };
         let idle = [row("5 小時", Some(Span::hours(5)), false), row("每週", Some(Span::days(7)), true)];
-        assert_eq!(primary_and_weekly(&idle), (Some(1), Some(1)));
+        assert_eq!(primary_and_weekly(&idle), (Some(0), Some(1)), "5 小時未倒數時圓環仍顯示 5 小時。");
+        let weekly_only = [row("每週", Some(Span::days(7)), true)];
+        assert_eq!(primary_and_weekly(&weekly_only), (Some(0), Some(0)));
         let named = [row("每週", None, true), row("5 小時", Some(Span::hours(5)), true)];
         assert_eq!(primary_and_weekly(&named), (Some(1), Some(0)));
         let short_only = [row("5 小時", Some(Span::hours(5)), false)];
