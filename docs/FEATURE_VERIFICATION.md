@@ -44,9 +44,9 @@
 
 - 真實唯讀：`cargo test -p aiwake-core --test core_tests --locked executable_locator_resolution -- --ignored --exact --nocapture` 與 `cli_update_check_real` 均通過。五個目標皆可讀取實際額度；AGY Gemini／Claude-GPT 每週用盡，未呼叫模型，也未更新任何 CLI。
 - Release：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./build-release.ps1 -SkipTests -OutputDirectory dist/audit-20261023` 通過。執行檔 9,852,416 bytes，版本 2.2.0，SHA256 `14f027b7714fe85f11c884a17f32e1796e542fdb79fbc3f65e1c833331a804e0`；隔離最小化啟動、系統匣還原、關閉縮回與正常結束（exit 0）通過。
-- 安裝 QA：`build-installer.ps1 -SkipTests -VerificationBuild -OutputDirectory dist/audit-20261023/qa` 通過；`tests/Verify-Installer.ps1` 的 Install／UpgradeKeepStartup／UpgradeDisableStartup／UpgradeEnableStartup／Uninstall 全通過，每階段確認正式設定、排程與啟動值不變。清理前已確認建置目錄在工作區內且不是連結，並備份既有 publish／生命週期證據至 `dist/audit-20261023/previous-*`。
+- 安裝 QA：`build-installer.ps1 -SkipTests -VerificationBuild -OutputDirectory dist/audit-20261023/qa` 通過；`tests/Verify-Installer.ps1` 的 Install／UpgradeKeepStartup／UpgradeDisableStartup／UpgradeEnableStartup／Uninstall 全通過，每階段確認正式設定、排程與啟動值不變。另執行 Install／SHA256 比對／Uninstall，確認實際安裝後執行檔與上述 Release 雜湊一致；產物附 `SHA256SUMS.txt`。清理前已確認建置目錄在工作區內且不是連結，並備份既有 publish／生命週期證據至 `dist/audit-20261023/previous-*`。
 - 探針除錯：Release 臨時 PowerShell 探針先因 `IntPtr.Zero` 布林轉換與未等待視窗初始化而誤判；改為明確比較零指標、等待隱藏狀態後，完整生命週期通過。這是探針修正，未據此改動產品。
-- 遠端基準：起點 `1bc7b80` 的 CI 有四時區成功，Pacific 工作為 hosted runner lost communication，未取得失敗測試日誌；不據此宣稱該時區測試失敗或成功。本輪提交的五時區結果待遠端執行。
+- 遠端驗證：程式碼提交 `613e2ada9149276e1e9562f2cfc269a2061cf5bd` 的 [CI 39938772825](https://github.com/nojackno2-ctrl/AI-Wake-Scheduler/actions/runs/39938772825) 已完成，UTC／台北／印度／太平洋／澳洲東部五時區全部成功，五個 Test 步驟均為 success。先前起點 `1bc7b80` 的 Pacific 工作為 hosted runner lost communication，未取得失敗測試日誌，不將該基準錯誤歸因於測試。後續收尾僅更新驗證文件與 README 日誌容量說明，產品程式碼不變。
 
 ## 現行驗證指令
 
