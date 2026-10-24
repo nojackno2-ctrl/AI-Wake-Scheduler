@@ -118,6 +118,62 @@ Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#LegacyTaskName}"" /
 Type: files; Name: "{app}\*.log"
 
 [Code]
+var
+  IsUpdate: Boolean;
+  PreviousVersion: String;
+
+{ 讀取舊版解除安裝資訊（依當時權限寫入 HKLM 或 HKCU）。 }
+function FindPreviousInstall(var Version: String): Boolean;
+var
+  Key: String;
+begin
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + ExpandConstant('{#MyAppId}') + '_is1';
+  Result := RegKeyExists(HKLM64, Key) or RegKeyExists(HKLM32, Key) or RegKeyExists(HKCU, Key);
+  Version := '';
+  if Result then
+    if not RegQueryStringValue(HKLM64, Key, 'DisplayVersion', Version) then
+      if not RegQueryStringValue(HKLM32, Key, 'DisplayVersion', Version) then
+        RegQueryStringValue(HKCU, Key, 'DisplayVersion', Version);
+end;
+
+{ 依序比較以點分隔的數字版本，回傳 -1、0、1。 }
+function CompareVersions(A, B: String): Integer;
+var
+  PartA, PartB, DotA, DotB: Integer;
+begin
+  Result := 0;
+  while (Result = 0) and ((A <> '') or (B <> '')) do
+  begin
+    DotA := Pos('.', A);
+    DotB := Pos('.', B);
+    if DotA = 0 then
+      DotA := Length(A) + 1;
+    if DotB = 0 then
+      DotB := Length(B) + 1;
+    PartA := StrToIntDef(Copy(A, 1, DotA - 1), 0);
+    PartB := StrToIntDef(Copy(B, 1, DotB - 1), 0);
+    Delete(A, 1, DotA);
+    Delete(B, 1, DotB);
+    if PartA < PartB then
+      Result := -1
+    else if PartA > PartB then
+      Result := 1;
+  end;
+end;
+
+function InitializeSetup: Boolean;
+begin
+  Result := True;
+  IsUpdate := FindPreviousInstall(PreviousVersion);
+  if IsUpdate then
+    Log('Update mode: previous version "' + PreviousVersion + '"')
+  else
+    Log('Fresh install mode');
+  if IsUpdate and (PreviousVersion <> '') and (CompareVersions(PreviousVersion, '{#MyAppVersion}') > 0) then
+    Result := SuppressibleMsgBox('已安裝較新的版本 v' + PreviousVersion + '，確定要改裝為較舊的 v{#MyAppVersion} 嗎？',
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDYES) = IDYES;
+end;
+
 procedure InitializeWizard;
 var
   StartupCommand: String;
@@ -128,4 +184,51 @@ begin
     WizardSelectTasks('startupicon')
   else if Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "{#LegacyTaskName}"', '', SW_HIDE, ewWaitUntilTerminated, ExitCode) and (ExitCode = 0) then
     WizardSelectTasks('startupicon');
+  if IsUpdate then
+    WizardForm.Caption := '更新 {#MyAppName}';
+end;
+
+{ 更新模式沿用舊的安裝位置與選項，略過歡迎、資料夾與工作頁，直接進入確認頁。 }
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := IsUpdate and ((PageID = wpWelcome) or (PageID = wpSelectDir) or (PageID = wpSelectTasks));
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if IsUpdate and (CurPageID = wpReady) then
+  begin
+    WizardForm.PageNameLabel.Caption := '準備更新';
+    WizardForm.PageDescriptionLabel.Caption := '將保留原本的安裝位置、啟動選項與所有排程設定。';
+    WizardForm.NextButton.Caption := '更新(&U)';
+  end;
+end;
+
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+var
+  FromVersion: String;
+begin
+  if IsUpdate then
+  begin
+    FromVersion := PreviousVersion;
+    if FromVersion = '' then
+      FromVersion := '舊版';
+    if CompareVersions(PreviousVersion, '{#MyAppVersion}') = 0 then
+      Result := '重新安裝 v{#MyAppVersion}（修復目前版本的檔案）'
+    else
+      Result := '更新版本：v' + FromVersion + ' → v{#MyAppVersion}';
+    Result := Result + NewLine + NewLine + MemoDirInfo;
+    if MemoTasksInfo <> '' then
+      Result := Result + NewLine + NewLine + MemoTasksInfo;
+    Result := Result + NewLine + NewLine + '執行中的程式會先自動關閉；排程與設定存放在使用者資料夾，不受影響。';
+  end
+  else
+  begin
+    Result := MemoDirInfo;
+    if MemoGroupInfo <> '' then
+      Result := Result + NewLine + NewLine + MemoGroupInfo;
+    if MemoTasksInfo <> '' then
+      Result := Result + NewLine + NewLine + MemoTasksInfo;
+  end;
 end;

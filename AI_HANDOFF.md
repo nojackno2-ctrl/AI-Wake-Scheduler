@@ -1,5 +1,12 @@
 # AI HANDOFF
 
+## 2026-10-24 Claude：安裝檔加入更新模式（完成）
+
+- 使用者：「安裝檔能不能有更新模式，而不是每次安裝都重新安裝」。
+- 變更（`installer/AI倒數喚醒.iss` [Code]）：`InitializeSetup` 以 `{AppId}_is1` 解除安裝鍵（HKLM64／HKLM32／HKCU）偵測舊版並讀 `DisplayVersion`；偵測到時為更新模式：視窗標題「更新 …」，略過歡迎、安裝資料夾、附加工作頁（沿用 UsePreviousAppDir／Tasks／Privileges），直接到確認頁，標題「準備更新」、按鈕「更新(&U)」，摘要顯示「v舊 → v新」（同版顯示修復重裝）。已裝較新版時詢問是否降級（預設否）。安裝紀錄寫入 `Update mode: previous version "x"`／`Fresh install mode`。
+- 驗證：`build-installer.ps1 -SkipTests -VerificationBuild`（輸出至暫存目錄）以 Inno Setup 6.4.1 編譯成功；`tests/Verify-Installer.ps1` Install → UpgradeKeepStartup → Uninstall 三階段 PASS（正式設定／排程／啟動值未變），紀錄檔確認首次為 Fresh、升級為 Update mode "2.3.0"。
+- 未驗證：互動精靈的頁面略過與文字未實際目視；降級提示未實測；未建置正式版安裝檔。
+
 ## 2026-10-24 Claude：即時終端輸出改為白話（完成）
 
 - 使用者：「終端機應該要寫人看得懂的東西」。原本面板直接顯示 CLI 原始輸出：Codex 橫幅／設定／提示詞回顯／`tokens used` 以紅色 ✗ 顯示，AGY 錯誤顯示原始 `AGY_ERROR: {json}`，失敗只寫「CLI 結束碼為 3」。
