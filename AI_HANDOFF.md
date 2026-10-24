@@ -1,5 +1,12 @@
 # AI HANDOFF
 
+## 2026-10-24 Claude：更新使用者電腦上的正式安裝版（完成）
+
+- 使用者：「先安裝最新的版本到電腦」。
+- 建置：`build-installer.ps1`（含測試：app 18、UI 2、core 45，4 忽略，0 失敗）→ `dist\AI倒數喚醒_Setup_v2.3.0_x64_20261024-095414.exe`（SHA256 5E22E5A2…F623，不納入版控）。內含 3ef1077 終端白話、1d5c2da 權杖換新修正與 2de8523 更新模式。
+- 安裝：以系統管理員 `/SILENT` 執行，結束碼 0；紀錄顯示 `Update mode: previous version "2.3.0"`、`Installation process succeeded`。`C:\Program Files\AI 倒數喚醒\AI倒數喚醒.exe` 雜湊與建置產物一致（2F81AC1F…F5B2）；HKCU Run 啟動值保留。已以 `--minimized` 啟動程式（PID 32204）。
+- 未驗證：未目視確認程式介面與新功能實際運作；版本號仍為 2.3.0（未升版）。
+
 ## 2026-10-24 Claude：安裝檔加入更新模式（完成）
 
 - 使用者：「安裝檔能不能有更新模式，而不是每次安裝都重新安裝」。
