@@ -21,6 +21,14 @@
 - 測試：新增 3 個 core 測試（Codex 實際輸出、AGY 429 實際輸出、無原因失敗）；`ui_smoke` 斷言改為「Codex 開始喚醒」。fmt、clippy `--all-targets -D warnings`、`cargo test --workspace --locked`（app 18、UI 2、core 45，4 忽略，0 失敗）通過；UI 截圖目視確認終端三行為白話。
 - 未驗證：未以真實 CLI 實機觀察面板；Claude CLI 實際錯誤字串的對應以關鍵字推測（/login、token has expired、rate limit 等）；未建置 release、未更新使用者已安裝版本。
 
+## 2026-10-24 Claude：Claude 權杖逾期時改用 `claude auth status` 換新（完成）
+
+- 使用者要求先試 `auth status` 取代送訊息換新權杖。
+- 靜態閱讀 claude.exe 2.1.309 內嵌 JS 時，`auth status` 處理函式內未見刷新呼叫，原推測不會換新；**實測推翻**：背景腳本等權杖逾期 2 分鐘（14:31）執行 `claude auth status`，結束碼 0、`loggedIn: true`，`expiresAt` 由 10-24 14:29:33 更新為 22:31:39，憑證檔已改寫（刷新應發生在 CLI 啟動流程）。
+- 變更（`usage.rs`）：`read_claude` 改接收 profile／工作目錄；權杖逾期（或 401 且有 refresh token）時先以 `refresh_claude_credentials` 執行 `claude auth status`（不送訊息、不耗額度），重讀到不同且未逾期的權杖就直接查額度；換新失敗或找不到 CLI 才回傳 `credentials_stale`，由排程以喚醒呼叫換新（前一版行為保留為備援）。除錯日誌記錄「執行 claude auth status 換新（結束碼…）：已換新／未換新」。
+- 測試：新增 opt-in `claude_auth_status_refresh_real`（`cargo test -p aiwake-core --lib --locked claude_auth_status_refresh_real -- --ignored`）實機通過（驗證找 CLI→執行→重讀管線；當時權杖有效，非逾期換新）。fmt check、clippy `--all-targets -D warnings`、`cargo test --workspace --locked`（app 18、UI 2、core 45，5 忽略，0 失敗）、`cargo build --release --locked` 通過。
+- 未驗證：新程式碼在權杖真正逾期時的整段流程未實機觀察（換新本身已由腳本實測）；正式安裝版（da8e49f 安裝者）尚不含本變更。auth status 換新屬未公開行為，CLI 改版可能失效，屆時會退回喚醒換新。
+
 ## 2026-10-24 Claude：修正 Claude 權杖逾期誤報「請重新登入」且不喚醒（完成）
 
 - 使用者：「明明有登入，為什麼一直叫我登入」→ 要求修正下方診斷的死結。

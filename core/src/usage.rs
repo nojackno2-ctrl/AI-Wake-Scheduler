@@ -426,7 +426,12 @@ impl CliUsageReader {
         ))
     }
 
-    fn read_claude(&self, cancel: &CancelToken) -> CoreResult<CliUsageSnapshot> {
+    fn read_claude(
+        &self,
+        profile: &CliProfile,
+        working_directory: &str,
+        cancel: &CancelToken,
+    ) -> CoreResult<CliUsageSnapshot> {
         let mut state = self.claude.lock().unwrap_or_else(|e| e.into_inner());
         let observed_at = time::now();
 
@@ -460,12 +465,17 @@ impl CliUsageReader {
             }
             Err(message) => return Ok(unavailable(CliKind::Claude, message, observed_at)),
         };
-        // 逾期的 access token 查詢只會得到 401 或 429（且會被限流），直接交由 CLI 換新；
+        // 逾期的 access token 查詢只會得到 401 或 429（且會被限流），先請 CLI 換新再查；
         // 先前的 429 多半由舊權杖造成，換新後應重新查詢。
-        if credentials.is_expired(&observed_at) {
+        let credentials = if credentials.is_expired(&observed_at) {
             state.retry_after_at = None;
-            return Ok(stale_claude_credentials(&credentials, observed_at));
-        }
+            match refresh_claude_credentials(&credentials, &credentials_path, profile, working_directory, cancel)? {
+                Some(refreshed) => refreshed,
+                None => return Ok(stale_claude_credentials(&credentials, observed_at)),
+            }
+        } else {
+            credentials
+        };
 
         if let Some(retry_after_at) = state.retry_after_at.filter(|retry| observed_at < *retry) {
             return Ok(create_claude_rate_limited_snapshot(&state, &observed_at, &retry_after_at));
@@ -529,7 +539,19 @@ impl CliUsageReader {
                         access_token = refreshed.access_token;
                         continue;
                     }
-                    // 有 refresh token 代表登入仍有效（權杖被提前撤銷或時鐘誤差），交由 CLI 換新。
+                    // 有 refresh token 代表登入仍有效（權杖被提前撤銷或時鐘誤差），先請 CLI 換新再試一次。
+                    if attempt == 0 {
+                        if let Some(renewed) = refresh_claude_credentials(
+                            &refreshed,
+                            &credentials_path,
+                            profile,
+                            working_directory,
+                            cancel,
+                        )? {
+                            access_token = renewed.access_token;
+                            continue;
+                        }
+                    }
                     return Ok(stale_claude_credentials(&refreshed, observed_at));
                 }
                 return Ok(login_required(CliKind::Claude, "Claude Code 登入憑證已失效，請重新登入。", observed_at));
@@ -568,7 +590,7 @@ impl UsageReader for CliUsageReader {
             CliKind::Antigravity | CliKind::AntigravityArgon | CliKind::AntigravityClaude => {
                 self.read_antigravity(kind, profile, working_directory, cancel)
             }
-            CliKind::Claude => self.read_claude(cancel),
+            CliKind::Claude => self.read_claude(profile, working_directory, cancel),
         };
         let mut snapshot = match result {
             Ok(snapshot) => snapshot,
@@ -1186,6 +1208,44 @@ fn parse_claude_credentials(text: &str) -> Result<Option<ClaudeCredentials>, Str
     Ok(Some(ClaudeCredentials { access_token, expires_at, has_refresh_token }))
 }
 
+/// 以 `claude auth status` 讓 Claude Code 自行換新權杖：此指令不送出訊息、不耗用額度，
+/// 但啟動時會檢查並刷新逾期的 OAuth 權杖（2026-10-24 以 2.1.309 實測）。
+/// 換到新的有效權杖才回傳 `Some`；找不到 CLI 或沒換新則回傳 `None`，由排程改以喚醒呼叫換新。
+fn refresh_claude_credentials(
+    stale: &ClaudeCredentials,
+    credentials_path: &Path,
+    profile: &CliProfile,
+    working_directory: &str,
+    cancel: &CancelToken,
+) -> CoreResult<Option<ClaudeCredentials>> {
+    if !stale.has_refresh_token {
+        return Ok(None);
+    }
+    let Some(executable) = locator::resolve(CliKind::Claude, Some(&profile.executable), working_directory) else {
+        debug_log::write("額度", "Claude 存取權杖已逾期，但找不到 Claude CLI，無法換新");
+        return Ok(None);
+    };
+    let outcome =
+        match process::execute(&executable, &["auth", "status"], working_directory, QUERY_TIMEOUT, cancel, None) {
+            Ok(execution) if execution.timed_out => "逾時".to_string(),
+            Ok(execution) => format!("結束碼 {}", execution.exit_code),
+            Err(CoreError::Canceled) => return Err(CoreError::Canceled),
+            Err(error) => error.message().to_string(),
+        };
+    let renewed = read_claude_credentials(credentials_path)
+        .ok()
+        .flatten()
+        .filter(|renewed| renewed.access_token != stale.access_token && !renewed.is_expired(&time::now()));
+    debug_log::write(
+        "額度",
+        format!(
+            "Claude 存取權杖已逾期，執行 claude auth status 換新（{outcome}）：{}",
+            if renewed.is_some() { "已換新" } else { "未換新" }
+        ),
+    );
+    Ok(renewed)
+}
+
 /// access token 逾期但仍可換新時的快照；沒有 refresh token 才真的需要重新登入。
 fn stale_claude_credentials(credentials: &ClaudeCredentials, observed_at: Moment) -> CliUsageSnapshot {
     if !credentials.has_refresh_token {
@@ -1501,5 +1561,16 @@ mod tests {
         let unknown_expiry = parse_claude_credentials(r#"{"claudeAiOauth":{"accessToken":"a"}}"#).unwrap().unwrap();
         assert!(!unknown_expiry.is_expired(&expires), "缺少 expiresAt 時照常查詢");
         assert!(parse_claude_credentials(r#"{"claudeAiOauth":{"accessToken":" "}}"#).unwrap().is_none());
+    }
+
+    /// 實機：以 `claude auth status` 換新後重讀憑證（不送訊息、不耗額度）。
+    #[test]
+    #[ignore = "需要本機已登入的 Claude CLI"]
+    fn claude_auth_status_refresh_real() {
+        let path = claude_credentials_path().expect("找不到憑證路徑");
+        let stale = ClaudeCredentials { access_token: "stale".to_string(), expires_at: None, has_refresh_token: true };
+        let profile = CliProfile::default();
+        let renewed = refresh_claude_credentials(&stale, &path, &profile, "", &CancelToken::new()).unwrap();
+        assert!(renewed.is_some_and(|renewed| !renewed.is_expired(&time::now())), "應讀回有效權杖");
     }
 }
