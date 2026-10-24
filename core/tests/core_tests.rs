@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use aiwake_core::activity_text::{self, ActivityTranslator};
 use aiwake_core::calculator;
 use aiwake_core::catalog;
 use aiwake_core::command_builder;
@@ -2699,4 +2700,43 @@ fn cli_update_check_real() {
             tool.display_name()
         );
     }
+}
+
+#[test]
+fn terminal_hides_codex_banner_and_shows_plain_reply() {
+    let message = "早安 只回「OK」，不要使用工具或說明。";
+    let mut translator = ActivityTranslator::new(CliKind::Codex, message);
+    let mut lines = translator.push(false, "OK\n");
+    // 故意切在行中間，確認跨片段仍能整行判斷。
+    lines.extend(translator.push(
+        true,
+        "Reading additional input from stdin...\nOpenAI Codex v0.163.0\n--------\nworkdir: C:/x\nmodel: gpt-6-luna\nsession id: 01a1\n--------\nuser\n早安 只回",
+    ));
+    lines.extend(translator.push(true, "「OK」，不要使用工具或說明。\ncodex\nOK\ntokens used\n5,873"));
+    lines.extend(translator.finish());
+    let texts: Vec<_> = lines.iter().map(|(_, text)| text.as_str()).collect();
+    assert_eq!(texts, ["AI 回覆：OK", "本次用掉 5,873 個 token"]);
+    assert!(lines.iter().all(|(kind, _)| *kind == CliActivityKind::Output), "正常輸出不可標成錯誤。");
+    assert_eq!(translator.reason(), None);
+}
+
+#[test]
+fn terminal_explains_antigravity_quota_error() {
+    let mut translator = ActivityTranslator::new(CliKind::Antigravity, "早安");
+    let lines = translator.push(
+        true,
+        "error: Your AI credits balance is too low to continue.\nAGY_ERROR: {\"short_error\":\"RESOURCE_EXHAUSTED (code 429)\",\"error_code\":429}\n",
+    );
+    assert_eq!(lines.len(), 2);
+    assert!(lines.iter().all(|(kind, _)| *kind == CliActivityKind::ErrorOutput));
+    assert!(lines[0].1.contains("點數不足"), "{}", lines[0].1);
+    assert!(lines[1].1.contains("429") && !lines[1].1.contains('{'), "不可顯示原始 JSON：{}", lines[1].1);
+    let failed = activity_text::failed(translator.reason(), "CLI 結束碼為 3。");
+    assert!(failed.starts_with("喚醒失敗") && !failed.contains("結束碼"), "{failed}");
+}
+
+#[test]
+fn terminal_failure_without_known_reason_points_to_log() {
+    let failed = activity_text::failed(None, "CLI 結束碼為 1。");
+    assert!(failed.contains("結束碼為 1") && failed.contains("執行日誌"), "{failed}");
 }

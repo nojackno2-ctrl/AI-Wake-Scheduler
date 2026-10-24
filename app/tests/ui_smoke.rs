@@ -195,7 +195,7 @@ fn egui_editor_settings_fake_cli_and_rendering() {
     let job = &load_jobs(&root)[0];
     assert!(job.last_results[0].succeeded);
     assert!(Path::new(&job.last_results[0].log_path).is_file());
-    assert!(harness.state().terminal.text().contains("Codex 開始執行"));
+    assert!(harness.state().terminal.text().contains("Codex 開始喚醒"));
     assert!(harness.state().terminal.lines.iter().any(|event| event.kind == aiwake_core::CliActivityKind::Completed));
     shot(&mut harness, "04-fake-cli-terminal");
     // 使用已知額度資料驗證五個儀表的渲染與窄版重排。

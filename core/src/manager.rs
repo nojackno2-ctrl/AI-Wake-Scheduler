@@ -4,6 +4,7 @@
 //! 不知道資料存在哪裡、CLI 怎麼啟動，也不知道現在幾點。
 
 use chrono::Timelike;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crate::activity_text::{self, ActivityTranslator};
 use crate::calculator;
 use crate::debug_log;
 use crate::error::{CoreError, CoreResult};
@@ -824,10 +826,14 @@ impl Inner {
             });
         };
         debug_log::write("執行", format!("「{}」{} 開始執行，訊息：{}", job.name, target.short_name(), job.message));
-        activity(CliActivityKind::Started, format!("開始執行，訊息：{}", job.message));
+        activity(CliActivityKind::Started, activity_text::started(&job.message));
 
+        // 原始輸出完整寫進執行日誌；面板只顯示整理過的白話內容。
+        let translator = RefCell::new(ActivityTranslator::new(target, &job.message));
         let on_output = |is_error: bool, text: &str| {
-            activity(if is_error { CliActivityKind::ErrorOutput } else { CliActivityKind::Output }, text.to_string());
+            for (kind, line) in translator.borrow_mut().push(is_error, text) {
+                activity(kind, line);
+            }
         };
         // 活動事件可能由 UI 或其他監聽者處理一段時間，真正呼叫前再次確認。
         if cancel.is_canceled()
@@ -860,13 +866,14 @@ impl Inner {
                 if result.log_path.is_empty() { "無" } else { &result.log_path }
             ),
         );
+        let mut translator = translator.into_inner();
+        for (kind, line) in translator.finish() {
+            activity(kind, line);
+        }
         if result.succeeded {
-            activity(
-                CliActivityKind::Completed,
-                format!("執行完成，結束碼 {}", result.exit_code.map(|code| code.to_string()).unwrap_or_default()),
-            );
+            activity(CliActivityKind::Completed, activity_text::completed());
         } else {
-            activity(CliActivityKind::Failed, format!("執行失敗：{}", result.error));
+            activity(CliActivityKind::Failed, activity_text::failed(translator.reason(), &result.error));
         }
         Some(result)
     }

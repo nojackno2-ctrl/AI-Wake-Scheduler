@@ -1,6 +1,7 @@
 //! AI 倒數喚醒核心：排程計算、CLI 參數建構與執行、帳戶額度讀取。
 //! 不含任何 UI；桌面程式與測試都只依賴這個 crate。
 
+pub mod activity_text;
 pub mod calculator;
 pub mod catalog;
 pub mod cli_update;

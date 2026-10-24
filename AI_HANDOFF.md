@@ -1,5 +1,12 @@
 # AI HANDOFF
 
+## 2026-10-24 Claude：即時終端輸出改為白話（完成）
+
+- 使用者：「終端機應該要寫人看得懂的東西」。原本面板直接顯示 CLI 原始輸出：Codex 橫幅／設定／提示詞回顯／`tokens used` 以紅色 ✗ 顯示，AGY 錯誤顯示原始 `AGY_ERROR: {json}`，失敗只寫「CLI 結束碼為 3」。
+- 變更：新增 `core/src/activity_text.rs`（`ActivityTranslator` 逐行整理、跨片段拼行、去 ANSI）；`manager.rs` `run_target` 改用它。stdout 顯示「AI 回覆：…」；Codex 橫幅與回顯隱藏，用量顯示「本次用掉 N 個 token」；額度不足／429／登入失效翻成白話並說明後續；非錯誤的 stderr 改一般色；開始／成功／失敗改為「開始喚醒，送出訊息：「…」」「喚醒成功，AI 已回應。」「喚醒失敗。<原因>」，無已知原因時提示看執行日誌。原始輸出仍完整寫入執行日誌（未改）。
+- 測試：新增 3 個 core 測試（Codex 實際輸出、AGY 429 實際輸出、無原因失敗）；`ui_smoke` 斷言改為「Codex 開始喚醒」。fmt、clippy `--all-targets -D warnings`、`cargo test --workspace --locked`（app 18、UI 2、core 45，4 忽略，0 失敗）通過；UI 截圖目視確認終端三行為白話。
+- 未驗證：未以真實 CLI 實機觀察面板；Claude CLI 實際錯誤字串的對應以關鍵字推測（/login、token has expired、rate limit 等）；未建置 release、未更新使用者已安裝版本。
+
 ## 2026-10-24 Claude：修正 Claude 權杖逾期誤報「請重新登入」且不喚醒（完成）
 
 - 使用者：「明明有登入，為什麼一直叫我登入」→ 要求修正下方診斷的死結。
