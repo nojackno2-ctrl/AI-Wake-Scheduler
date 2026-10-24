@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-10-24 Claude：安裝含 auth status 換新的版本到使用者電腦（完成）
+
+- 使用者：「安裝到電腦」。
+- 建置：`build-installer.ps1`（含測試：core 45 等全數通過）→ `dist\AI倒數喚醒_Setup_v2.3.0_x64_20261024-194051.exe`（SHA256 611E9245…858F，不納入版控），內含 f25a809。
+- 第一次 `/SILENT /SUPPRESSMSGBOXES` 安裝結束碼 5：RestartManager 關不掉執行中的程式（PID 32204，托盤程式），靜默模式預設 Abort 並回滾，舊版未受影響。確認程式閒置（各目標皆倒數中、無子程序）後 `Stop-Process` 再裝：結束碼 0、`Update mode: previous version "2.3.0"`、`Installation process succeeded`。
+- 驗證：安裝後 exe 雜湊與建置產物一致（85AE1065…E80A）；HKCU Run 啟動值保留；以 `--minimized` 啟動（PID 30368），日誌 `啟動 v2.3.0`、Claude 額度讀取 Available（5 小時已用 4%，重置 21:20）。
+- 未驗證：權杖逾期時的 auth status 換新尚未在安裝版實機觀察（目前權杖有效至 22:31）；未目視介面。後續：靜默更新時遇執行中程式會中止，可考慮讓安裝檔先關閉托盤程式。
+
 ## 2026-10-24 Claude：更新使用者電腦上的正式安裝版（完成）
 
 - 使用者：「先安裝最新的版本到電腦」。
