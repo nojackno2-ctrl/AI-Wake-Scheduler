@@ -1,5 +1,14 @@
 # AI HANDOFF
 
+## 2026-10-26 Codex：更新本機正式安裝版（完成）
+
+- 使用者要求「幫我安裝最新版到電腦」；本機 HEAD 與 `git ls-remote origin refs/heads/main` 均為 `dbdfda520ef43f71e71ecdaff3f5fe2cd31455c3`，工作目錄原先乾淨。
+- 驗證：`cargo check --workspace --locked` 通過；`powershell.exe -NoProfile -ExecutionPolicy Bypass -File build-installer.ps1` 已通過 67 項測試（5 項實機測試忽略），MSVC release 建置與 Inno Setup 編譯成功，產物為 `dist\AI倒數喚醒_Setup_v2.3.0_x64_20261026-141659.exe`（SHA256 `5D45BA5F229E5009008FDBDB8922B02755254705185ADE4757966AD525663EE5`）。
+- 安裝：經系統匣結束命令正常關閉舊程式，再以系統管理員執行 `/SILENT /SUPPRESSMSGBOXES /NORESTART`；結束碼 0，紀錄含 `Update mode: previous version "2.3.0"` 與 `Installation process succeeded`。
+- 驗證：正式安裝執行檔 SHA256 `D21C46B91C86EE9B2C7B40E4B60000267753A2914E3A7D8E4F004A50C3D6F2F1` 與本次建置完全一致；設定與排程檔雜湊、HKCU Run 啟動設定均未改變。已先在系統暫存目錄備份資料與舊執行檔。
+- 狀態：版本維持 2.3.0，已含最新提交 `dbdfda5`；以 `--minimized` 重新啟動，正式安裝路徑程序存在，日誌確認啟動與 Claude／Codex 額度讀取成功。
+- 未驗證：未目視介面，未進行真實 CLI 長時間掛機／倒數結束喚醒驗收；未建立新 GitHub Release。
+
 ## 2026-10-26 Antigravity：檢測間隔改回每個設定間隔時間到都必定檢測，並保留倒數結束立即喚醒（完成）
 
 - 使用者要求：「檢測間隔改回原本設定的時間到就檢測，為了避免原本讀取到的倒數時間期間突然被重置了額度」（經確認：每個設定的檢測間隔時間到都必定重新讀取檢測、不再因倒數中而略過，同時保留原本讀到的倒數結束時間一到即立即讀取並喚醒）。
