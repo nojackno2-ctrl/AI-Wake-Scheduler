@@ -1769,8 +1769,11 @@ fn schedule_manager_obeys_daily_boundaries_and_resets() {
     assert_eq!(runner.call_count(), 1, "倒數中不呼叫。");
     clock.set(start + Span::minutes(20));
     wake_scheduler(&manager, &directory);
-    sleep(100);
-    assert_eq!(reader.read_count(CliKind::Codex), 2, "已讀到倒數並記住結束時間後，倒數期間不再依間隔重複讀取。");
+    assert!(
+        wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 3),
+        "倒數期間每個設定間隔刻度仍須重新讀取檢測。"
+    );
+    assert_eq!(runner.call_count(), 1, "仍在倒數中不呼叫。");
     let reset = start + Span::hours(5);
     ready_usage(&reader, CliKind::Codex, reset);
     clock.set(reset);
@@ -1787,7 +1790,7 @@ fn schedule_manager_obeys_daily_boundaries_and_resets() {
 }
 
 #[test]
-fn schedule_manager_countdown_reset_skips_interval_and_wakes_at_reset() {
+fn schedule_manager_probes_on_interval_during_countdown_and_wakes_at_reset_or_early_reset() {
     let _serial = serial();
     let directory = TempDir::new();
     let store = job_store(directory.join("early-reset.json"));
@@ -1802,17 +1805,48 @@ fn schedule_manager_countdown_reset_skips_interval_and_wakes_at_reset() {
     manager.initialize().unwrap();
     assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 1));
     assert_eq!(runner.call_count(), 0);
-    assert!(wait_until(Duration::from_secs(3), || manager.get_jobs().unwrap()[0].scheduled_at == reset));
+    assert!(
+        wait_until(Duration::from_secs(3), || manager.get_jobs().unwrap()[0].scheduled_at == now + Span::minutes(10)),
+        "下次排程時間應取下一個檢測間隔（08:10）與倒數結束時間（08:13）較早者。"
+    );
     clock.set(now + Span::minutes(10));
     wake_scheduler(&manager, &directory);
-    sleep(100);
-    assert_eq!(reader.read_count(CliKind::Codex), 1, "已記住 08:13 倒數結束時間，08:10 間隔刻度不可重複讀取。");
-    assert_eq!(runner.call_count(), 0);
+    assert!(
+        wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 2),
+        "08:10 檢測間隔時間到時，即使先前已讀到 08:13 倒數，仍須重新讀取確認額度是否提早重置。"
+    );
+    assert_eq!(runner.call_count(), 0, "08:10 重讀後仍在倒數中，不呼叫。");
+    assert!(
+        wait_until(Duration::from_secs(3), || manager.get_jobs().unwrap()[0].scheduled_at == reset),
+        "08:10 之後倒數結束時間（08:13）早於下一刻度（08:20），應排在 08:13。"
+    );
     ready_usage(&reader, CliKind::Codex, reset);
     clock.set(reset);
     wake_scheduler(&manager, &directory);
     assert!(wait_until(Duration::from_secs(3), || runner.call_count() == 1), "08:13 倒數結束立即重讀並呼叫。");
-    assert_eq!(reader.read_count(CliKind::Codex), 2, "倒數結束時必須重讀確認。");
+    assert_eq!(reader.read_count(CliKind::Codex), 3, "倒數結束時必須重讀確認。");
+
+    // 驗證倒數期間額度突然被提早重置時，下一個檢測間隔刻度即可偵測並喚醒
+    let after_wake = now + Span::minutes(20);
+    reader.set(available(
+        CliKind::Codex,
+        vec![window("5h", 10, Span::hours(5), after_wake + Span::hours(5), true)],
+        after_wake,
+    ));
+    clock.set(after_wake);
+    wake_scheduler(&manager, &directory);
+    assert!(wait_until(Duration::from_secs(3), || reader.read_count(CliKind::Codex) == 4));
+    assert_eq!(runner.call_count(), 1);
+
+    let early_reset_slot = now + Span::minutes(30);
+    ready_usage(&reader, CliKind::Codex, early_reset_slot);
+    clock.set(early_reset_slot);
+    wake_scheduler(&manager, &directory);
+    assert!(
+        wait_until(Duration::from_secs(3), || runner.call_count() == 2),
+        "倒數期間額度被提早重置時，08:30 檢測間隔時間到應立即偵測並喚醒。"
+    );
+    assert_eq!(reader.read_count(CliKind::Codex), 5);
 }
 
 #[test]

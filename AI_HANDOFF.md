@@ -1,5 +1,15 @@
 # AI HANDOFF
 
+## 2026-10-26 Antigravity：檢測間隔改回每個設定間隔時間到都必定檢測，並保留倒數結束立即喚醒（完成）
+
+- 使用者要求：「檢測間隔改回原本設定的時間到就檢測，為了避免原本讀取到的倒數時間期間突然被重置了額度」（經確認：每個設定的檢測間隔時間到都必定重新讀取檢測、不再因倒數中而略過，同時保留原本讀到的倒數結束時間一到即立即讀取並喚醒）。
+- 變更：
+  - `core/src/manager.rs`：移除 `scan_and_start_due_jobs` 中當 `known_reset > now` 時略過整點刻度讀取的分支；`next_job_schedule_time` 在已有 `known_reset > now` 時改取 `next_aligned.min(reset_next)`，確保每個設定間隔刻度與已知倒數結束時間皆會觸發重讀與檢測。
+  - `app/src/main_window.rs`：`Dashboard::refresh_usage` 移除僅讀取 `active_reset_at` 為 `None` 的過濾條件，使背景定時重新整理也會重讀倒數中的 CLI；同步更新編輯器說明文字與 `README.md`。
+  - `core/tests/core_tests.rs`：更新 `schedule_manager_obeys_daily_boundaries_and_resets` 與 `schedule_manager_probes_on_interval_during_countdown_and_wakes_at_reset_or_early_reset`，驗證倒數期間每個設定間隔刻度皆會重新讀取、倒數結束時間到立即重讀喚醒，以及倒數期間額度被提早重置時於下一檢測間隔刻度立即偵測並喚醒。
+- 驗證：依序執行 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked`（app 18、UI `ui_smoke` 2、core unit 2、core 整合 45，共 67 項通過，5 項 opt-in 忽略，0 失敗）、`cargo build --workspace --locked` 與 `git diff --check` 全部通過。
+- 未驗證：未重新建置並更新使用者電腦上的正式安裝版，未以真實 CLI 長時間掛機實測。
+
 ## 2026-10-24 Claude：安裝含 auth status 換新的版本到使用者電腦（完成）
 
 - 使用者：「安裝到電腦」。

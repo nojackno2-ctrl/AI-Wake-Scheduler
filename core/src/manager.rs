@@ -517,11 +517,12 @@ impl Inner {
         for &kind in &job.targets {
             let mut target_next = match self.known_reset(reader.as_ref(), job.id, kind, now) {
                 Some(reset) if reset > *now => {
-                    if calculator::in_detection_window(start, end, &reset) {
+                    let reset_next = if calculator::in_detection_window(start, end, &reset) {
                         reset
                     } else {
                         calculator::detection_window(start, end, &reset)?.0
-                    }
+                    };
+                    next_aligned.min(reset_next)
                 }
                 Some(_) if *now < begin => begin,
                 Some(_) => *now,
@@ -545,7 +546,7 @@ impl Inner {
     }
 
     /// 排程自己的重置時間不受 UI 重新整理共用快照影響。
-    /// 僅在沒有讀到倒數時依設定間隔讀取；已讀到倒數時記住下次倒數結束時間，倒數結束立即重讀並喚醒。
+    /// 依設定間隔定期讀取檢測（避免倒數期間額度被提早重置而漏檢）；同時記住下次倒數結束時間，倒數結束立即重讀並喚醒。
     fn scan_and_start_due_jobs(self: &Arc<Self>) -> CoreResult<Span> {
         let Some(reader) = &self.usage_reader else {
             return Ok(max_idle_wait());
@@ -582,17 +583,6 @@ impl Inner {
                 let last = lock(&self.last_quota_probe_at).get(&(job.id, kind)).copied();
                 let slot = now - Span::seconds(now.second() as i64) - Span::nanoseconds(now.nanosecond() as i64);
                 let known_reset = self.known_reset(reader.as_ref(), job.id, kind, &now);
-                if let Some(reset) = known_reset.filter(|reset| *reset > now) {
-                    if calculator::aligned_minute(&now, job.probe_interval_minutes)
-                        && last.is_none_or(|last| last < slot)
-                    {
-                        debug_log::write(
-                            "偵測",
-                            format!("{} 已記住倒數結束時間 {}，略過讀取", kind.short_name(), local_text(&reset)),
-                        );
-                    }
-                    continue;
-                }
                 let countdown_ended =
                     known_reset.is_some_and(|reset| reset <= now && last.is_none_or(|last| last < reset));
                 if !countdown_ended
@@ -786,7 +776,7 @@ impl Inner {
             return;
         }
 
-        // 自動排程依設定間隔在尚未讀到倒數時讀取；手動執行後立即重讀並記住新倒數。
+        // 自動排程依設定間隔與已知倒數結束時間讀取；手動執行後立即重讀並記住新倒數。
         if automatic {
             return;
         }

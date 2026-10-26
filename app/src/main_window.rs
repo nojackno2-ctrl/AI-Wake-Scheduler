@@ -420,15 +420,8 @@ impl Dashboard {
             cancel.cancel();
         }
         self.snapshots.extend(self.host.usage_reader.latest_snapshots());
-        let now = time::now();
-        let kinds: Vec<_> = catalog::kinds()
-            .into_iter()
-            .filter(|kind| force || active_reset_at(self.snapshots.get(kind), &now).is_none())
-            .collect();
+        let kinds = catalog::kinds();
         self.last_refresh = Instant::now();
-        if kinds.is_empty() {
-            return;
-        }
         self.usage_generation += 1;
         let generation = self.usage_generation;
         let cancel = CancelToken::new();
@@ -1172,7 +1165,7 @@ impl Dashboard {
                 }
             }
             ui.small(
-                RichText::new("僅在未讀到倒數時依間隔檢查；倒數結束且在偵測時段內時立即重讀與喚醒。")
+                RichText::new("依設定間隔定期重新讀取檢測，且倒數結束（位於偵測時段內）時也會立即重讀與喚醒。")
                     .color(colors.muted),
             );
             ui.separator();
