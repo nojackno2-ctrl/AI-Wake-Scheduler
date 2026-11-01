@@ -78,13 +78,8 @@ pub fn build(
 
     // 2. 思考程度 / 推理強度參數
     if !specifies_effort(&user_arguments) {
-        let effective_effort = if thinking_effort != ThinkingEffort::Default {
-            thinking_effort
-        } else if token_saver_mode {
-            ThinkingEffort::Low
-        } else {
-            ThinkingEffort::Default
-        };
+        let effective_effort =
+            if thinking_effort != ThinkingEffort::Default { thinking_effort } else { ThinkingEffort::Low };
         append_effort_arguments(
             &mut arguments,
             kind,

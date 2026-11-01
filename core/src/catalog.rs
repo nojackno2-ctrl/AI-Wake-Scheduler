@@ -274,12 +274,13 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             "-c",
             "model_verbosity=\"low\"",
         ],
-        // 2026-10-22 由本機 Codex App Server `model/list` 取得的可見清單（gpt-5.5 已下架）。
-        // 空白設定使用本工具的低價喚醒預設；使用者可明確指定其他模型。
-        default_model: Some("gpt-6-luna"),
+        // 2026-11-01 由本機 Codex App Server `model/list` 核對可見清單。
+        // 空白設定使用本工具預設；使用者可明確指定其他模型。
+        default_model: Some("gpt-6.1-terra"),
         preset_models: &[
             "",
             "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
@@ -290,6 +291,7 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         supported_efforts: CODEX_ULTRA,
         model_supported_efforts: &[
             ("gpt-6.1-sol", CODEX_ULTRA),
+            ("gpt-6.1-terra", CODEX_ULTRA),
             ("gpt-6-astra", CODEX_ULTRA),
             ("gpt-6-sol", CODEX_ULTRA),
             ("gpt-6-luna", CODEX_MAX),

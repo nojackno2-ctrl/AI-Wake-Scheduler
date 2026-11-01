@@ -1,5 +1,13 @@
 # AI HANDOFF
 
+## 2026-11-01 Codex：更新喚醒模型與預設思考程度（完成）
+
+- Codex 預設與推薦清單新增 `gpt-6.1-terra`；舊版 Luna 預設只遷移一次，其他自訂模型與之後的選擇保留。預設思考程度在支援時使用 low；AGY 含程度的模型 ID 由 ID 決定。
+- 證據：本機 `codex app-server` 的 `model/list` 回傳 Terra 6.1 及 low 至 ultra；`agy models` 回傳現有推薦清單；Claude `--help` 確認模型與 effort 參數，但未取得帳戶可用模型清單。
+- 驗證：`cargo check --workspace --locked`、`cargo test --workspace --locked`（67 通過、5 忽略）與 `cargo build --workspace --locked` 通過；初次測試因舊預設的預期未更新而失敗，修正後重跑通過。
+- 未驗證：未對各模型發送真實請求；未更新正式安裝版。此專案設定的是喚醒 CLI 的模型，並不設定其他代理系統。
+
+
 ## 2026-10-26 Codex：更新本機正式安裝版（完成）
 
 - 使用者要求「幫我安裝最新版到電腦」；本機 HEAD 與 `git ls-remote origin refs/heads/main` 均為 `dbdfda520ef43f71e71ecdaff3f5fe2cd31455c3`，工作目錄原先乾淨。

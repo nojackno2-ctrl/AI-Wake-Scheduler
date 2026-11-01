@@ -114,7 +114,7 @@ fn egui_editor_settings_fake_cli_and_rendering() {
     click(&mut harness, "⚙ 設定");
     assert_eq!(
         harness.state().settings_sheet.as_ref().expect("設定抽屜").draft.profile(CliKind::Codex).model,
-        "gpt-6-luna"
+        "gpt-6.1-terra"
     );
     // 在畫面中輸入自訂模型並切換推薦模型，驗證相同的連動路徑。
     {

@@ -270,8 +270,8 @@ pub struct AppSettings {
     pub default_models_revision: i32,
 }
 
-/// 目前的預設模型版本。1：Claude 預設由 Haiku 4.5 改為更便宜的 Haiku 5.5。
-pub const DEFAULT_MODELS_REVISION: i32 = 1;
+/// 預設模型版本：1 遷移 Claude Haiku；2 遷移 Codex Luna 至 Terra 6.1。
+pub const DEFAULT_MODELS_REVISION: i32 = 2;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -324,7 +324,15 @@ impl AppSettings {
                 profile.model = model.to_string();
             }
 
-            // 舊版的預設模型改為目前最便宜的預設（只遷移一次）。
+            // 只遷移舊版預設，保留其他自訂模型及之後改回的選擇。
+            if self.default_models_revision < 2
+                && descriptor.kind == CliKind::Codex
+                && profile.model.trim() == "gpt-6-luna"
+            {
+                profile.model = "gpt-6.1-terra".to_string();
+            }
+
+            // 舊版的 Claude 預設只遷移一次。
             let cheaper = match (descriptor.kind, profile.model.trim()) {
                 (CliKind::Claude, "claude-haiku-4-5-20251001" | "claude-haiku-4-5") => Some("claude-haiku-5-5"),
                 _ => None,

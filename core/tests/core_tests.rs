@@ -725,11 +725,11 @@ fn cli_command_builder() {
     use ThinkingEffort as E;
 
     assert_eq!(
-        strings(&["--model", "gemini-3.8-flash", "--print", "早安"]),
+        strings(&["--model", "gemini-3.8-flash", "--effort", "low", "--print", "早安"]),
         build_args(CliKind::Antigravity, None, false, None)
     );
     assert_eq!(
-        strings(&["--model", "gemini-4-argon", "--print", "早安"]),
+        strings(&["--model", "gemini-4-argon", "--effort", "low", "--print", "早安"]),
         build_args(CliKind::AntigravityArgon, None, false, None)
     );
     assert_eq!(
@@ -741,11 +741,22 @@ fn cli_command_builder() {
         build_args(CliKind::AntigravityClaude, Some("--model custom-model"), false, None)
     );
     assert_eq!(
-        strings(&["exec", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--model", "gpt-6-luna", "早安"]),
+        strings(&[
+            "exec",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--color",
+            "never",
+            "--model",
+            "gpt-6.1-terra",
+            "-c",
+            "model_reasoning_effort=\"low\"",
+            "早安"
+        ]),
         build_args(CliKind::Codex, None, false, None)
     );
     assert_eq!(
-        strings(&["--print", "--model", "sonnet", "早安"]),
+        strings(&["--print", "--effort", "low", "--model", "sonnet", "早安"]),
         build_args(CliKind::Claude, Some("--model sonnet"), false, None)
     );
 
@@ -785,7 +796,7 @@ fn cli_command_builder() {
             "--color",
             "never",
             "--model",
-            "gpt-6-luna",
+            "gpt-6.1-terra",
             "-c",
             "model_reasoning_effort=\"low\"",
             "早安"
@@ -922,7 +933,17 @@ fn cli_catalog() {
     let codex = catalog::get(CliKind::Codex);
     assert_eq!(
         codex.preset_models,
-        ["", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        [
+            "",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna"
+        ]
     );
     assert!(
         !codex.preset_models.iter().any(|model| model.contains("gpt-5.2") || model.contains("gpt-5.1")),
@@ -956,6 +977,17 @@ fn cli_catalog() {
     removed_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-5.5".to_string();
     removed_codex.ensure_defaults();
     assert_eq!(removed_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-sol", "已下架的 gpt-5.5 應轉換到 6.1 Sol。");
+
+    let mut old_codex = AppSettings::from_json(&serde_json::json!({
+        "DefaultModelsRevision": 1,
+        "CliProfiles": { "Codex": { "Model": "gpt-6-luna" } }
+    }))
+    .unwrap();
+    old_codex.ensure_defaults();
+    assert_eq!(old_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-terra");
+    old_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-6-luna".into();
+    old_codex.ensure_defaults();
+    assert_eq!(old_codex.cli_profiles[&CliKind::Codex].model, "gpt-6-luna");
 
     // 舊設定檔（沒有 DefaultModelsRevision）的 Haiku 4.5 只遷移一次到更便宜的 Haiku 5.5。
     let mut legacy_haiku = AppSettings::from_json(&serde_json::json!({
@@ -2513,7 +2545,7 @@ fn real_cli_wake_smoke() {
         (CliKind::Antigravity, "gemini-3.8-flash"),
         (CliKind::AntigravityArgon, "gemini-4-argon"),
         (CliKind::AntigravityClaude, "claude-sonnet-5-5-low"),
-        (CliKind::Codex, "gpt-6-luna"),
+        (CliKind::Codex, "gpt-6.1-terra"),
         (CliKind::Claude, "claude-haiku-5-5"),
     ];
     let handles: Vec<_> = cases

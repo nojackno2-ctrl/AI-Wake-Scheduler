@@ -38,10 +38,10 @@
 | **Antigravity (Gemini)** | `agy` | `agy --model gemini-3.8-flash --effort low --disable-slash-commands --print <提示>` | 所有旗標置於 `--print` 前、低思考 effort、停用技能展開、禁止修改工作區 |
 | **Antigravity (Argon)** | `agy` | `agy --model gemini-4-argon --effort low --disable-slash-commands --print <提示>` | 獨立的 Gemini 4 Argon 每週額度池，單獨勾選、單獨倒數；旗標同樣置於 `--print` 前 |
 | **Antigravity (Claude / GPT)** | `agy` | `agy --model claude-sonnet-5-5-low --disable-slash-commands --print <提示>` | 明確選擇 Claude 額度池；完整模型 ID 已包含 Low 思考程度，因此不另傳 `--effort` |
-| **OpenAI Codex** | `codex` | `codex exec --model gpt-6-luna --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
+| **OpenAI Codex** | `codex` | `codex exec --model gpt-6.1-terra --ephemeral --sandbox read-only --ignore-user-config --ignore-rules … <提示>` | 一次性非互動 exec、唯讀沙箱、不載入 MCP／使用者規則、低推理與低詳細度 |
 | **Anthropic Claude** | `claude` | `claude --print --model claude-haiku-5-5 --safe-mode --tools "" --no-session-persistence --prompt-suggestions false <提示>` | 停用自訂內容與工具、不持久化 Session、不額外生成提示建議 |
 
-預設採用低價模型：Gemini 3.8 Flash Low、Codex GPT-6 Luna、Claude Haiku 5.5；AGY Claude 池使用 Sonnet 5.5 Low；AGY Argon 池使用 Gemini 4 Argon Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
+預設模型：Gemini 3.8 Flash Low、Codex GPT-6.1 Terra、Claude Haiku 5.5；AGY Claude 池使用 Sonnet 5.5 Low；AGY Argon 池使用 Gemini 4 Argon Low。官方價格、AGY 扣額限制與選擇依據見 [模型計價紀錄](docs/MODEL_PRICING.md)。空白模型會使用本工具預設，可自行改選其他模型。
 
 > [!TIP]
 > Google Antigravity 內部將額度切分為 **Gemini Models**、**Claude and GPT models** 與 **Gemini 4 Argon** 三個獨立計數器，本工具各以一個目標對應：Gemini 與 Claude / GPT 各有 5 小時與每週視窗，Argon 只有每週視窗。三個目標可分別勾選、分別倒數；Argon 喚醒會消耗它自己的每週額度。
