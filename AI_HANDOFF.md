@@ -1,5 +1,11 @@
 # AI HANDOFF
 
+## 2026-11-01 Codex：Codex 預設改回 Luna（完成）
+
+- Codex 預設改回 `gpt-6-luna`；版本 2 的 Terra 設定單次遷移至 Luna，之後可自行改回 Terra；思考程度仍預設 low。版本 2 無法區分預設與手動選擇的 Terra。
+- 驗證：`cargo check --workspace --locked`、`cargo test --workspace --locked`（67 通過、5 忽略）、`cargo build --workspace --locked` 均通過。未進行真實模型呼叫或安裝正式版。
+
+
 ## 2026-11-01 Codex：更新喚醒模型與預設思考程度（完成）
 
 - Codex 預設與推薦清單新增 `gpt-6.1-terra`；舊版 Luna 預設只遷移一次，其他自訂模型與之後的選擇保留。預設思考程度在支援時使用 low；AGY 含程度的模型 ID 由 ID 決定。

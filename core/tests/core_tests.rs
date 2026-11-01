@@ -748,7 +748,7 @@ fn cli_command_builder() {
             "--color",
             "never",
             "--model",
-            "gpt-6.1-terra",
+            "gpt-6-luna",
             "-c",
             "model_reasoning_effort=\"low\"",
             "早安"
@@ -796,7 +796,7 @@ fn cli_command_builder() {
             "--color",
             "never",
             "--model",
-            "gpt-6.1-terra",
+            "gpt-6-luna",
             "-c",
             "model_reasoning_effort=\"low\"",
             "早安"
@@ -979,15 +979,15 @@ fn cli_catalog() {
     assert_eq!(removed_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-sol", "已下架的 gpt-5.5 應轉換到 6.1 Sol。");
 
     let mut old_codex = AppSettings::from_json(&serde_json::json!({
-        "DefaultModelsRevision": 1,
-        "CliProfiles": { "Codex": { "Model": "gpt-6-luna" } }
+        "DefaultModelsRevision": 2,
+        "CliProfiles": { "Codex": { "Model": "gpt-6.1-terra" } }
     }))
     .unwrap();
     old_codex.ensure_defaults();
-    assert_eq!(old_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-terra");
-    old_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-6-luna".into();
-    old_codex.ensure_defaults();
     assert_eq!(old_codex.cli_profiles[&CliKind::Codex].model, "gpt-6-luna");
+    old_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-6.1-terra".into();
+    old_codex.ensure_defaults();
+    assert_eq!(old_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-terra");
 
     // 舊設定檔（沒有 DefaultModelsRevision）的 Haiku 4.5 只遷移一次到更便宜的 Haiku 5.5。
     let mut legacy_haiku = AppSettings::from_json(&serde_json::json!({
@@ -2545,7 +2545,7 @@ fn real_cli_wake_smoke() {
         (CliKind::Antigravity, "gemini-3.8-flash"),
         (CliKind::AntigravityArgon, "gemini-4-argon"),
         (CliKind::AntigravityClaude, "claude-sonnet-5-5-low"),
-        (CliKind::Codex, "gpt-6.1-terra"),
+        (CliKind::Codex, "gpt-6-luna"),
         (CliKind::Claude, "claude-haiku-5-5"),
     ];
     let handles: Vec<_> = cases

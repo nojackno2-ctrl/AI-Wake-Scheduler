@@ -270,8 +270,8 @@ pub struct AppSettings {
     pub default_models_revision: i32,
 }
 
-/// 預設模型版本：1 遷移 Claude Haiku；2 遷移 Codex Luna 至 Terra 6.1。
-pub const DEFAULT_MODELS_REVISION: i32 = 2;
+/// 預設模型版本：1 遷移 Claude Haiku；3 將版本 2 的 Codex 預設改回 Luna。
+pub const DEFAULT_MODELS_REVISION: i32 = 3;
 
 impl Default for AppSettings {
     fn default() -> Self {
@@ -325,11 +325,11 @@ impl AppSettings {
             }
 
             // 只遷移舊版預設，保留其他自訂模型及之後改回的選擇。
-            if self.default_models_revision < 2
+            if self.default_models_revision == 2
                 && descriptor.kind == CliKind::Codex
-                && profile.model.trim() == "gpt-6-luna"
+                && profile.model.trim() == "gpt-6.1-terra"
             {
-                profile.model = "gpt-6.1-terra".to_string();
+                profile.model = "gpt-6-luna".to_string();
             }
 
             // 舊版的 Claude 預設只遷移一次。

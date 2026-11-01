@@ -276,7 +276,7 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         ],
         // 2026-11-01 由本機 Codex App Server `model/list` 核對可見清單。
         // 空白設定使用本工具預設；使用者可明確指定其他模型。
-        default_model: Some("gpt-6.1-terra"),
+        default_model: Some("gpt-6-luna"),
         preset_models: &[
             "",
             "gpt-6.1-sol",
