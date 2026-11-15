@@ -725,7 +725,7 @@ fn cli_command_builder() {
     use ThinkingEffort as E;
 
     assert_eq!(
-        strings(&["--model", "gemini-3.8-flash", "--effort", "low", "--print", "早安"]),
+        strings(&["--model", "gemini-4-hydrogen", "--effort", "low", "--print", "早安"]),
         build_args(CliKind::Antigravity, None, false, None)
     );
     assert_eq!(

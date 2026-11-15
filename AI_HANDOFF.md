@@ -6,7 +6,7 @@
 - 證據：`agy models` 回傳目前可用模型包含 `gemini-4-hydrogen-low` / `medium` / `high` / `xhigh`。
 - 變更：
   - `core/src/catalog.rs`：新增 `AGY_HYDROGEN`（支援 `Default`、`Low`、`Medium`、`High`、`XHigh`）；`CliKind::Antigravity` 的 `default_model` 更新為 `gemini-4-hydrogen`，`preset_models` 與 `model_supported_efforts` 新增 `gemini-4-hydrogen` 及其各思考程度後綴 ID（保留 `gemini-3.8-flash` 等舊設定相容）。
-  - `core/tests/core_tests.rs`：`real_cli_wake_smoke` 預設模型斷言同步更新為 `gemini-4-hydrogen`。
+  - `core/tests/core_tests.rs`：`cli_command_builder` 與 `real_cli_wake_smoke` 預設模型斷言同步更新為 `gemini-4-hydrogen`。
 - 驗證：`cargo check --workspace --locked` 通過。
 - 未驗證：本機未有 `link.exe` 於預設 PATH，未執行 `cargo test` 完整測試與真實 CLI 呼叫。
 
