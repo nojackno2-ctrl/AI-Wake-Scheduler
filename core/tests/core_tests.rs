@@ -2542,7 +2542,7 @@ fn real_cli_wake_smoke() {
     let directory = TempDir::new();
     let runner = Arc::new(ProcessCliRunner::new(AppDataPaths::new(Some(&directory.join("data").to_string_lossy()))));
     let cases = [
-        (CliKind::Antigravity, "gemini-3.8-flash"),
+        (CliKind::Antigravity, "gemini-4-hydrogen"),
         (CliKind::AntigravityArgon, "gemini-4-argon"),
         (CliKind::AntigravityClaude, "claude-sonnet-5-5-low"),
         (CliKind::Codex, "gpt-6-luna"),

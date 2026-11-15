@@ -1,5 +1,15 @@
 # AI HANDOFF
 
+## 2026-11-15 Antigravity：更新 AGY 呼叫模型為 Gemini 4 Hydrogen（完成）
+
+- 使用者要求「更新AGY呼叫的模型」。
+- 證據：`agy models` 回傳目前可用模型包含 `gemini-4-hydrogen-low` / `medium` / `high` / `xhigh`。
+- 變更：
+  - `core/src/catalog.rs`：新增 `AGY_HYDROGEN`（支援 `Default`、`Low`、`Medium`、`High`、`XHigh`）；`CliKind::Antigravity` 的 `default_model` 更新為 `gemini-4-hydrogen`，`preset_models` 與 `model_supported_efforts` 新增 `gemini-4-hydrogen` 及其各思考程度後綴 ID（保留 `gemini-3.8-flash` 等舊設定相容）。
+  - `core/tests/core_tests.rs`：`real_cli_wake_smoke` 預設模型斷言同步更新為 `gemini-4-hydrogen`。
+- 驗證：`cargo check --workspace --locked` 通過。
+- 未驗證：本機未有 `link.exe` 於預設 PATH，未執行 `cargo test` 完整測試與真實 CLI 呼叫。
+
 ## 2026-11-01 Codex：Codex 預設改回 Luna（完成）
 
 - Codex 預設改回 `gpt-6-luna`；版本 2 的 Terra 設定單次遷移至 Luna，之後可自行改回 Terra；思考程度仍預設 low。版本 2 無法區分預設與手動選擇的 Terra。

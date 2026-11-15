@@ -162,6 +162,7 @@ fn effort_rank(effort: ThinkingEffort) -> i32 {
 
 const ONLY_DEFAULT: &[ThinkingEffort] = &[E::Default];
 const AGY_FLASH: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High];
+const AGY_HYDROGEN: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh];
 const AGY_PRO: &[ThinkingEffort] = &[E::Default, E::Low, E::High];
 const CODEX_ULTRA: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max, E::Ultra];
 const CODEX_MAX: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max];
@@ -180,16 +181,26 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
         // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
         // Gemini 4 Argon 另有獨立的每週額度，由 AntigravityArgon 負責喚醒與倒數。
-        default_model: Some("gemini-3.8-flash"),
+        default_model: Some("gemini-4-hydrogen"),
         preset_models: &[
             "",
+            "gemini-4-hydrogen",
+            "gemini-4-hydrogen-low",
+            "gemini-4-hydrogen-medium",
+            "gemini-4-hydrogen-high",
+            "gemini-4-hydrogen-xhigh",
             "gemini-3.8-flash",
             "gemini-3.8-flash-low",
             "gemini-3.8-flash-medium",
             "gemini-3.8-flash-high",
         ],
-        supported_efforts: AGY_FLASH,
+        supported_efforts: AGY_HYDROGEN,
         model_supported_efforts: &[
+            ("gemini-4-hydrogen", AGY_HYDROGEN),
+            ("gemini-4-hydrogen-xhigh", ONLY_DEFAULT),
+            ("gemini-4-hydrogen-high", ONLY_DEFAULT),
+            ("gemini-4-hydrogen-medium", ONLY_DEFAULT),
+            ("gemini-4-hydrogen-low", ONLY_DEFAULT),
             ("gemini-3.8-flash", AGY_FLASH),
             ("gemini-3.8-flash-high", ONLY_DEFAULT),
             ("gemini-3.8-flash-medium", ONLY_DEFAULT),
