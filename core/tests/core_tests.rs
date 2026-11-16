@@ -1345,17 +1345,18 @@ fn cli_usage_reader() {
     let claude_login = login::create_start_info(CliKind::Claude, "C:\\my tools\\claude.exe", "").unwrap();
     assert!(claude_login.file_name == "cmd.exe" && !claude_login.create_no_window, "登入必須開啟看得見的主控台。");
     assert_eq!(
-        claude_login.arguments, "/e:ON /v:OFF /d /s /c \"\"C:\\my tools\\claude.exe\" \"auth\" \"login\" || pause\"",
+        claude_login.arguments,
+        "/e:ON /v:OFF /d /s /c \"\"C:\\my tools\\claude.exe\" \"auth\" \"login\" || (pause & exit /b 1)\"",
         "Claude 登入指令應為 auth login，失敗時暫停。"
     );
     assert_eq!(
         login::create_start_info(CliKind::Codex, "codex.exe", "").unwrap().arguments,
-        "/e:ON /v:OFF /d /s /c \"\"codex.exe\" \"login\" || pause\"",
+        "/e:ON /v:OFF /d /s /c \"\"codex.exe\" \"login\" || (pause & exit /b 1)\"",
         "Codex 登入指令應為 login。"
     );
     assert_eq!(
         login::create_start_info(CliKind::AntigravityClaude, "agy.exe", "").unwrap().arguments,
-        "/e:ON /v:OFF /d /s /c \"\"agy.exe\" || pause\"",
+        "/e:ON /v:OFF /d /s /c \"\"agy.exe\" || (pause & exit /b 1)\"",
         "agy 沒有 login 子命令，應直接進互動模式。"
     );
 }
@@ -2705,8 +2706,12 @@ fn cli_update_version_compare() {
     assert_eq!(status(Some("0.160.0"), Some("0.163.0")).describe(), "Codex CLI：0.160.0 → 0.163.0（有新版本）");
 
     let update = aiwake_core::cli_update::create_update_start_info(CliTool::Claude, "claude", "").unwrap();
-    assert!(update.arguments.contains("update") && update.arguments.contains("|| pause"), "更新失敗時應暫停主控台。");
+    assert!(update.arguments.contains("update") && update.arguments.contains("pause"), "更新失敗時應暫停主控台。");
     assert!(!update.create_no_window, "更新必須在看得見的主控台執行。");
+    assert!(!update.windows_os);
+    let codex_update = aiwake_core::cli_update::create_update_start_info(CliTool::Codex, "codex.exe", "").unwrap();
+    assert!(codex_update.windows_os, "Codex 更新子程序必須能辨識 Windows。 ");
+    assert!(codex_update.arguments.contains("exit /b 1"), "更新失敗後必須保留失敗結束碼。 ");
 }
 
 #[test]

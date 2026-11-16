@@ -183,5 +183,7 @@ pub fn create_update_start_info(
     executable: &str,
     working_directory: &str,
 ) -> CoreResult<LoginStartInfo> {
-    login::create_console_start_info(executable, tool.update_arguments(), working_directory)
+    let mut info = login::create_console_start_info(executable, tool.update_arguments(), working_directory)?;
+    info.windows_os = tool == CliTool::Codex;
+    Ok(info)
 }

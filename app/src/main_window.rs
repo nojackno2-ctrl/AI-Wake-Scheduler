@@ -121,6 +121,7 @@ enum Event {
     Probe(u64, String),
     Login(CliKind, Result<(), String>),
     Updates(Vec<CliUpdateStatus>, bool),
+    UpdateFinished(CliTool, Result<(), String>),
 }
 
 fn send_activity(sender: &Sender<Event>, pending: &AtomicUsize, dropped: &AtomicUsize, event: &CliActivityEvent) {
@@ -165,6 +166,7 @@ pub struct Dashboard {
     show_updates: bool,
     update_notified: HashMap<CliTool, String>,
     login_in_progress: HashSet<CliKind>,
+    cli_updates_in_progress: HashSet<CliTool>,
     login_notified: HashSet<CliKind>,
     result_text: Option<String>,
     confirm: Option<(bool, Guid)>,
@@ -231,6 +233,7 @@ impl Dashboard {
             show_updates: false,
             update_notified: HashMap::new(),
             login_in_progress: HashSet::new(),
+            cli_updates_in_progress: HashSet::new(),
             login_notified: HashSet::new(),
             result_text: None,
             confirm: None,
@@ -357,6 +360,14 @@ impl Dashboard {
                     }
                     self.status = "CLI 版本檢查完成（僅提示）".into();
                     self.updates = updates;
+                }
+                Event::UpdateFinished(tool, result) => {
+                    self.cli_updates_in_progress.remove(&tool);
+                    locator::clear_cache();
+                    match result {
+                        Ok(()) => self.check_updates(ctx, true),
+                        Err(error) => self.status = error,
+                    }
                 }
             }
         }
@@ -1270,17 +1281,43 @@ impl Dashboard {
                     theme::card(colors).show(ui, |ui| {
                         ui.label(update.describe());
                         if update.update_available()
-                            && ui.button(format!("更新 {}", update.tool.display_name())).clicked()
+                            && ui
+                                .add_enabled(
+                                    !self.cli_updates_in_progress.contains(&update.tool),
+                                    egui::Button::new(format!("更新 {}", update.tool.display_name())),
+                                )
+                                .clicked()
                         {
                             if let Some(path) = &update.executable {
-                                if let Err(error) = cli_update::create_update_start_info(
+                                match cli_update::create_update_start_info(
                                     update.tool,
                                     path,
                                     &self.host.wakeup_workspace(),
                                 )
                                 .and_then(|info| info.spawn())
                                 {
-                                    self.status = error.message().into();
+                                    Ok(mut child) => {
+                                        let tool = update.tool;
+                                        self.cli_updates_in_progress.insert(tool);
+                                        let sender = self.sender.clone();
+                                        let ctx = ctx.clone();
+                                        std::thread::spawn(move || {
+                                            let result =
+                                                child.wait().map_err(|error| error.to_string()).and_then(|status| {
+                                                    if status.success() {
+                                                        Ok(())
+                                                    } else {
+                                                        Err(format!(
+                                                            "{} 更新失敗，請查看更新視窗的訊息。",
+                                                            tool.display_name()
+                                                        ))
+                                                    }
+                                                });
+                                            let _ = sender.send(Event::UpdateFinished(tool, result));
+                                            ctx.request_repaint();
+                                        });
+                                    }
+                                    Err(error) => self.status = error.message().into(),
                                 }
                             }
                         }

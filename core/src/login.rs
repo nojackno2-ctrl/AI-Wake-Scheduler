@@ -45,12 +45,16 @@ pub struct LoginStartInfo {
     pub working_directory: Option<String>,
     /// 登入必須開啟看得見的主控台。
     pub create_no_window: bool,
+    pub windows_os: bool,
 }
 
 impl LoginStartInfo {
     /// 啟動登入主控台；呼叫端可等待回傳的子程序結束後重新讀取額度。
     pub fn spawn(&self) -> CoreResult<std::process::Child> {
         let mut command = Command::new(&self.file_name);
+        if self.windows_os {
+            command.env("OS", "Windows_NT");
+        }
         command.raw_arg(&self.arguments);
         if let Some(directory) = &self.working_directory {
             command.current_dir(directory);
@@ -81,9 +85,15 @@ pub fn create_console_start_info(
 
     let shell_arguments = process::build_command_shell_arguments(executable, arguments)?;
     // build_command_shell_arguments 以一對外層引號收尾，把 || pause 放進引號內。
-    let arguments = format!("{} || pause\"", &shell_arguments[..shell_arguments.len() - 1]);
+    let arguments = format!("{} || (pause & exit /b 1)\"", &shell_arguments[..shell_arguments.len() - 1]);
     let working_directory = (!working_directory.trim().is_empty() && Path::new(working_directory).is_dir())
         .then(|| working_directory.to_string());
 
-    Ok(LoginStartInfo { file_name: "cmd.exe".to_string(), arguments, working_directory, create_no_window: false })
+    Ok(LoginStartInfo {
+        file_name: "cmd.exe".to_string(),
+        arguments,
+        working_directory,
+        create_no_window: false,
+        windows_os: false,
+    })
 }

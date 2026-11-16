@@ -1,5 +1,27 @@
 # AI HANDOFF
 
+## 2026-11-16 Antigravity：發布 v2.3.1 執行檔（完成）
+
+- 使用者要求「發布執行檔」。
+- 變更：
+  - 納入先前未提交的 Codex 更新修正（`core/src/cli_update.rs`、`core/src/login.rs`、`app/src/main_window.rs`、`core/tests/core_tests.rs`），並執行 `cargo fmt --all`。
+  - 版本號由 `2.3.0` 升至 `2.3.1`（`Cargo.toml`、`Cargo.lock`、`installer/AI倒數喚醒.iss`）。
+- 驗證：
+  - `cargo test --workspace --locked`：67 項通過、5 項 opt-in 忽略、0 失敗（包含先前曾失敗的 `schedule_manager_probes_on_interval_during_countdown_and_wakes_at_reset_or_early_reset` 亦通過）。
+  - `cargo clippy --workspace --all-targets --locked -- -D warnings` 通過。
+  - `build-installer.ps1 -SkipTests` 建置 release 執行檔與 Inno Setup 安裝包成功。
+- 產物（`dist\v2.3.1\release\`，不納入版控）：
+  - `AI倒數喚醒_Setup_v2.3.1_x64.exe`（SHA256 `c20539052854ca01db62c788c5247ccd3c149a397098064b7d45ca8b80362f32`）
+  - `AI倒數喚醒_v2.3.1_x64_Portable.zip`（SHA256 `f3a50d5767ea65a43d43ca1abcd5a6cddcb5e219c1c06ba17a3817519984139e`）
+  - `SHA256SUMS.txt`
+
+## 2026-11-16 Codex：修正 Codex 更新（待完整驗證）
+
+- 實機執行 `codex update` 重現官方安裝器誤報僅支援 Windows；目前環境缺少 `OS`。更新子程序改設定 `OS=Windows_NT`，並於主控台結束後重新檢查版本、保留失敗狀態及避免重複更新。
+- 驗證：設定 `OS=Windows_NT` 後實際執行 `codex update` 成功，`codex --version` 由 0.164.0 升至 0.169.0；`cargo check --workspace --locked` 通過。
+- 重試：MSVC 14.52 的 `link.exe` 已可用；`cargo check --workspace --locked` 與 `cargo build --workspace --locked` 通過。修正登入命令測試預期後，略過一項排程測試的 `cargo test --workspace --locked -- --skip schedule_manager_probes_on_interval_during_countdown_and_wakes_at_reset_or_early_reset` 為 66 通過、5 忽略、1 略過。
+- 限制：完整測試的排程倒數案例單獨重跑仍失敗：預期 08:13，實際排程停在 08:10；原因待查，與此次更新程式碼無直接關聯尚待確認。未實際操作新介面的更新按鈕，未安裝新版排程器；因完整測試未通過，未提交或推送。
+
 ## 2026-11-15 Antigravity：更新 AGY 呼叫模型為 Gemini 4 Hydrogen（完成）
 
 - 使用者要求「更新AGY呼叫的模型」。
