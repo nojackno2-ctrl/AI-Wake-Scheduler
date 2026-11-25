@@ -1,5 +1,17 @@
 # AI HANDOFF
 
+## 2026-11-26 Antigravity：發布 v2.3.2 執行檔（完成）
+
+- 使用者要求「建置新版上傳github」。
+- 變更：
+  - 版本號由 `2.3.1` 升至 `2.3.2`（`Cargo.toml`、`Cargo.lock`、`installer/AI倒數喚醒.iss`）。
+- 驗證：
+  - `build-installer.ps1 -SkipTests -OutputDirectory dist\v2.3.2\release` 建置 release 執行檔與 Inno Setup 安裝包成功（測試已於前次提交 `7ce1466` 執行）。
+- 產物（`dist\v2.3.2\release\`，不納入版控，已上傳 GitHub Release `v2.3.2`）：
+  - `AI倒數喚醒_Setup_v2.3.2_x64.exe`（SHA256 `677acbc994e2690fc128e4270d2b2e9903ea4bb7b0b5faa136bf33c4907cde5f`）
+  - `AI倒數喚醒_v2.3.2_x64_Portable.zip`（SHA256 `d840c4406e7cbea970de4e38a11ff8fc108ec51d22ae65f5073ab56b47a998a5`）
+  - `SHA256SUMS.txt`
+
 ## 2026-11-26 Antigravity：更新三個 AI 呼叫模型、移除即將淘汰模型並更新額度讀取（完成）
 
 - 使用者要求「更新三個Ai呼叫的模型，已經要淘汰的模型拿掉，更新額度讀取」。
