@@ -1,5 +1,24 @@
 # AI HANDOFF
 
+## 2026-11-26 Antigravity：更新三個 AI 呼叫模型、移除即將淘汰模型並更新額度讀取（完成）
+
+- 使用者要求「更新三個Ai呼叫的模型，已經要淘汰的模型拿掉，更新額度讀取」。
+- 實機探測證據：
+  - `agy models`（1.5.17）：`gemini-4-neon-*`、`gemini-4-carbon-*`、`gemini-4-argon-*`、`gemini-4-hydrogen-*`、`gemini-pro-orchestrator-*`、`gemini-3.8-flash-*`、`claude-opus-5-5-*`、`claude-sonnet-5-5-*`、`gpt-oss-120b-medium`；`gemini-3.7-flash`／`gemini-3.6-flash`／`gemini-3.1-pro` 已移除。
+  - `agy --output-format json --print /usage`（1.5.17）：`Gemini 4 Argon` 已併入 `Gemini Models` 群組，不再提供獨立 Argon 群組或 bucket，導致原本 `AntigravityArgon` 額度讀取回傳 `Unavailable`。
+  - `codex app-server`（0.169.0）`model/list`：新增 `gpt-6.2-sol`、`gpt-6.2-astra`；`gpt-5.6-sol`／`gpt-5.6-terra` 標記於 2026-12-23 淘汰。`account/rateLimits/read` 正常回傳 5 小時與每週視窗。
+  - `claude`（2.1.325）與 `/api/oauth/usage`：支援 `claude-fable-5-2`；回傳同時包含傳統 `five_hour`／`seven_day` 欄位與新版 `limits` 陣列。
+- 變更：
+  - `core/src/catalog.rs`：更新 Antigravity 推薦清單與支援思考程度（加入 `gemini-4-neon`／`carbon`／`argon`，移除 `gemini-3.7-flash`／`3.6-flash`／`3.1-pro`）；Codex 加入 `gpt-6.2-sol`、`gpt-6.2-astra` 並移除 `gpt-5.6-*`（預設維持最便宜的 `gpt-6-luna`）；Claude 移除 `claude-haiku-4-5-20251001` 與 `claude-fable-5-1`，更新為 `claude-fable-5-2`（預設維持 `claude-haiku-5-5`）。
+  - `core/src/models.rs`：`ensure_defaults` 自動將已移除／即將淘汰模型遷移至現行替代模型（`gemini-3.7/3.6/3.1` → `gemini-4-hydrogen`、`gpt-5.6-sol` → `gpt-6.2-sol`、`gpt-5.6-terra` → `gpt-6.1-terra`、`gpt-5.6-luna` → `gpt-6-luna`、`claude-fable-5-1` → `claude-fable-5-2`）。
+  - `core/src/usage.rs`：`parse_antigravity_summary` 與 `parse_antigravity_model_configs_array` 在找不到獨立 Argon 群組時自動回退讀取 `Gemini Models` 額度池；`parse_claude_usage` 新增 `limits` 陣列回退解析。
+  - `core/tests/core_tests.rs`：更新模型目錄／命令建構／舊模型遷移測試，並新增 Argon 併入 Gemini 群組與 Claude `limits` 回退測試。
+- 驗證：
+  - `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 通過。
+  - `cargo test --workspace --locked`：app 18 通過、UI `ui_smoke` 2 通過、core unit 2 通過（1 忽略）、core 整合 44 通過／4 忽略／1 失敗（既有的 `schedule_manager_probes_on_interval_during_countdown_and_wakes_at_reset_or_early_reset` 時序測試，與本次變更無關）。
+  - `cargo test -p aiwake-core --test core_tests --locked executable_locator_resolution -- --ignored --exact --nocapture` 通過：全部 5 個目標（含 `AntigravityArgon`、Codex、Claude）實機探針與額度讀取皆為 `Available`。
+- 未驗證：未重新建置正式安裝包或更新使用者電腦上的安裝版；未實際花費 Token 執行 `real_cli_wake_smoke`。
+
 ## 2026-11-16 Antigravity：發布 v2.3.1 執行檔（完成）
 
 - 使用者要求「發布執行檔」。

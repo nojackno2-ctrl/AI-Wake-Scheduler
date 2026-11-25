@@ -310,14 +310,28 @@ impl AppSettings {
         for descriptor in catalog::all() {
             let profile = self.cli_profiles.entry(descriptor.kind).or_insert_with(|| default_profile(descriptor));
 
-            // 已從 CLI 清單移除的內建模型設定移到現行替代模型；自訂模型保留。
+            // 已從 CLI 清單移除或即將淘汰的內建模型設定移到現行替代模型；自訂模型保留。
             let replacement = match (descriptor.kind, profile.model.trim()) {
+                (
+                    CliKind::Antigravity,
+                    "gemini-3.7-flash"
+                    | "gemini-3.7-flash-low"
+                    | "gemini-3.7-flash-medium"
+                    | "gemini-3.7-flash-high"
+                    | "gemini-3.6-flash"
+                    | "gemini-3.6-flash-low"
+                    | "gemini-3.6-flash-medium"
+                    | "gemini-3.6-flash-high"
+                    | "gemini-3.1-pro"
+                    | "gemini-3.1-pro-low"
+                    | "gemini-3.1-pro-high",
+                ) => Some("gemini-4-hydrogen"),
                 (CliKind::AntigravityClaude, "claude-sonnet-4-6") => Some("claude-sonnet-5-5-low"),
                 (CliKind::AntigravityClaude, "claude-opus-4-6-thinking") => Some("claude-opus-5-5-high"),
-                (CliKind::Codex, "gpt-5.4") => Some("gpt-6.1-sol"),
-                (CliKind::Codex, "gpt-5.4-mini") => Some("gpt-6-luna"),
-                // 2026-10-22 實測：ChatGPT 帳號的 Codex 已不支援 gpt-5.5（HTTP 400）。
-                (CliKind::Codex, "gpt-5.5") => Some("gpt-6.1-sol"),
+                (CliKind::Codex, "gpt-5.4" | "gpt-5.5" | "gpt-5.6-sol") => Some("gpt-6.2-sol"),
+                (CliKind::Codex, "gpt-5.6-terra") => Some("gpt-6.1-terra"),
+                (CliKind::Codex, "gpt-5.4-mini" | "gpt-5.6-luna") => Some("gpt-6-luna"),
+                (CliKind::Claude, "claude-fable-5-1") => Some("claude-fable-5-2"),
                 _ => None,
             };
             if let Some(model) = replacement {

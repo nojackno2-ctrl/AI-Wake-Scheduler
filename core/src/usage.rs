@@ -910,37 +910,47 @@ fn parse_antigravity_summary(root: &Value, kind: CliKind, observed_at: &Moment) 
     }
     let groups = array_property(summary, "groups")?;
 
-    let mut windows = Vec::new();
-    for group in groups {
-        let group_name = get_string_any(group, &["displayName", "display_name", "name"]).unwrap_or_default();
-        let Some(buckets) = array_property(group, "buckets") else {
-            continue;
-        };
-
-        for bucket in buckets {
-            // Protobuf JSON 省略缺省值；缺少 remainingFraction 代表未知，不是 0 或 1。
-            let Some(fraction) = remaining_fraction(bucket) else {
+    let collect_for = |target_kind: CliKind| -> Vec<CliUsageWindow> {
+        let mut windows = Vec::new();
+        for group in groups {
+            let group_name = get_string_any(group, &["displayName", "display_name", "name"]).unwrap_or_default();
+            let Some(buckets) = array_property(group, "buckets") else {
                 continue;
             };
 
-            let bucket_label = get_string_any(
-                bucket,
-                &["displayName", "display_name", "name", "window", "bucketId", "bucket_id", "id"],
-            )
-            .unwrap_or_else(|| "額度".to_string());
-            if !matches_pool(kind, &group_name, &bucket_label) {
-                continue;
+            for bucket in buckets {
+                // Protobuf JSON 省略缺省值；缺少 remainingFraction 代表未知，不是 0 或 1。
+                let Some(fraction) = remaining_fraction(bucket) else {
+                    continue;
+                };
+
+                let bucket_label = get_string_any(
+                    bucket,
+                    &["displayName", "display_name", "name", "window", "bucketId", "bucket_id", "id"],
+                )
+                .unwrap_or_else(|| "額度".to_string());
+                if !matches_pool(target_kind, &group_name, &bucket_label) {
+                    continue;
+                }
+                let duration = infer_antigravity_duration(bucket, &bucket_label);
+                let resets_at = reset_time(bucket);
+                windows.push(CliUsageWindow::new(
+                    format!("{}（{}）", pool_name(kind), bucket_label),
+                    used_percent_from_fraction(fraction),
+                    duration,
+                    resets_at,
+                    fraction < 1.0 && resets_at.is_some_and(|reset| reset > *observed_at),
+                ));
             }
-            let duration = infer_antigravity_duration(bucket, &bucket_label);
-            let resets_at = reset_time(bucket);
-            windows.push(CliUsageWindow::new(
-                format!("{}（{}）", pool_name(kind), bucket_label),
-                used_percent_from_fraction(fraction),
-                duration,
-                resets_at,
-                fraction < 1.0 && resets_at.is_some_and(|reset| reset > *observed_at),
-            ));
         }
+        windows
+    };
+
+    let mut windows = collect_for(kind);
+    // Antigravity 1.5.x 已將 Gemini 4 Argon 併入「Gemini Models」額度群組，不再回傳獨立 Argon 群組；
+    // 若找不到獨立 Argon 視窗，改回讀取 Gemini Models 額度池。
+    if windows.is_empty() && kind == CliKind::AntigravityArgon {
+        windows = collect_for(CliKind::Antigravity);
     }
 
     let windows = select_most_constrained_windows(windows);
@@ -952,25 +962,35 @@ fn parse_antigravity_model_configs_array(
     kind: CliKind,
     observed_at: &Moment,
 ) -> Vec<CliUsageWindow> {
-    let mut candidates = Vec::new();
-    for config in configs {
-        let label = get_string_any(config, &["label", "displayName", "display_name"]).unwrap_or_default();
-        let Some(quota_info) = object_property(config, "quotaInfo").filter(|_| matches_pool(kind, &label, "")) else {
-            continue;
-        };
-        let Some(fraction) = remaining_fraction(quota_info) else {
-            continue;
-        };
+    let collect_for = |target_kind: CliKind| -> Vec<CliUsageWindow> {
+        let mut candidates = Vec::new();
+        for config in configs {
+            let label = get_string_any(config, &["label", "displayName", "display_name"]).unwrap_or_default();
+            let Some(quota_info) =
+                object_property(config, "quotaInfo").filter(|_| matches_pool(target_kind, &label, ""))
+            else {
+                continue;
+            };
+            let Some(fraction) = remaining_fraction(quota_info) else {
+                continue;
+            };
 
-        let duration = infer_antigravity_duration(config, &label).unwrap_or_else(|| Span::hours(5));
-        let resets_at = reset_time(quota_info);
-        candidates.push(CliUsageWindow::new(
-            pool_name(kind),
-            used_percent_from_fraction(fraction),
-            Some(duration),
-            resets_at,
-            fraction < 1.0 && resets_at.is_some_and(|reset| reset > *observed_at),
-        ));
+            let duration = infer_antigravity_duration(config, &label).unwrap_or_else(|| Span::hours(5));
+            let resets_at = reset_time(quota_info);
+            candidates.push(CliUsageWindow::new(
+                pool_name(kind),
+                used_percent_from_fraction(fraction),
+                Some(duration),
+                resets_at,
+                fraction < 1.0 && resets_at.is_some_and(|reset| reset > *observed_at),
+            ));
+        }
+        candidates
+    };
+
+    let mut candidates = collect_for(kind);
+    if candidates.is_empty() && kind == CliKind::AntigravityArgon {
+        candidates = collect_for(CliKind::Antigravity);
     }
     select_most_constrained_windows(candidates)
 }
@@ -1291,6 +1311,34 @@ pub fn parse_claude_usage(json: &str, observed_at: &Moment) -> Result<CliUsageSn
         let started = utilization > 0.0 || window_started(resets_at, Some(duration), observed_at);
         let is_active_countdown = started && resets_at.is_some_and(|reset| reset > *observed_at);
         windows.push(CliUsageWindow::new(display_name, used_percent, Some(duration), resets_at, is_active_countdown));
+    }
+
+    if windows.is_empty() {
+        if let Some(limits) = array_property(&root, "limits") {
+            for limit in limits {
+                let kind = get_string(limit, "kind").unwrap_or_default();
+                let group = get_string(limit, "group").unwrap_or_default();
+                let (display_name, duration) = match (kind.as_str(), group.as_str()) {
+                    ("session", _) | (_, "session") => ("Claude（5 小時）", Span::hours(5)),
+                    ("weekly_all", _) | (_, "weekly") => ("Claude（7 天）", Span::days(7)),
+                    _ => continue,
+                };
+                let Some(percent) = limit.get("percent").and_then(Value::as_f64) else {
+                    continue;
+                };
+                let resets_at = limit.get("resets_at").and_then(Value::as_str).and_then(time::parse_moment);
+                let used_percent = (percent.round() as i32).clamp(0, 100);
+                let started = percent > 0.0 || window_started(resets_at, Some(duration), observed_at);
+                let is_active_countdown = started && resets_at.is_some_and(|reset| reset > *observed_at);
+                windows.push(CliUsageWindow::new(
+                    display_name,
+                    used_percent,
+                    Some(duration),
+                    resets_at,
+                    is_active_countdown,
+                ));
+            }
+        }
     }
 
     Ok(if windows.is_empty() {

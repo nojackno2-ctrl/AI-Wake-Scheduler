@@ -163,7 +163,6 @@ fn effort_rank(effort: ThinkingEffort) -> i32 {
 const ONLY_DEFAULT: &[ThinkingEffort] = &[E::Default];
 const AGY_FLASH: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High];
 const AGY_HYDROGEN: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh];
-const AGY_PRO: &[ThinkingEffort] = &[E::Default, E::Low, E::High];
 const CODEX_ULTRA: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max, E::Ultra];
 const CODEX_MAX: &[ThinkingEffort] = &[E::Default, E::Low, E::Medium, E::High, E::XHigh, E::Max];
 
@@ -178,9 +177,9 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
         // --disable-slash-commands 停用技能展開；--mode plan 唯讀工作區；
         // 推理程度由 command_builder 依設定或節省模式動態附加。
         token_saver_arguments: &["--disable-slash-commands"],
-        // 以 `agy models` 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
-        // （帶後綴的完整 ID，如 gemini-3.8-flash-high，是另一種寫法，這裡固定用前者）。
-        // Gemini 4 Argon 另有獨立的每週額度，由 AntigravityArgon 負責喚醒與倒數。
+        // 2026-11-26 以 `agy models` (1.5.17) 實際輸出核對：基底模型名稱需搭配獨立的 --effort 旗標
+        // （帶後綴的完整 ID，如 gemini-4-hydrogen-low，是另一種寫法，這裡固定用前者）。
+        // Gemini 4 Argon 目前已併入 Gemini Models 額度池，AntigravityArgon 保留作為舊設定相容。
         default_model: Some("gemini-4-hydrogen"),
         preset_models: &[
             "",
@@ -189,6 +188,19 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             "gemini-4-hydrogen-medium",
             "gemini-4-hydrogen-high",
             "gemini-4-hydrogen-xhigh",
+            "gemini-4-argon",
+            "gemini-4-argon-low",
+            "gemini-4-argon-medium",
+            "gemini-4-argon-high",
+            "gemini-4-carbon",
+            "gemini-4-carbon-low",
+            "gemini-4-carbon-medium",
+            "gemini-4-carbon-high",
+            "gemini-4-neon",
+            "gemini-4-neon-low",
+            "gemini-4-neon-medium",
+            "gemini-4-neon-high",
+            "gemini-4-neon-xhigh",
             "gemini-3.8-flash",
             "gemini-3.8-flash-low",
             "gemini-3.8-flash-medium",
@@ -201,21 +213,26 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             ("gemini-4-hydrogen-high", ONLY_DEFAULT),
             ("gemini-4-hydrogen-medium", ONLY_DEFAULT),
             ("gemini-4-hydrogen-low", ONLY_DEFAULT),
+            ("gemini-4-neon", AGY_HYDROGEN),
+            ("gemini-4-neon-xhigh", ONLY_DEFAULT),
+            ("gemini-4-neon-high", ONLY_DEFAULT),
+            ("gemini-4-neon-medium", ONLY_DEFAULT),
+            ("gemini-4-neon-low", ONLY_DEFAULT),
+            ("gemini-4-carbon", AGY_FLASH),
+            ("gemini-4-carbon-high", ONLY_DEFAULT),
+            ("gemini-4-carbon-medium", ONLY_DEFAULT),
+            ("gemini-4-carbon-low", ONLY_DEFAULT),
+            ("gemini-4-argon", AGY_FLASH),
+            ("gemini-4-argon-high", ONLY_DEFAULT),
+            ("gemini-4-argon-medium", ONLY_DEFAULT),
+            ("gemini-4-argon-low", ONLY_DEFAULT),
+            ("gemini-pro-orchestrator-neon", ONLY_DEFAULT),
+            ("gemini-pro-orchestrator", ONLY_DEFAULT),
+            ("gemini-pro-orchestrator-argon", ONLY_DEFAULT),
             ("gemini-3.8-flash", AGY_FLASH),
             ("gemini-3.8-flash-high", ONLY_DEFAULT),
             ("gemini-3.8-flash-medium", ONLY_DEFAULT),
             ("gemini-3.8-flash-low", ONLY_DEFAULT),
-            ("gemini-3.7-flash", AGY_FLASH),
-            ("gemini-3.7-flash-high", ONLY_DEFAULT),
-            ("gemini-3.7-flash-medium", ONLY_DEFAULT),
-            ("gemini-3.7-flash-low", ONLY_DEFAULT),
-            ("gemini-3.6-flash", AGY_FLASH),
-            ("gemini-3.6-flash-high", ONLY_DEFAULT),
-            ("gemini-3.6-flash-medium", ONLY_DEFAULT),
-            ("gemini-3.6-flash-low", ONLY_DEFAULT),
-            ("gemini-3.1-pro", AGY_PRO),
-            ("gemini-3.1-pro-high", ONLY_DEFAULT),
-            ("gemini-3.1-pro-low", ONLY_DEFAULT),
         ],
         timeout_arguments: Some(agy_timeout_arguments),
         executable_candidates: antigravity_candidates,
@@ -285,30 +302,29 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             "-c",
             "model_verbosity=\"low\"",
         ],
-        // 2026-11-01 由本機 Codex App Server `model/list` 核對可見清單。
+        // 2026-11-26 由本機 Codex App Server (0.169.0) `model/list` 核對可見清單；
+        // 移除即將淘汰的 gpt-5.6-* 系列，加入 gpt-6.2-sol 與 gpt-6.2-astra。
         // 空白設定使用本工具預設；使用者可明確指定其他模型。
         default_model: Some("gpt-6-luna"),
         preset_models: &[
             "",
-            "gpt-6.1-sol",
+            "gpt-6.2-sol",
+            "gpt-6.2-astra",
             "gpt-6.1-terra",
+            "gpt-6.1-sol",
             "gpt-6-astra",
             "gpt-6-sol",
             "gpt-6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
         ],
         supported_efforts: CODEX_ULTRA,
         model_supported_efforts: &[
-            ("gpt-6.1-sol", CODEX_ULTRA),
+            ("gpt-6.2-sol", CODEX_ULTRA),
+            ("gpt-6.2-astra", CODEX_ULTRA),
             ("gpt-6.1-terra", CODEX_ULTRA),
+            ("gpt-6.1-sol", CODEX_ULTRA),
             ("gpt-6-astra", CODEX_ULTRA),
             ("gpt-6-sol", CODEX_ULTRA),
             ("gpt-6-luna", CODEX_MAX),
-            ("gpt-5.6-sol", CODEX_ULTRA),
-            ("gpt-5.6-terra", CODEX_ULTRA),
-            ("gpt-5.6-luna", CODEX_MAX),
         ],
         timeout_arguments: None,
         executable_candidates: codex_candidates,
@@ -333,30 +349,23 @@ static DESCRIPTORS: [CliDescriptor; 5] = [
             "--prompt-suggestions",
             "false",
         ],
-        // 2026-10-04 官方 model-config 文件；保留最新版別名並提供固定版本。
-        // CLI 版本需求：Sonnet 5.5 >= 2.1.284、Opus 5.5 >= 2.1.280、Fable 5.1 >= 2.1.257。
-        // 預設採官方單價最便宜的模型：Haiku 5.5（0.10／0.50 美元每百萬 token，Haiku 4.5 為 1／5）。
-        // 2026-10-22 實測可呼叫並接受 --effort；2.1.289 的模型目錄尚未收錄，只會多印一行警告。
+        // 2026-11-26 以本機 Claude Code 2.1.325 核對：移除舊版 Haiku 4.5 與 Fable 5.1，更新為 Fable 5.2。
+        // 預設採官方單價最便宜的模型：Haiku 5.5。
         default_model: Some("claude-haiku-5-5"),
         preset_models: &[
             "",
             "claude-haiku-5-5",
-            "claude-haiku-4-5-20251001",
             "haiku",
             "sonnet",
             "opus",
             "fable",
             "claude-sonnet-5-5",
             "claude-opus-5-5",
-            "claude-fable-5-1",
+            "claude-fable-5-2",
         ],
         supported_efforts: CODEX_MAX,
         // Haiku uses manual thinking and does not support adaptive effort.
-        model_supported_efforts: &[
-            ("claude-haiku-4-5-20251001", ONLY_DEFAULT),
-            ("claude-haiku-4-5", ONLY_DEFAULT),
-            ("haiku", ONLY_DEFAULT),
-        ],
+        model_supported_efforts: &[("haiku", ONLY_DEFAULT)],
         timeout_arguments: None,
         executable_candidates: claude_candidates,
     },

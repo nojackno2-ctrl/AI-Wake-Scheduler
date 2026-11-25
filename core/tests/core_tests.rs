@@ -770,8 +770,8 @@ fn cli_command_builder() {
         build_profile(CliKind::Antigravity, "早安", "gemini-3.8-flash-high", E::Low, "", false)
     );
     assert_eq!(
-        strings(&["--model", "gemini-3.7-flash", "--effort", "high", "--print", "早安"]),
-        build_profile(CliKind::Antigravity, "早安", "gemini-3.7-flash", E::High, "", false)
+        strings(&["--model", "gemini-4-neon", "--effort", "high", "--print", "早安"]),
+        build_profile(CliKind::Antigravity, "早安", "gemini-4-neon", E::High, "", false)
     );
     assert_eq!(
         strings(&[
@@ -781,12 +781,12 @@ fn cli_command_builder() {
             "--color",
             "never",
             "--model",
-            "gpt-5.6-sol",
+            "gpt-6.2-sol",
             "-c",
             "model_reasoning_effort=\"ultra\"",
             "早安"
         ]),
-        build_profile(CliKind::Codex, "早安", "gpt-5.6-sol", E::Ultra, "", false)
+        build_profile(CliKind::Codex, "早安", "gpt-6.2-sol", E::Ultra, "", false)
     );
     assert_eq!(
         strings(&[
@@ -804,8 +804,6 @@ fn cli_command_builder() {
         build_profile(CliKind::Codex, "早安", "", E::Minimal, "", false)
     );
 
-    let codex_luna_ultra = build_profile(CliKind::Codex, "早安", "gpt-5.6-luna", E::Ultra, "", false);
-    assert!(has(&codex_luna_ultra, "model_reasoning_effort=\"max\""), "GPT-5.6 Luna 的 Ultra 應降為支援的 Max。");
     let codex_6_luna_ultra = build_profile(CliKind::Codex, "早安", "gpt-6-luna", E::Ultra, "", false);
     assert!(has(&codex_6_luna_ultra, "model_reasoning_effort=\"max\""), "GPT-6 Luna 的 Ultra 應降為支援的 Max。");
 
@@ -844,7 +842,7 @@ fn cli_command_builder() {
     assert_eq!(occurrences, 1, "使用者在額外參數自訂 model_reasoning_effort 時不應重複附加。");
 
     let codex_model_override =
-        build_profile(CliKind::Codex, "早安", "gpt-5.6-sol", E::Ultra, "--model gpt-6-luna", false);
+        build_profile(CliKind::Codex, "早安", "gpt-6.2-sol", E::Ultra, "--model gpt-6-luna", false);
     assert_eq!(
         codex_model_override.iter().filter(|a| *a == "--model").count(),
         1,
@@ -933,26 +931,16 @@ fn cli_catalog() {
     let codex = catalog::get(CliKind::Codex);
     assert_eq!(
         codex.preset_models,
-        [
-            "",
-            "gpt-6.1-sol",
-            "gpt-6.1-terra",
-            "gpt-6-astra",
-            "gpt-6-sol",
-            "gpt-6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna"
-        ]
+        ["", "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-terra", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",]
     );
     assert!(
-        !codex.preset_models.iter().any(|model| model.contains("gpt-5.2") || model.contains("gpt-5.1")),
-        "Codex 推薦清單不應再包含 deprecated 的 GPT-5.2/5.1 Codex 模型。"
+        !codex.preset_models.iter().any(|model| model.contains("gpt-5.")),
+        "Codex 推薦清單不應再包含已淘汰或即將淘汰的 GPT-5.x 模型。"
     );
-    assert!(codex.get_supported_efforts(Some("gpt-5.6-sol")).contains(&E::Ultra), "GPT-5.6 Sol 應支援 Ultra。");
-    assert!(!codex.get_supported_efforts(Some("gpt-5.6-luna")).contains(&E::Ultra), "GPT-5.6 Luna 不支援 Ultra。");
+    assert!(codex.get_supported_efforts(Some("gpt-6.2-sol")).contains(&E::Ultra), "GPT-6.2 Sol 應支援 Ultra。");
+    assert!(!codex.get_supported_efforts(Some("gpt-6-luna")).contains(&E::Ultra), "GPT-6 Luna 不支援 Ultra。");
     assert_eq!(codex.normalize_effort(Some("gpt-6-luna"), E::Ultra), E::Max, "GPT-6 Luna Ultra 應正規化為 Max。");
-    for model in ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"] {
+    for model in ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-astra", "gpt-6-sol"] {
         let built = build_profile(CliKind::Codex, "OK", model, E::Ultra, "", false);
         assert!(has(&built, model) && has(&built, "model_reasoning_effort=\"ultra\""), "新 Sol/Astra 應可使用 Ultra。");
     }
@@ -962,21 +950,38 @@ fn cli_catalog() {
     let agy_claude = catalog::get(CliKind::AntigravityClaude);
     assert_eq!(agy_claude.default_model, Some("claude-sonnet-5-5-low"), "AGY Claude 預設應使用目前的 Sonnet 5.5 Low。");
     let mut legacy_settings = AppSettings::create_default();
+    legacy_settings.cli_profiles.get_mut(&CliKind::Antigravity).unwrap().model = "gemini-3.7-flash".to_string();
     legacy_settings.cli_profiles.get_mut(&CliKind::AntigravityClaude).unwrap().model =
         "claude-opus-4-6-thinking".to_string();
     legacy_settings.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-5.4-mini".to_string();
     legacy_settings.cli_profiles.get_mut(&CliKind::Claude).unwrap().model = "custom-model".to_string();
     legacy_settings.ensure_defaults();
     assert_eq!(
+        legacy_settings.cli_profiles[&CliKind::Antigravity].model,
+        "gemini-4-hydrogen",
+        "已淘汰的 gemini-3.7-flash 應轉換到 gemini-4-hydrogen。"
+    );
+    assert_eq!(
         legacy_settings.cli_profiles[&CliKind::AntigravityClaude].model,
         "claude-opus-5-5-high",
         "已移除 Opus 設定應轉換到新完整 ID。"
     );
     assert_eq!(legacy_settings.cli_profiles[&CliKind::Codex].model, "gpt-6-luna", "已移除 mini 設定應轉換到 Luna。");
-    let mut removed_codex = AppSettings::create_default();
-    removed_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = "gpt-5.5".to_string();
-    removed_codex.ensure_defaults();
-    assert_eq!(removed_codex.cli_profiles[&CliKind::Codex].model, "gpt-6.1-sol", "已下架的 gpt-5.5 應轉換到 6.1 Sol。");
+    for (old, expected) in [
+        ("gpt-5.5", "gpt-6.2-sol"),
+        ("gpt-5.6-sol", "gpt-6.2-sol"),
+        ("gpt-5.6-terra", "gpt-6.1-terra"),
+        ("gpt-5.6-luna", "gpt-6-luna"),
+    ] {
+        let mut retiring_codex = AppSettings::create_default();
+        retiring_codex.cli_profiles.get_mut(&CliKind::Codex).unwrap().model = old.to_string();
+        retiring_codex.ensure_defaults();
+        assert_eq!(
+            retiring_codex.cli_profiles[&CliKind::Codex].model,
+            expected,
+            "已下架／即將淘汰的 {old} 應轉換到 {expected}。"
+        );
+    }
 
     let mut old_codex = AppSettings::from_json(&serde_json::json!({
         "DefaultModelsRevision": 2,
@@ -1009,16 +1014,20 @@ fn cli_catalog() {
         let built = build_profile(CliKind::AntigravityClaude, "OK", model, E::High, "", true);
         assert!(has(&built, model) && !has(&built, "--effort"), "AGY 完整 ID 不應再加 --effort。");
     }
-    for model in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1"] {
+    for model in ["claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-2"] {
         assert!(catalog::get(CliKind::Claude).preset_models.contains(&model), "Claude 應提供目前的固定版本模型。");
     }
+    assert!(
+        !catalog::get(CliKind::Claude).preset_models.iter().any(|model| model.contains("4-5") || model.contains("5-1")),
+        "Claude 推薦清單不應再包含舊版 4.5 與 Fable 5.1 模型。"
+    );
 
     let agy = catalog::get(CliKind::Antigravity);
+    assert!(agy.preset_models.contains(&"gemini-4-hydrogen"), "Antigravity 推薦清單應包含 gemini-4-hydrogen。");
+    assert!(agy.preset_models.contains(&"gemini-4-neon"), "Antigravity 推薦清單應包含 gemini-4-neon。");
+    assert!(agy.preset_models.contains(&"gemini-4-carbon"), "Antigravity 推薦清單應包含 gemini-4-carbon。");
+    assert!(agy.preset_models.contains(&"gemini-4-argon"), "Antigravity 推薦清單應包含 gemini-4-argon。");
     assert!(agy.preset_models.contains(&"gemini-3.8-flash"), "Antigravity 推薦清單應包含 gemini-3.8-flash。");
-    assert!(
-        !agy.preset_models.iter().any(|model| model.contains("argon")),
-        "Argon 已獨立成目標，Gemini 推薦清單不應再列出 Argon。"
-    );
     let argon = catalog::get(CliKind::AntigravityArgon);
     assert_eq!(argon.default_model, Some("gemini-4-argon"), "Argon 目標預設應使用 gemini-4-argon。");
     assert_eq!(argon.default_command, "agy", "Argon 目標應呼叫 agy。");
@@ -1209,6 +1218,36 @@ fn cli_usage_reader() {
         nested_only_argon.windows.len() == 1 && nested_only_argon.windows[0].remaining_percent() == 70,
         "Gemini 群組內的 Argon bucket 應歸給 Argon。"
     );
+    // Antigravity 1.5.17 起將 Gemini 4 Argon 併入「Gemini Models」群組，不再提供獨立 Argon 群組或 bucket。
+    let merged_argon = format!(
+        r#"{{"groups":[{{"name":"Gemini Models","description":"Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Gemini 4 Hydrogen, Gemini 3.8 Flash","buckets":[
+            {{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.93,"reset_time":"{}"}},
+            {{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.96,"reset_time":"{}"}}]}}]}}"#,
+        iso(observed_at + Span::days(5)),
+        iso(observed_at + Span::hours(2)),
+    );
+    let merged_argon_usage =
+        usage::parse_antigravity_model_configs(&merged_argon, CliKind::AntigravityArgon, &observed_at);
+    assert!(
+        merged_argon_usage.availability == CliUsageAvailability::Available
+            && merged_argon_usage.windows.len() == 2
+            && merged_argon_usage.windows[0].duration == Some(Span::hours(5))
+            && merged_argon_usage.windows[1].duration == Some(Span::days(7)),
+        "找不到獨立 Argon 群組時應回退讀取 Gemini Models 額度池。"
+    );
+    let claude_limits_only = usage::parse_claude_usage(
+        &format!(
+            r#"{{"limits":[{{"kind":"session","group":"session","percent":5,"resets_at":"{}"}},{{"kind":"weekly_all","group":"weekly","percent":11,"resets_at":"{}"}}]}}"#,
+            iso(observed_at + Span::hours(3)),
+            iso(observed_at + Span::days(5)),
+        ),
+        &observed_at,
+    )
+    .unwrap();
+    assert_eq!(claude_limits_only.availability, CliUsageAvailability::Available);
+    assert_eq!(claude_limits_only.windows.len(), 2);
+    assert_eq!(claude_limits_only.windows[0].used_percent, 5);
+    assert_eq!(claude_limits_only.windows[1].used_percent, 11);
     assert!(
         usage_gemini.windows[0].used_percent == 0 && is_counting_down(Some(&usage_gemini), &observed_at),
         "微量使用即使顯示為 0% 仍應倒數。"
